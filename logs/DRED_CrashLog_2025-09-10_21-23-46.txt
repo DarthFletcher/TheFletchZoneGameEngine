@@ -1,0 +1,4 @@
+=== DRED GPU Crash Log ===
+
+⚠️ No breadcrumbs were available from DRED.
+⚠️ No page fault data was available.

@@ -1,0 +1,20 @@
+Change Dir: 'C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/blds/directxmath/x64-windows-dbg'
+
+Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe" -v -v -j9 install
+[0/1] C:\WINDOWS\system32\cmd.exe /C "cd /D C:\Users\fchil\source\repos\TheFletchZoneGameEngine\vcpkg_installed\x64-windows\vcpkg\blds\directxmath\x64-windows-dbg && C:\Users\fchil\AppData\Local\vcpkg\downloads\tools\cmake-3.29.2-windows\cmake-3.29.2-windows-i386\bin\cmake.exe -P cmake_install.cmake"
+-- Install configuration: "Debug"
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/share/directxmath/DirectXMath-targets.cmake
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXCollision.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXCollision.inl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXColors.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXMath.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXMathConvert.inl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXMathMatrix.inl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXMathMisc.inl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXMathVector.inl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXPackedVector.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXPackedVector.inl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/share/directxmath/directxmath-config.cmake
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/share/directxmath/directxmath-config-version.cmake
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/lib/pkgconfig/DirectXMath.pc
+

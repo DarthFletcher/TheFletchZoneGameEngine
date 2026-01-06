@@ -1,0 +1,6 @@
+[INFO] 2025-11-08 23:01:38 [General] : 🧩 Logger initialized successfully in WinMain.
+[WARNING] 2025-11-08 23:01:38 [General] : ⚠️ DPI Awareness Context V2 not supported. Falling back to PROCESS_PER_MONITOR_DPI_AWARE.
+[ERROR] 2025-11-08 23:01:38 [General] : ❌ SetProcessDpiAwareness failed. HRESULT=0x80070005
+[INFO] 2025-11-08 23:01:38 [General] : 📐 Current Process DPI Awareness: PER_MONITOR_AWARE
+[INFO] 2025-11-08 23:01:38 [General] : 🧠 Current DPI awareness: PER_MONITOR_AWARE
+[INFO] 2025-11-08 23:01:38 [General] : 🧮 Desktop DPI: 96 (Scale: 1.00x)

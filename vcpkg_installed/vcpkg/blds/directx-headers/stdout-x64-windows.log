@@ -1,0 +1,15 @@
+-- Downloading https://github.com/Microsoft/DirectX-Headers/archive/v1.614.1.tar.gz -> Microsoft-DirectX-Headers-v1.614.1.tar.gz...
+-- Extracting source C:/Users/fchil/AppData/Local/vcpkg/downloads/Microsoft-DirectX-Headers-v1.614.1.tar.gz
+-- Using source at C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/blds/directx-headers/src/v1.614.1-958b66fdc8.clean
+-- Found external ninja('1.12.1').
+-- Configuring x64-windows
+-- Building x64-windows-dbg
+-- Building x64-windows-rel
+-- Fixing pkgconfig file: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directx-headers_x64-windows/lib/pkgconfig/DirectX-Headers.pc
+-- Downloading https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-pkgconf-1~2.2.0-1-any.pkg.tar.zst;https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-pkgconf-1~2.2.0-1-any.pkg.tar.zst;https://mirror.yandex.ru/mirrors/msys2/mingw/mingw64/mingw-w64-x86_64-pkgconf-1~2.2.0-1-any.pkg.tar.zst;https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/mingw64/mingw-w64-x86_64-pkgconf-1~2.2.0-1-any.pkg.tar.zst;https://mirrors.ustc.edu.cn/msys2/mingw/mingw64/mingw-w64-x86_64-pkgconf-1~2.2.0-1-any.pkg.tar.zst;https://mirror.selfnet.de/msys2/mingw/mingw64/mingw-w64-x86_64-pkgconf-1~2.2.0-1-any.pkg.tar.zst -> msys2-mingw-w64-x86_64-pkgconf-1~2.2.0-1-any.pkg.tar.zst...
+-- Downloading https://mirror.msys2.org/msys/x86_64/msys2-runtime-3.5.3-3-x86_64.pkg.tar.zst;https://repo.msys2.org/msys/x86_64/msys2-runtime-3.5.3-3-x86_64.pkg.tar.zst;https://mirror.yandex.ru/mirrors/msys2/msys/x86_64/msys2-runtime-3.5.3-3-x86_64.pkg.tar.zst;https://mirrors.tuna.tsinghua.edu.cn/msys2/msys/x86_64/msys2-runtime-3.5.3-3-x86_64.pkg.tar.zst;https://mirrors.ustc.edu.cn/msys2/msys/x86_64/msys2-runtime-3.5.3-3-x86_64.pkg.tar.zst;https://mirror.selfnet.de/msys2/msys/x86_64/msys2-runtime-3.5.3-3-x86_64.pkg.tar.zst -> msys2-msys2-runtime-3.5.3-3-x86_64.pkg.tar.zst...
+-- Using msys root at C:/Users/fchil/AppData/Local/vcpkg/downloads/tools/msys2/1e74ca60daa10104
+-- Fixing pkgconfig file: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directx-headers_x64-windows/debug/lib/pkgconfig/DirectX-Headers.pc
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directx-headers_x64-windows/share/directx-headers/usage
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directx-headers_x64-windows/share/directx-headers/copyright
+-- Performing post-build validation

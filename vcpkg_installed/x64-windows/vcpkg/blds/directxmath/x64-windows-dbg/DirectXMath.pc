@@ -1,0 +1,10 @@
+prefix=C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: DirectXMath
+Description: DirectXMath SIMD C++ math library
+URL: https://go.microsoft.com/fwlink/?LinkID=615560
+Version: 3.20
+Cflags: -I${includedir}
+Libs:

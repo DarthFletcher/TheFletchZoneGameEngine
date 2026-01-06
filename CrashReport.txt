@@ -1,0 +1,4 @@
+Frame Index: 1
+Fence Value: 96
+HWND: 0x20116c
+Viewport Size: 397x422

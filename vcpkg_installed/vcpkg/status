@@ -1,0 +1,59 @@
+Package: vcpkg-cmake-config
+Version: 2024-05-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 17a76663bb4233913011b33b7cea2daabf12603c1a55bed05a7716125af1e419
+Status: install ok installed
+
+Package: vcpkg-cmake
+Version: 2024-04-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: e551b880874b8390dee02b17fd0d52912ae51c6000c318971979f0b59e373337
+Status: install ok installed
+
+Package: directx-headers
+Version: 1.614.1
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 4323f689e50e29571e6b81906cbb79f191bd11d6ddd669f44d680890b8b01c63
+Description: Official DirectX 12 Headers
+Status: install ok installed
+
+Package: directxmath
+Version: 2024-12-02
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 657e046627840c572795a54f3b707a7f4222fd443c2f862c43ddd3f9ebe694f9
+Description: DirectXMath SIMD C++ math library
+Status: install ok installed
+
+Package: directx-dxc
+Version: 2024-07-31
+Port-Version: 2
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 3c7f301aeea0f97f041ae4be0eb831589f7409494ef54fc71bcf655ecd5f1cbd
+Description: DirectX Shader Compiler (LLVM/Clang)
+Status: install ok installed
+
+Package: directxtk12
+Version: 2024-10-28
+Depends: directx-dxc, directx-headers, directxmath, vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: cdbc92f35cbefd59b5de1e91e446c99cea4a86e8bdf8ab60817e95e7eb62eb7f
+Description: A collection of helper classes for writing DirectX 12 code in C++.
+Default-Features: xaudio2-9
+Status: install ok installed
+
+Package: directxtk12
+Feature: xaudio2-9
+Architecture: x64-windows
+Multi-Arch: same
+Description: Build with XAudio 2.9 support for Windows 10/11
+Status: install ok installed
+

@@ -1,0 +1,5 @@
+Package: vcpkg-cmake-config
+Version: 2024-05-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 887427ad18937047d2d72d9d307dc116e280b8a89ff4a35dc95785d8cfd7417a

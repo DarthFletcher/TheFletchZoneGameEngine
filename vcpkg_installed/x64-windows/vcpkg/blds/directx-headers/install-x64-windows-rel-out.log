@@ -1,0 +1,66 @@
+Change Dir: 'C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/blds/directx-headers/x64-windows-rel'
+
+Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe" -v -v -j9 install
+[1/5] C:\PROGRA~1\MICROS~4\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe   /TP  -external:IC:\Users\fchil\source\repos\TheFletchZoneGameEngine\vcpkg_installed\x64-windows\vcpkg\blds\directx-headers\src\v1.614.1-958b66fdc8.clean\include -external:W0 /nologo /DWIN32 /D_WINDOWS /utf-8 /GR /EHsc /MP  /MD /O2 /Oi /Gy /DNDEBUG /Z7  -std:c++14 /showIncludes /FoCMakeFiles\DirectX-Guids.dir\src\dxguids.cpp.obj /FdCMakeFiles\DirectX-Guids.dir\DirectX-Guids.pdb /FS -c C:\Users\fchil\source\repos\TheFletchZoneGameEngine\vcpkg_installed\x64-windows\vcpkg\blds\directx-headers\src\v1.614.1-958b66fdc8.clean\src\dxguids.cpp
+[2/5] C:\PROGRA~1\MICROS~4\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe   /TP  -IC:\Users\fchil\source\repos\TheFletchZoneGameEngine\vcpkg_installed\x64-windows\vcpkg\blds\directx-headers\src\v1.614.1-958b66fdc8.clean\include\directx -external:IC:\Users\fchil\source\repos\TheFletchZoneGameEngine\vcpkg_installed\x64-windows\vcpkg\blds\directx-headers\src\v1.614.1-958b66fdc8.clean\include -external:W0 /nologo /DWIN32 /D_WINDOWS /utf-8 /GR /EHsc /MP  /MD /O2 /Oi /Gy /DNDEBUG /Z7  -std:c++14 /showIncludes /FoCMakeFiles\DirectX-Headers.dir\src\d3dx12_property_format_table.cpp.obj /FdCMakeFiles\DirectX-Headers.dir\DirectX-Headers.pdb /FS -c C:\Users\fchil\source\repos\TheFletchZoneGameEngine\vcpkg_installed\x64-windows\vcpkg\blds\directx-headers\src\v1.614.1-958b66fdc8.clean\src\d3dx12_property_format_table.cpp
+[3/5] C:\WINDOWS\system32\cmd.exe /C "cd . && C:\PROGRA~1\MICROS~4\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\lib.exe  /machine:x64 /nologo /out:DirectX-Headers.lib CMakeFiles\DirectX-Headers.dir\src\d3dx12_property_format_table.cpp.obj && cd ."
+[4/5] C:\WINDOWS\system32\cmd.exe /C "cd . && C:\PROGRA~1\MICROS~4\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\lib.exe  /machine:x64 /nologo /out:DirectX-Guids.lib CMakeFiles\DirectX-Guids.dir\src\dxguids.cpp.obj && cd ."
+[4/5] C:\WINDOWS\system32\cmd.exe /C "cd /D C:\Users\fchil\source\repos\TheFletchZoneGameEngine\vcpkg_installed\x64-windows\vcpkg\blds\directx-headers\x64-windows-rel && C:\Users\fchil\AppData\Local\vcpkg\downloads\tools\cmake-3.29.2-windows\cmake-3.29.2-windows-i386\bin\cmake.exe -P cmake_install.cmake"
+-- Install configuration: "Release"
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/lib/DirectX-Headers.lib
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/lib/DirectX-Guids.lib
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/share/directx-headers/cmake/directx-headers-targets.cmake
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/share/directx-headers/cmake/directx-headers-targets-release.cmake
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3d12.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3d12.idl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3d12compatibility.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3d12compatibility.idl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3d12sdklayers.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3d12sdklayers.idl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3d12shader.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/D3D12TokenizedProgramFormat.hpp
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3d12video.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3d12video.idl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dcommon.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dcommon.idl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12_barriers.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12_check_feature_support.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12_core.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12_default.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12_pipeline_state_stream.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12_property_format_table.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12_render_pass.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12_resource_helpers.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12_root_signature.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/d3dx12_state_object.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/DirectML.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/dxcore.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/dxcore_interface.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/dxgicommon.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/dxgicommon.idl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/dxgiformat.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/directx/dxgiformat.idl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/dxguids
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/dxguids/dxguids.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/basetsd.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/oaidl.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/ocidl.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/rpc.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/rpcndr.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/unknwn.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/unknwnbase.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/winapifamily.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/wrl
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/wrl/client.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/stubs/wrl/implements.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/winadapter.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/include/wsl/wrladapter.h
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/share/directx-headers/cmake/directx-headers-config.cmake
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/share/directx-headers/cmake/directx-headers-config-version.cmake
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows/lib/pkgconfig/DirectX-Headers.pc
+

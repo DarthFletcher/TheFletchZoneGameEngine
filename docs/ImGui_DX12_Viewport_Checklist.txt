@@ -1,0 +1,38 @@
+Dear ImGui DirectX 12 Multi-Viewport Checklist (imgui_impl_dx12_custom.cpp)
+===========================================================================
+✅ 1. Ensure ImGui_ImplDX12_InitInfo contains:
+    • ID3D12Device*
+    • ID3D12CommandQueue*
+    • ID3D12DescriptorHeap* (CBV/SRV/UAV with SHADER_VISIBLE)
+    • Custom SrvDescriptorAllocFn and FreeFn (for fonts + textures)
+    • Format settings (RTV, DSV)
+
+✅ 2. Implement all renderer interface overrides in ImGuiPlatformIO:
+    • Renderer_CreateWindow
+    • Renderer_DestroyWindow
+    • Renderer_RenderWindow
+    • Renderer_SwapBuffers
+    • Renderer_SetWindowSize
+    • Renderer_GetWindowFocus
+    • Renderer_GetWindowMinimized
+    • Renderer_UpdateWindow
+
+✅ 3. ImGui_ImplDX12_CreateWindow:
+    • Create IDXGISwapChain3 for viewport HWND
+    • Allocate RTVs and command queue per viewport
+    • Initialize ImGui_ImplDX12_ViewportData and assign to viewport->RendererUserData
+
+✅ 4. ImGui_ImplDX12_RenderWindow:
+    • Bind command list
+    • Set descriptor heaps
+    • Call ImGui_ImplDX12_RenderDrawData() with viewport draw data
+
+✅ 5. Track descriptor heap indices or allocate via user callback
+
+✅ 6. Handle ResizeBuffers in Renderer_UpdateWindow
+
+✅ 7. Track Fence per window if needed for GPU sync
+
+✅ 8. Call ImGui_ImplDX12_Shutdown() to release resources and destroy FontTexture
+
+✅ 9. Watch for assertion: "HWND != 0" in ImGui DX12 backend. It means no valid HWND passed to the renderer.

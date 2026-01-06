@@ -1,0 +1,14 @@
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/share/directxmath/DirectXMath-targets.cmake
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXCollision.h
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXCollision.inl
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXColors.h
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXMath.h
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXMathConvert.inl
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXMathMatrix.inl
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXMathMisc.inl
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXMathVector.inl
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXPackedVector.h
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/include/DirectXPackedVector.inl
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/share/directxmath/directxmath-config.cmake
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/share/directxmath/directxmath-config-version.cmake
+C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxmath_x64-windows/debug/lib/pkgconfig/DirectXMath.pc

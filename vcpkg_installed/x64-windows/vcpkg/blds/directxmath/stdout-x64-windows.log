@@ -1,0 +1,18 @@
+-- Using cached Microsoft-DirectXMath-oct2024.tar.gz.
+-- Extracting source C:/Users/fchil/AppData/Local/vcpkg/downloads/Microsoft-DirectXMath-oct2024.tar.gz
+-- Applying patch include-path-fix.patch
+-- Using source at C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/blds/directxmath/src/oct2024-c3a4c2ffb3.clean
+-- Found external ninja('1.12.1').
+-- Configuring x64-windows
+-- Building x64-windows-dbg
+-- Building x64-windows-rel
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/share/pkgconfig/DirectXMath.pc
+-- Fixing pkgconfig file: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/lib/pkgconfig/DirectXMath.pc
+-- Fixing pkgconfig file: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/share/pkgconfig/DirectXMath.pc
+-- Using cached msys2-mingw-w64-x86_64-pkgconf-1~2.2.0-1-any.pkg.tar.zst.
+-- Using cached msys2-msys2-runtime-3.5.3-3-x86_64.pkg.tar.zst.
+-- Using msys root at C:/Users/fchil/AppData/Local/vcpkg/downloads/tools/msys2/1e74ca60daa10104
+-- Fixing pkgconfig file: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/debug/lib/pkgconfig/DirectXMath.pc
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/share/directxmath/usage
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxmath_x64-windows/share/directxmath/copyright
+-- Performing post-build validation

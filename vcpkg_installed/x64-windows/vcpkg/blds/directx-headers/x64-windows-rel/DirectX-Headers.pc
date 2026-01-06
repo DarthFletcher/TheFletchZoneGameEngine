@@ -1,0 +1,10 @@
+prefix=C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directx-headers_x64-windows
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: DirectX-Headers
+Description: Headers for using D3D12
+URL: https://github.com/microsoft/DirectX-Headers
+Version: 1.614.1
+Cflags: -I${includedir}
+Libs: -lDirectX-Headers -lDirectX-Guids

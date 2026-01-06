@@ -1,0 +1,2219 @@
+// Graphics.cpp - DirectX 12 Graphics Engine Implementation
+#define NOMINMAX
+
+// Add this near the top of Graphics.cpp, after includes but before any usage
+#ifndef IMGUI_NUM_FRAMES_IN_FLIGHT
+#define IMGUI_NUM_FRAMES_IN_FLIGHT 3
+#endif
+
+// System Headers
+#include <windows.h>
+#include <dxgi1_6.h>
+#include <d3d12.h>
+#include <dxgidebug.h>
+#include <ShellScalingAPI.h>
+#include <string>
+#include <codecvt>
+#include <locale>
+#include <unordered_set>
+#include <unordered_map>
+#include <future>
+#include <thread>
+#include <algorithm>
+#include <format>
+#include <queue>
+#pragma comment(lib, "Shcore.lib")
+#include <d3d12sdklayers.h> // Required for DRED interfaces
+
+// ImGui Headers
+#include "imgui.h"
+#include "imgui_impl_win32_custom.h"   // ✅ Replaces default Win32 backend
+#include "imgui_impl_dx12_custom.h"
+#include "ImGuiUtils.h"
+#include "imgui_internal.h"
+
+// Engine Headers
+#include "Graphics.h"
+#include "Logger.h"
+#include "UI.h"
+#include "ImGuiPlatformIO_Extended.h" // <- Add this below imgui_impl_win32.h and imgui_impl_dx12.h
+#include <Engine.h>
+#include <SplashScreen.h>
+
+// ✅ Define and Initialize Static Variables (Fixes "unresolved external" error)
+std::chrono::high_resolution_clock::time_point Graphics::frameStart = std::chrono::high_resolution_clock::now();
+double Graphics::deltaTime = 0.0;
+double Graphics::totalTime = 0.0;
+int Graphics::frameCount = 0;
+bool Graphics::vsyncEnabled = true;
+HANDLE Graphics::fenceEvent = nullptr;
+bool Graphics::allowTearing = true;
+bool Graphics::imguiInitialized = false; // ✅ Track ImGui Initialization State // ✅ Track ImGui DX12 backend state
+bool Graphics::imguiPlatformInitialized = false; // ✅ Track ImGui Win32 backend state
+bool Graphics::lockResolutionWhenMaximized = true; // default true
+
+static bool ImGuiFrameStarted = false; // ✅ Track ImGui frame lifecycle
+// Add this at file scope near other static variables (top of Graphics.cpp)
+static bool imguiReadyPublished = false;
+static bool g_ImGuiRenderedThisFrame = false;
+
+// Static variable to track the next available SRV descriptor
+static UINT g_SRVDescriptorIndex = 1; // slot 0 reserved for ImGui font
+
+// After includes, at file scope
+ID3D12DescriptorHeap* g_SRVHeap = nullptr; // global definition
+
+void SanitizeImGuiStyleAlpha(); // ✅ Add this here
+
+// Converts a wide string (std::wstring) to a UTF-8 encoded std::string
+static std::string WStringToUTF8(const std::wstring& wstr)
+{
+    if (wstr.empty()) return {};
+    int size = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), -1, nullptr, 0, nullptr, nullptr);
+    std::string str(size, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), -1, str.data(), size, nullptr, nullptr);
+    str.pop_back(); // remove null terminator
+    return str;
+}
+
+// ✅ Validate command queue globally when needed
+void Graphics::EnsureValidCommandQueue() {
+    if (!commandQueue) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: commandQueue is NULL!");
+        throw std::runtime_error("CommandQueue is NULL.");
+    }
+}
+//===============================================
+// Constructor & Destructor Functions
+// ===============================================
+// Initializes frame timing and other members
+// Ensures proper cleanup on destruction
+//===============================================
+Graphics::Graphics() : commandListOpen(false) {
+    frameStart = std::chrono::high_resolution_clock::now();
+}
+Graphics::~Graphics() {
+    Shutdown();
+}
+
+//===============================================
+// Toggle VSync Function
+// ==============================================
+// Enables or disables VSync at runtime
+// Call this function to change VSync settings
+// Example: Graphics::GetInstance().ToggleVSync(true); // Enable VSync
+// Example: Graphics::GetInstance().ToggleVSync(false); // Disable VSync
+//===============================================
+void Graphics::ToggleVSync(bool enable) {
+    Graphics::vsyncEnabled = enable;
+    Logger::Log(LogLevel::Info, "✅ VSync " + std::string(enable ? "Enabled" : "Disabled"));
+
+    // Optional: recreate swap chain to ensure tearing settings apply properly
+    // CreateSwapChain(hWnd, screenWidth, screenHeight);
+}
+
+//===============================================
+// Asynchronous Texture Loading Function
+// ===============================================
+// Loads textures in a separate thread to avoid blocking the main thread
+// Usage: auto future = Graphics::GetInstance().LoadTextureAsync("path/to/texture.png");
+// The future can be used to check when loading is complete
+//===============================================
+std::future<void> Graphics::LoadTextureAsync(std::string filePath) {
+    return std::async(std::launch::async, [filePath]() {
+        Logger::Log(LogLevel::Info, "🔄 Loading Texture: " + std::string(filePath.begin(), filePath.end()));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        Logger::Log(LogLevel::Info, "✅ Texture Loaded: " + std::string(filePath.begin(), filePath.end()));
+        });
+}
+
+//===============================================
+//Support for MSAA (Anti-Aliasing) Quality Levels
+//===============================================
+// Checks and logs the supported MSAA quality levels for 4x MSAA
+// Call this during device initialization
+//===============================================
+void Graphics::CheckMSAAQuality() {
+    D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msaaQualityLevels = {};
+    msaaQualityLevels.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    msaaQualityLevels.SampleCount = 4;
+    msaaQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+
+    if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &msaaQualityLevels, sizeof(msaaQualityLevels)))) {
+        Logger::Log(LogLevel::Error, "❌ Failed to check MSAA Quality Levels.");
+        return;
+    }
+
+    UINT msaaQuality = msaaQualityLevels.NumQualityLevels > 0 ? msaaQualityLevels.NumQualityLevels - 1 : 0;
+    Logger::Log(LogLevel::Info, "📌 MSAA Quality Levels: " + std::to_string(msaaQuality));
+}
+
+//===============================================
+// InitializeMSAA Function
+//===============================================
+// Sets up MSAA quality levels and logs the result
+// Call this during device initialization
+//===============================================
+void Graphics::InitializeMSAA()
+{
+    if (!device) return;
+
+    D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msaaQualityLevels = {};
+    msaaQualityLevels.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    msaaQualityLevels.SampleCount = 4;
+    msaaQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+
+    HRESULT hr = device->CheckFeatureSupport(
+        D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+        &msaaQualityLevels, sizeof(msaaQualityLevels)
+    );
+
+    UINT msaaQuality = msaaQualityLevels.NumQualityLevels > 0 ? msaaQualityLevels.NumQualityLevels - 1 : 0;
+    Logger::Log(LogLevel::Info, "📌 MSAA Quality Levels: " + std::to_string(msaaQuality));
+
+    if (FAILED(hr)) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to check MSAA quality levels! HRESULT: " + std::to_string(hr));
+    }
+}
+
+//===============================================
+// Checks Device Health Function
+//===============================================
+// Logs if the GPU has crashed or been removed
+// This should be called periodically, e.g., once per frame
+// or during critical operations
+// to detect device loss early.
+//===============================================
+void Graphics::CheckDeviceHealth() {
+    if (!device) return;
+    HRESULT reason = device->GetDeviceRemovedReason();
+    if (reason != S_OK) {
+        Logger::Log(LogLevel::Error, "❌ GPU Crashed! Reason Code: " + std::to_string(reason));
+    }
+}
+
+//===============================================
+// Adjusts Resolution Based On FPS Function
+//===============================================
+// Dynamically adjusts screen resolution to maintain target FPS
+// Call this function periodically, e.g., once every few seconds
+//===============================================
+void Graphics::AdjustResolutionBasedOnFPS(float currentFPS) {
+    static auto lastAdjustmentTime = std::chrono::high_resolution_clock::now();
+
+    // ✅ Ensure we wait at least 5 seconds before adjusting resolution
+    auto now = std::chrono::high_resolution_clock::now();
+    float timeSinceLastAdjustment = std::chrono::duration<float>(now - lastAdjustmentTime).count();
+    if (timeSinceLastAdjustment < 5.0f) {
+        return; // ⏳ Skip adjustment if it's too soon
+    }
+
+    bool resolutionChanged = false; // ✅ Ensure this variable is declared before use
+
+    if (currentFPS < 30.0f && (screenWidth > 1280 || screenHeight > 720)) {
+        screenWidth = std::max(1280, screenWidth - 200);  // ✅ Correct syntax: two parameters only
+        screenHeight = std::max(720, screenHeight - 100);
+        resolutionChanged = true;
+    }
+    else if (currentFPS > 60.0f && (screenWidth < 1920 || screenHeight < 1080)) {
+        screenWidth = std::min(1920, screenWidth + 200);
+        screenHeight = std::min(1080, screenHeight + 100);
+        resolutionChanged = true;
+    }
+
+    if (resolutionChanged) {
+        lastAdjustmentTime = now; // ✅ Update last adjustment time
+        Logger::Log(LogLevel::Info, "🔄 Adjusting Resolution: " + std::to_string(screenWidth) + "x" + std::to_string(screenHeight));
+
+        //FlushGPU();  // ✅ Ensure GPU is finished before resizing
+        CreateSwapChain(hWnd, screenWidth, screenHeight);
+    }
+}
+
+//=================================================
+// Logs FPS Frames Function
+//=================================================
+// Call this once per frame to log FPS every second
+//=================================================
+void Graphics::LogFPS() {
+    static int frameCounter = 0;
+    static double elapsedTime = 0.0;
+
+    frameCounter++;
+    elapsedTime += deltaTime;
+
+    if (elapsedTime >= 1.0) {
+        Logger::Log(LogLevel::Info, "🎮 FPS: " + std::to_string(frameCounter));
+        frameCounter = 0;
+        elapsedTime = 0.0;
+    }
+}
+
+//==============================================================
+// ✅ Upload ImGui font texture
+// =============================================================
+// Uploads the ImGui font texture to the GPU
+// Call this after ImGui initialization and before rendering
+// to ensure fonts are available for rendering
+//==============================================================
+void Graphics::UploadImGuiFontTexture() {
+    if (!imguiInitialized || !imguiHeap) return;
+    Logger::Log(LogLevel::Info, "✅ ImGui font texture uploaded.");
+}
+
+//====================================
+// Initialize Graphics Engine
+//====================================
+bool Graphics::Initialize(HWND hWnd)
+{
+    if (!hWnd)
+    {
+        Logger::Log(LogLevel::Error, "❌ ERROR: hWnd is NULL in Initialize()");
+        return false;
+    }
+
+    Logger::Log(LogLevel::Info, std::format("✅ hWnd is valid: {}", reinterpret_cast<uintptr_t>(hWnd)));
+
+    commandListOpen = false;
+    totalTime = 0.0;
+    frameCount = 0;
+
+    ListAvailableGPUs();
+    CreateDX12Device();
+    // 🎮 Log selected GPU info
+    ComPtr<IDXGIAdapter> adapter;
+    ComPtr<IDXGIFactory4> factory;
+    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+    {
+        if (SUCCEEDED(factory->EnumAdapters(0, &adapter)))
+        {
+            DXGI_ADAPTER_DESC desc;
+            if (SUCCEEDED(adapter->GetDesc(&desc)))
+            {
+                Logger::Log(LogLevel::Info, std::format("🖥️ Selected GPU: {} | VRAM: {:.2f} GB",
+                    WStringToUTF8(desc.Description),
+                    desc.DedicatedVideoMemory / (1024.0f * 1024.0f * 1024.0f)));
+            }
+        }
+    }
+
+    CreateCommandInterfaces();
+
+    GPUSelection::ListAvailableGPUs();
+    Logger::Log(LogLevel::Info, "✅ GPU list populated");
+
+    if (!commandQueue)
+    {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Command Queue is NULL after CreateCommandInterfaces!");
+        return false;
+    }
+
+    Logger::Log(LogLevel::Info, std::format("📌 commandQueue BEFORE SwapChain: {}", reinterpret_cast<uintptr_t>(commandQueue.Get())));
+
+    // ✅ 1. Create swap chain
+    CreateSwapChain(hWnd, 0, 0);
+
+    if (!swapChain)
+    {
+        Logger::Log(LogLevel::Error, "❌ ERROR: SwapChain is NULL after creation!");
+        return false;
+    }
+
+    Logger::Log(LogLevel::Info, std::format("✅ SwapChain Created. BackBufferIndex: {}", swapChain->GetCurrentBackBufferIndex()));
+
+    // ✅ 2. Create RTV heap and views (sets `rtvHeap`)
+    CreateRenderTargetViews();
+    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+
+    // ✅ 3. Initialize ImGui (safe now that RTV heap is valid)
+    InitializeImGui(hWnd);
+
+    // ✅ Patch Main Viewport with Dummy RendererUserData
+    ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+    if (main_viewport && main_viewport->RendererUserData == nullptr)
+    {
+        // Ensure the renderer backend has initialized RendererUserData for the main viewport.
+        // This does NOT create a swapchain; it only creates renderer metadata used by the backend.
+        ImGui_ImplDX12_CreateWindow(main_viewport);
+        Logger::Log(LogLevel::Info, "✅ Main viewport RendererUserData initialized via ImGui_ImplDX12_CreateWindow().");
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+
+    // Disable multi-viewport for now to isolate main viewport rendering stability.
+    // This avoids platform window rendering/present paths which are currently not fully implemented.
+    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+    // io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+
+    io.ConfigViewportsNoAutoMerge = true;
+    io.ConfigViewportsNoTaskBarIcon = false; // Optional: Keep window icon in taskbar
+
+
+    Logger::Log(LogLevel::Info, std::format("📌 commandQueue AFTER ImGui Init: {}", reinterpret_cast<uintptr_t>(commandQueue.Get())));
+
+    return true;
+}
+
+//==============================
+// Shutdown Graphics Engine
+//==============================
+void Graphics::Shutdown()
+{
+    Logger::Log(LogLevel::Info, "🔻 Shutting down graphics...");
+    FlushGPU();  // ✅ Always flush first
+
+    // 1. Shut down ImGui BEFORE freeing ANY DX12 heaps
+    if (ImGui::GetCurrentContext())
+    {
+        Logger::Log(LogLevel::Info, "🧠 Shutting down ImGui safely...");
+
+        // Destroy ImGui DX12 resources
+        ImGui_ImplDX12_DestroyFontsTexture();
+        ImGui_ImplDX12_Shutdown();
+        ImGui_ImplWin32_Shutdown();
+
+        // Destroy platform windows AFTER renderer shutdown
+        ImGui::DestroyPlatformWindows();
+
+        // Reset ImGuiPlatformIO AFTER all platform windows are destroyed
+        ImGui::GetPlatformIO() = ImGuiPlatformIO();
+
+        // Finally destroy ImGui context
+        ImGui::DestroyContext();
+    }
+
+    // 2. Now free DX12 resources safely
+    for (int i = 0; i < NUM_BACK_BUFFERS; i++)
+        SafeReleaseResource(backBuffers[i], true);
+
+    if (swapChain) swapChain.Reset();
+    SafeReleaseComPtr("rtvHeap", rtvHeap, true);
+    SafeReleaseComPtr("imguiHeap", imguiHeap, true);
+    SafeReleaseComPtr("commandQueue", commandQueue, true);
+    SafeReleaseComPtr("commandAllocator", commandAllocator, true);
+    SafeReleaseComPtr("commandList", commandList, true);
+    SafeReleaseComPtr("fence", fence, true);
+    SafeReleaseComPtr("dxgiFactory", dxgiFactory, true);
+    device.Reset();
+
+    if (fenceEvent)
+    {
+        CloseHandle(fenceEvent);
+        fenceEvent = nullptr;
+    }
+
+    g_SRVHeap = nullptr; // ✅ Clear global pointer
+    Logger::Log(LogLevel::Info, "✅ Graphics Shutdown Completed.");
+}
+
+//=================================
+// List Available GPUs
+//=================================
+void Graphics::ListAvailableGPUs() {
+    Logger::Log(LogLevel::Info, "Listing Available GPUs...");
+    gpuList.clear();
+
+    Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
+    DX_CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&factory)));
+
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    UINT index = 0;
+    std::unordered_set<std::wstring> uniqueGPUs;
+
+    while (factory->EnumAdapters1(index, &adapter) != DXGI_ERROR_NOT_FOUND) {
+        if (!adapter) {
+            Logger::Log(LogLevel::Warning, "⚠️ Skipping NULL adapter.");
+            continue;
+        }
+
+        DXGI_ADAPTER_DESC1 desc;
+        adapter->GetDesc1(&desc);
+        std::wstring gpuNameW(desc.Description);
+
+        if (uniqueGPUs.insert(gpuNameW).second) {
+            gpuList.push_back(gpuNameW);
+
+            // ✅ Convert std::wstring to std::string
+            int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, gpuNameW.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            std::string gpuName(sizeNeeded, 0);
+            WideCharToMultiByte(CP_UTF8, 0, gpuNameW.c_str(), -1, gpuName.data(), sizeNeeded, nullptr, nullptr);
+
+            // ✅ Use std::format() properly
+            Logger::Log(LogLevel::Info, std::format("✅ GPU Found: {}", gpuName));
+        }
+
+        adapter.Reset();  // ✅ Safe release
+        index++;
+    }
+}
+
+//====================================
+// Create DirectX 12 Device
+//====================================
+HRESULT Graphics::CreateDX12Device() {
+    Logger::Log(LogLevel::Info, "🔄 Creating DirectX 12 Device...");
+
+    // ✅ Only reset device if it was previously initialized
+    if (device) {
+        Logger::Log(LogLevel::Warning, "⚠️ Releasing existing device before recreation.");
+        device.Reset();
+    }
+
+    UINT dxgiFactoryFlags = 0;
+#ifdef _DEBUG
+    Microsoft::WRL::ComPtr<ID3D12Debug> debugController;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+        debugController->EnableDebugLayer();
+        dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+        Logger::Log(LogLevel::Info, "✅ DirectX12 Debug Layer Enabled.");
+    }
+#endif
+
+    Microsoft::WRL::ComPtr<IDXGIFactory6> dxgiFactory;
+    HRESULT hr = CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgiFactory));
+    if (FAILED(hr)) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create DXGI Factory! HRESULT: " + std::to_string(hr));
+        return hr;
+    }
+    Logger::Log(LogLevel::Info, "✅ DXGI Factory Created Successfully!");
+
+    // ✅ Ensure selectedGPU is valid before resetting
+    if (selectedGPU) {
+        selectedGPU.Reset();
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> hardwareAdapter;
+    bool gpuFound = false;
+
+    for (UINT adapterIndex = 0; dxgiFactory->EnumAdapters1(adapterIndex, &hardwareAdapter) != DXGI_ERROR_NOT_FOUND; ++adapterIndex) {
+        DXGI_ADAPTER_DESC1 desc;
+        hardwareAdapter->GetDesc1(&desc);
+
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+
+        selectedGPU = hardwareAdapter;
+        gpuFound = true;
+        break;
+    }
+
+    if (!gpuFound) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: No valid GPU adapter found!");
+        return DXGI_ERROR_NOT_FOUND;
+    }
+
+    // =========================================================
+    // 🚀 Create the D3D12 Device
+    // =========================================================
+    hr = D3D12CreateDevice(selectedGPU.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device));
+    if (FAILED(hr)) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create DirectX 12 Device! HRESULT: " + std::to_string(hr));
+        return hr;
+    }
+
+    // =========================================================
+    // 🩸 Enable DRED Diagnostics (MUST be done immediately)
+    // =========================================================
+    {
+        Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dredSettings;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings)))) {
+            dredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dredSettings->SetWatsonDumpEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+
+            Logger::Log(LogLevel::Info, "🩸 DRED diagnostics enabled (Breadcrumbs + Page Fault + Watson Dumps)");
+        }
+        else {
+            Logger::Log(LogLevel::Warning, "⚠️ DRED interface not available — limited GPU crash detail.");
+        }
+    }
+
+    Logger::Log(LogLevel::Info, "✅ DirectX 12 Device Created Successfully!");
+    return S_OK;
+}
+
+//=================================
+//Excute Command Lists Function
+//=================================
+void Graphics::ExecuteCommandLists(std::vector<ID3D12CommandList*>& commandLists) {
+    if (!commandQueue) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Command Queue is NULL!");
+        return;
+    }
+
+    // ✅ Force GPU wait before executing new commands
+    FlushGPU();
+
+    Logger::Log(LogLevel::Info, "🚀 Executing " + std::to_string(commandLists.size()) + " Command Lists...");
+    commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
+
+    // ✅ Ensure fence is signaled correctly
+    HRESULT hr = commandQueue->Signal(fence.Get(), ++fenceValue);
+    if (FAILED(hr)) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to signal fence after executing command lists! HRESULT: " + std::to_string(hr));
+        return;
+    }
+}
+
+//==============================
+// Create Command Interfaces
+//==============================
+void Graphics::CreateCommandInterfaces() {
+    Logger::Log(LogLevel::Info, "Creating Command Interfaces...");
+
+    if (!device) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Device is NULL before creating command queue!");
+        throw std::runtime_error("Device is NULL before command queue creation.");
+    }
+
+    if (!device) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Device is NULL in CreateCommandInterfaces!");
+        return;
+    }
+
+    // Resize the vector to match the number of back buffers
+    commandAllocators.resize(NUM_BACK_BUFFERS);
+
+    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i) {
+        HRESULT hr = device->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(&commandAllocators[i])
+        );
+        if (FAILED(hr)) {
+            Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create CommandAllocator for buffer " + std::to_string(i));
+            return;
+        }
+    }
+
+    // Set to false if you want to skip log issues
+    SafeReleaseComPtr("commandQueue", commandQueue, true);
+    SafeReleaseComPtr("commandAllocator", commandAllocator, true);
+    SafeReleaseComPtr("commandList", commandList, true);
+    SafeReleaseComPtr("fence", fence, true);
+
+    // ✅ Create Command Queue
+    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
+    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+    queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+
+    HRESULT hr = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue));
+    if (FAILED(hr) || !commandQueue) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Command Queue! HRESULT: " + std::to_string(hr));
+        throw std::runtime_error("Command Queue Creation Failed!");
+    }
+
+    Logger::Log(LogLevel::Info, std::format("✅ Command Queue Created Successfully! Address: {}", reinterpret_cast<uintptr_t>(commandQueue.Get())));
+
+    // ✅ Validate Command Queue
+    if (!commandQueue) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Command Queue is NULL after creation!");
+        throw std::runtime_error("Command Queue is NULL after creation!");
+    }
+
+    // ✅ Create Command Allocator
+    hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator));
+    if (FAILED(hr) || !commandAllocator) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Command Allocator! HRESULT: " + std::to_string(hr));
+        throw std::runtime_error("Command Allocator Creation Failed!");
+    }
+
+    // ✅ Create Fence
+    hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+    if (FAILED(hr)) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Fence! HRESULT: " + std::to_string(hr));
+        throw std::runtime_error("Fence Creation Failed!");
+    }
+    fenceValue = 1;
+    Logger::Log(LogLevel::Info, "✅ Fence Created Successfully.");
+
+    // ✅ Create Command List
+    hr = device->CreateCommandList(
+        0,
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        commandAllocator.Get(),
+        nullptr,
+        IID_PPV_ARGS(&commandList)
+    );
+    if (FAILED(hr) || !commandList) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Command List! HRESULT: " + std::to_string(hr));
+        throw std::runtime_error("Command List Creation Failed!");
+    }
+
+    // Close it immediately for reuse later
+    commandList->Close();
+    Logger::Log(LogLevel::Info, std::format("✅ Command List Created Successfully! Address: {}", reinterpret_cast<uintptr_t>(commandList.Get())));
+
+    Logger::Log(LogLevel::Info, "✅ Command Interfaces Successfully Created.");
+}
+
+//===============================================================================//
+//                        ImGui Frame Life Cycle (Corrected)                     //
+//===============================================================================//
+
+//=================================
+// Begin Dock Space Function
+//=================================
+void Graphics::BeginDockSpace()
+{
+    // DockSpace is now owned by UI (UI::BeginDockSpace).
+    // Keeping this method as a no-op to avoid breaking existing call sites.
+}
+
+//=================================
+// Begin Frame Function            
+//=================================
+void Graphics::BeginFrame(HWND hWnd)
+{
+    // Frame counter
+    static UINT64 g_FrameCounter = 0;
+    Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter));
+
+    // -----------------------------------------------------------------
+    // Frame health snapshot (throttled)
+    // -----------------------------------------------------------------
+    {
+        static UINT64 s_lastHealthFrame = 0;
+        if (g_FrameCounter == 1 || (g_FrameCounter - s_lastHealthFrame) >= 60)
+        {
+            s_lastHealthFrame = g_FrameCounter;
+
+            const bool hasDevice = (device != nullptr);
+            const bool hasQueue = (commandQueue != nullptr);
+            const bool hasFence = (fence != nullptr);
+            const bool hasSwap = (swapChain != nullptr);
+            const bool hasCmdList = (commandList != nullptr);
+            const bool hasAlloc = (!commandAllocators.empty() && commandAllocators[0] != nullptr);
+            const bool hasRtvHeap = (rtvHeap != nullptr);
+
+            ImGuiIO* io = ImGui::GetCurrentContext() ? &ImGui::GetIO() : nullptr;
+            const bool hasImGuiCtx = (ImGui::GetCurrentContext() != nullptr);
+            const bool hasWin32Backend = (io && io->BackendPlatformUserData != nullptr);
+            const bool hasDx12Backend = (io && io->BackendRendererUserData != nullptr);
+
+            ID3D12DescriptorHeap* boundSrvHeap = ImGui_ImplDX12_GetSrvHeap();
+            if (!boundSrvHeap)
+                boundSrvHeap = imguiHeap.Get();
+
+            Logger::Log(LogLevel::Info, std::format(
+                "🩺 FrameHealth | DX12: dev={} queue={} fence={} swap={} cmdList={} alloc0={} rtvHeap={} | ImGui: ctx={} win32={} dx12={} srvHeap={}",
+                hasDevice ? "OK" : "MISS",
+                hasQueue ? "OK" : "MISS",
+                hasFence ? "OK" : "MISS",
+                hasSwap ? "OK" : "MISS",
+                hasCmdList ? "OK" : "MISS",
+                hasAlloc ? "OK" : "MISS",
+                hasRtvHeap ? "OK" : "MISS",
+                hasImGuiCtx ? "OK" : "MISS",
+                hasWin32Backend ? "OK" : "MISS",
+                hasDx12Backend ? "OK" : "MISS",
+                boundSrvHeap ? "OK" : "MISS"));
+
+            if (hasDevice)
+            {
+                const HRESULT removed = device->GetDeviceRemovedReason();
+                if (removed != S_OK)
+                {
+                    Logger::Log(LogLevel::Error, std::format(
+                        "🚨 FrameHealth | DeviceRemovedReason=0x{:08X}", (UINT)removed));
+                }
+            }
+        }
+    }
+
+    Logger::Log(LogLevel::Debug,
+        std::format("🔍 BeginFrame entry | commandListOpen={}", commandListOpen));
+
+    // ==========================
+    // Guard: double BeginFrame
+    // ==========================
+    if (frameStarted)
+    {
+        Logger::Log(LogLevel::Error,
+            "❌ BeginFrame() called twice in the same frame!");
+        return;
+    }
+
+    // ==========================
+    // Window validation
+    // ==========================
+    if (!IsWindow(hWnd))
+    {
+        Logger::Log(LogLevel::Error, "❌ BeginFrame() called with invalid HWND!");
+        return;
+    }
+
+    // ==========================
+    // Guard: command list must be closed
+    // ==========================
+    if (commandListOpen)
+    {
+        Logger::Log(LogLevel::Error,
+            "❌ BeginFrame(): command list still open — previous frame not submitted!");
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
+    // ==========================
+    // Sync GPU for current backbuffer
+    // ==========================
+    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+    UINT64 fenceToWaitFor = fenceValues[currentBackBufferIndex];
+    UINT64 completedValue = fence->GetCompletedValue();
+
+    if (completedValue < fenceToWaitFor)
+    {
+        fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+        Logger::Log(LogLevel::Debug, std::format(
+            "⏳ Waiting on GPU | BackBuffer={} Fence={} (Completed={})",
+            currentBackBufferIndex, fenceToWaitFor, completedValue));
+    }
+    else
+    {
+        Logger::Log(LogLevel::Debug, std::format(
+            "✅ No GPU wait needed | BackBuffer={} Fence={} (Completed={})",
+            currentBackBufferIndex, fenceToWaitFor, completedValue));
+    }
+
+    // ==========================
+    // Reset command allocator + list
+    // ==========================
+    HRESULT hr = commandAllocators[currentBackBufferIndex]->Reset();
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error,
+            std::format("❌ Failed to reset allocator[{}] HR=0x{:08X}",
+                currentBackBufferIndex, (UINT)hr));
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
+    hr = commandList->Reset(commandAllocators[currentBackBufferIndex].Get(), nullptr);
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error,
+            std::format("❌ Failed to reset command list HR=0x{:08X}", (UINT)hr));
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
+    commandListOpen = true;
+
+    // ==========================
+    // Descriptor heap binding
+    // ==========================
+    ID3D12DescriptorHeap* srvHeap = ImGui_ImplDX12_GetSrvHeap();
+    if (!srvHeap)
+        srvHeap = imguiHeap.Get();
+
+    ID3D12DescriptorHeap* heaps[] = { srvHeap };
+    commandList->SetDescriptorHeaps(_countof(heaps), heaps);
+
+    // ==========================
+    // ImGui new frame
+    // ==========================
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+    Logger::Log(LogLevel::Debug, "🆕 ImGui New Frame Started");
+
+    // Ensure most UI stays in the main OS viewport unless explicitly moved.
+    // (Prevents accidental extra platform windows for small tool/overlay windows)
+    ImGui::GetIO().ConfigViewportsNoAutoMerge = true;
+
+    // ---- Splash FIRST ----
+    SplashScreen::Update((float)ImGui::GetIO().DeltaTime);
+
+    if (!SplashScreen::IsFinished())
+    {
+        // Render ONLY the splash while booting.
+        // This avoids editor chrome (dockspace/menu/toolbar) appearing behind it.
+        SplashScreen::Render();
+    }
+    else
+    {
+        // ---- Editor UI (immutable order) ----
+        UI::DrawEditorShell();
+    }
+
+    frameStarted = true;
+    ImGuiFrameStarted = true;
+}
+
+//===============================================================================//
+// Render Function                                                               //
+//===============================================================================//
+void Graphics::Render(HWND hWnd)
+{
+    if (!commandListOpen)
+    {
+        Logger::Log(LogLevel::Error,
+            "❌ Render() called with closed command list!");
+        return;
+    }
+
+    if (!commandList || !ImGui::GetCurrentContext())
+        return;
+
+    // -----------------------------------------------------------------
+    // Render health snapshot (throttled)
+    // -----------------------------------------------------------------
+    {
+        static UINT s_renderHealthCounter = 0;
+        if ((++s_renderHealthCounter % 60) == 0)
+        {
+            ImDrawData* dd = ImGui::GetDrawData();
+            Logger::Log(LogLevel::Info, std::format(
+                "🩺 RenderHealth | cmdListOpen={} cmdList={} ddValid={} cmdLists={} displaySize=({:.1f},{:.1f})",
+                commandListOpen ? 1 : 0,
+                commandList ? "OK" : "MISS",
+                (dd && dd->Valid) ? "true" : "false",
+                dd ? dd->CmdListsCount : -1,
+                dd ? dd->DisplaySize.x : -1.0f,
+                dd ? dd->DisplaySize.y : -1.0f));
+        }
+    }
+
+    if (!ImGui::GetCurrentContext())
+    {
+        Logger::Log(LogLevel::Warning,
+            "⚠️ Render() skipped — ImGui context missing");
+        return;
+    }
+
+    // ==========================
+    // Main ImGui render pass
+    // ==========================
+    ImGui::Render();
+    g_ImGuiRenderedThisFrame = true;
+    ImDrawData* drawData = ImGui::GetDrawData();
+
+    // --- Always transition to RT ---
+    CD3DX12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(
+        backBuffers[currentBackBufferIndex].Get(),
+        D3D12_RESOURCE_STATE_PRESENT,
+        D3D12_RESOURCE_STATE_RENDER_TARGET);
+    commandList->ResourceBarrier(1, &toRT);
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(
+        rtvHeap->GetCPUDescriptorHandleForHeapStart(),
+        currentBackBufferIndex,
+        device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV));
+
+    commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    // Ensure rasterizer state is valid for ImGui (viewport/scissor can otherwise clip everything).
+    // IMPORTANT: derive viewport/scissor from the actual backbuffer size to avoid artifacts after resize/maximize.
+    {
+        UINT bbW = 1;
+        UINT bbH = 1;
+        if (backBuffers[currentBackBufferIndex])
+        {
+            const D3D12_RESOURCE_DESC desc = backBuffers[currentBackBufferIndex]->GetDesc();
+            bbW = (UINT)(std::max)(1ull, desc.Width);
+            bbH = (UINT)(std::max)(1ull, (UINT64)desc.Height);
+        }
+
+        D3D12_VIEWPORT vp = {};
+        vp.TopLeftX = 0.0f;
+        vp.TopLeftY = 0.0f;
+        vp.Width = (float)bbW;
+        vp.Height = (float)bbH;
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+
+        D3D12_RECT scissor = {};
+        scissor.left = 0;
+        scissor.top = 0;
+        scissor.right = (LONG)bbW;
+        scissor.bottom = (LONG)bbH;
+
+        commandList->RSSetViewports(1, &vp);
+        commandList->RSSetScissorRects(1, &scissor);
+
+        // Size mismatch diagnostics (throttled)
+        static UINT s_sizeDiagCounter = 0;
+        if ((++s_sizeDiagCounter % 120) == 0)
+        {
+            RECT rc{};
+            int cw = -1, ch = -1;
+            if (hWnd && GetClientRect(hWnd, &rc))
+            {
+                cw = rc.right - rc.left;
+                ch = rc.bottom - rc.top;
+            }
+
+            const float ddW = (drawData && drawData->DisplaySize.x > 0.0f) ? drawData->DisplaySize.x : -1.0f;
+            const float ddH = (drawData && drawData->DisplaySize.y > 0.0f) ? drawData->DisplaySize.y : -1.0f;
+
+            Logger::Log(LogLevel::Info, std::format(
+                "📐 RT Sizes | BackBuffer={}x{} | Client={}x{} | DrawData={:.1f}x{:.1f} | screen={}x{}",
+                bbW, bbH,
+                cw, ch,
+                ddW, ddH,
+                screenWidth, screenHeight));
+        }
+    }
+
+    // --- Always clear ---
+    ImVec4 clear = UI::GetClearColor();
+    FLOAT clearColor[4] = { clear.x, clear.y, clear.z, 1.0f };
+    commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+
+    if (!drawData || drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f)
+    {
+        Logger::Log(LogLevel::Trace, "ℹ️ Invalid ImGui draw data — skip render");
+    }
+
+    // --- Only draw ImGui if it exists ---
+    if (drawData && drawData->CmdListsCount > 0)
+    {
+        Logger::Log(LogLevel::Debug,
+            "🎮 Rendering main ImGui draw data to main swap chain");
+
+        // Ensure ImGui's SRV heap is bound for font/texture sampling.
+        ID3D12DescriptorHeap* srvHeap = ImGui_ImplDX12_GetSrvHeap();
+        if (!srvHeap)
+            srvHeap = imguiHeap.Get();
+        if (srvHeap)
+        {
+            ID3D12DescriptorHeap* heaps[] = { srvHeap };
+            commandList->SetDescriptorHeaps(_countof(heaps), heaps);
+        }
+
+        ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
+    }
+    else
+    {
+        Logger::Log(LogLevel::Trace,
+            "ℹ️ Main viewport has no ImGui draw data — clear-only frame");
+    }
+
+    // --- Always transition back to PRESENT ---
+    CD3DX12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(
+        backBuffers[currentBackBufferIndex].Get(),
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PRESENT);
+    commandList->ResourceBarrier(1, &toPresent);
+
+    Logger::Log(LogLevel::Info,
+        "✅ Main viewport render submitted");
+
+    Logger::Log(LogLevel::Info,
+        "📝 Main viewport render recorded");
+
+    // NOTE: Platform windows are updated/rendered in EndFrame() via ImGui::RenderPlatformWindowsDefault().
+}
+
+//===============================================================================//
+// End Frame Function                                                            //
+//===============================================================================//
+void Graphics::EndFrame(HWND hWnd)
+{
+    if (!ImGuiFrameStarted)
+    {
+        Logger::Log(LogLevel::Warning,
+            "⚠️ EndFrame() skipped — ImGui frame not started");
+        frameStarted = false;
+        return;
+    }
+
+    if (!frameStarted)
+    {
+        Logger::Log(LogLevel::Warning,
+            "⚠️ EndFrame() called without matching BeginFrame()");
+        return;
+    }
+
+    if (!commandListOpen)
+    {
+        Logger::Log(LogLevel::Error,
+            "❌ EndFrame() called with closed command list");
+        return;
+    }
+
+    // EndFrame health (throttled)
+    {
+        static UINT64 s_endHealthCounter = 0;
+        if ((++s_endHealthCounter % 60) == 0)
+        {
+            Logger::Log(LogLevel::Info, std::format(
+                "🩺 EndFrameHealth | frameStarted={} imguiFrameStarted={} renderedThisFrame={} backBufferIndex={} fenceValue={}",
+                frameStarted ? 1 : 0,
+                ImGuiFrameStarted ? 1 : 0,
+                g_ImGuiRenderedThisFrame ? 1 : 0,
+                currentBackBufferIndex,
+                fenceValue));
+        }
+    }
+
+    // =========================================================================
+    // 1️⃣ CLOSE & EXECUTE MAIN COMMAND LIST FIRST
+    // =========================================================================
+    HRESULT hr = commandList->Close();
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error,
+            "❌ Failed to close main command list");
+        return;
+    }
+
+    commandListOpen = false;
+
+    ID3D12CommandList* lists[] = { commandList.Get() };
+    commandQueue->ExecuteCommandLists(1, lists);
+
+    SignalFence();
+
+    Logger::Log(LogLevel::Info,
+        "🧠 Main command list executed and fenced");
+
+    // =========================================================================
+    // 2️⃣ UPDATE + RENDER PLATFORM WINDOWS (ImGui viewport system)
+    // =========================================================================
+    // IMPORTANT: Use ImGui's default platform windows renderer helper to properly
+    // finalize platform windows for the frame (prevents g.FrameCountPlatformEnded assert).
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        if (g_ImGuiRenderedThisFrame)
+        {
+            ImGui::UpdatePlatformWindows();
+            ImGui::RenderPlatformWindowsDefault();
+
+            ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+            Logger::Log(LogLevel::Info, std::format(
+                "📐 Total ImGui Viewports: {}",
+                platform_io.Viewports.Size));
+        }
+        else
+        {
+            Logger::Log(LogLevel::Warning, "⚠️ Skipping platform windows: ImGui::Render() was not called this frame.");
+        }
+    }
+
+    // =========================================================================
+    // 3️⃣ PRESENT MAIN VIEWPORT (single place)
+    // =========================================================================
+    Present(hWnd);
+
+    // =========================================================================
+    // 4️⃣ FINAL FRAME STATE RESET
+    // =========================================================================
+    frameStarted = false;
+    ImGuiFrameStarted = false;
+    g_ImGuiRenderedThisFrame = false;
+
+    Logger::Log(LogLevel::Info,
+        "✅ EndFrame completed");
+}
+
+//==============================
+// Check Frame Health Function  
+//==============================
+ void Graphics::CheckFrameHealth() // Checks if core DX12 objects are valid
+ {
+     if (!commandList || !commandQueue)
+         Logger::Log(LogLevel::Error, "❌ Core DX12 objects are invalid!");
+
+     if (!ImGui::GetDrawData() || !ImGui::GetDrawData()->Valid)
+         Logger::Log(LogLevel::Warning, "⚠️ ImGui DrawData is invalid or missing.");
+
+     if (!imguiHeap)
+         Logger::Log(LogLevel::Error, "❌ ImGui descriptor heap is NULL!");
+ }
+
+//==================================
+// Rendering Present Frame Function 
+//==================================
+void Graphics::Present(HWND hWnd)
+{
+    if (!swapChain || !commandQueue || !fence) {
+        Logger::Log(LogLevel::Error, "❌ Missing DX12 resources — SwapChain, CommandQueue, or Fence is null.");
+        return;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+
+    // 🧠 Only present main swapchain — secondary handled by ImGui
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+        if (!mainViewport || mainViewport->PlatformHandleRaw != hWnd) {
+            Logger::Log(LogLevel::Debug, "⏭️ Skipping Present — not the main viewport HWND.");
+            return;
+        }
+    }
+
+    ImDrawData* drawData = ImGui::GetDrawData();
+    if (!drawData || !drawData->Valid) {
+        Logger::Log(LogLevel::Warning, "⚠️ Skipping Present — ImGui draw data is invalid.");
+        return;
+    }
+
+    static UINT lastPresentedFrame = (UINT)-1;
+    UINT currentFrame = ImGui::GetFrameCount();
+    if (lastPresentedFrame == currentFrame) {
+        Logger::Log(LogLevel::Debug, std::format("🎯 Present already done for frame {}", currentFrame));
+        return;
+    }
+    lastPresentedFrame = currentFrame;
+
+    // ✅ Do Present
+    UINT syncInterval = vsyncEnabled ? 1 : 0;
+    UINT presentFlags = (!vsyncEnabled && allowTearing) ? DXGI_PRESENT_ALLOW_TEARING : 0;
+    HRESULT hr = swapChain->Present(syncInterval, presentFlags);
+
+    if (FAILED(hr)) {
+        Logger::Log(LogLevel::Error, std::format("❌ Present FAILED: HRESULT=0x{:08X}", (UINT)hr));
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+            Logger::Log(LogLevel::Warning, "⚠️ Device Lost during Present. Attempting recovery.");
+            HandleDredDump(device.Get(), "MainWindow_Present");
+            HandleDeviceLost(hWnd);
+        }
+        return;
+    }
+
+    Logger::Log(LogLevel::Debug, std::format(
+        "🖼️ Present() | SyncInterval={} Flags={} BackBuffer={}",
+        syncInterval, presentFlags, currentBackBufferIndex));
+
+    // ✅ Update back buffer index
+    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+
+    // ✅ Signal fence per buffer
+    UINT64 newValue = ++fenceValue;
+    commandQueue->Signal(fence.Get(), newValue);
+    mainFenceValues[currentBackBufferIndex] = newValue;
+
+    Logger::Log(LogLevel::Debug, std::format(
+        "📶 Fence signaled | FrameIndex={} FenceValue={}",
+        currentBackBufferIndex, newValue));
+
+    // ✅ Frame pacing log
+    static double lastTime = ImGui::GetTime();
+    double now = ImGui::GetTime();
+    double delta = now - lastTime;
+    lastTime = now;
+
+    Logger::Log(LogLevel::Info,
+        std::format("✅ Frame Presented. BackBuffer={} | FrameTime={:.2f}ms ({:.1f} FPS)",
+            currentBackBufferIndex, delta * 1000.0, (delta > 0.0 ? 1.0 / delta : 0.0)));
+}
+
+//=========================
+// Signal Fence Function   
+//=========================
+void Graphics::SignalFence()
+{
+    if (!fence || !commandQueue)
+    {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Fence or CommandQueue is NULL in SignalFence.");
+        return;
+    }
+
+    UINT64 currentValue = ++fenceValue;
+
+    HRESULT hr = commandQueue->Signal(fence.Get(), currentValue);
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error, "❌ Failed to signal GPU fence! HRESULT: " + std::to_string(hr));
+    }
+    else
+    {
+        // 🔁 Track per-frame fence
+        fenceValues[currentBackBufferIndex] = currentValue;
+
+        Logger::Log(LogLevel::Info,
+            std::format("📶 Signaled fence → Fence Value: {}", currentValue));
+
+        Logger::Log(LogLevel::Debug,
+            std::format("📌 Fence Signaled: BackBufferIndex={} => FenceValue={}", currentBackBufferIndex, currentValue));
+    }
+}
+
+//==============================
+// Wait For Frame Function
+//==============================
+
+void Graphics::WaitForFrame(UINT frameIndex)
+{
+    if (!fence)
+    {
+        Logger::Log(LogLevel::Error, "❌ Cannot wait for frame: Fence is null.");
+        return;
+    }
+
+    UINT64 fenceToWaitFor = fenceValues[frameIndex];
+    UINT64 completedValue = fence->GetCompletedValue();
+
+    if (completedValue < fenceToWaitFor)
+    {
+        Logger::Log(LogLevel::Debug, std::format("⏳ Waiting for frame {} (Fence {}) to complete... Current Completed: {}", frameIndex, fenceToWaitFor, completedValue));
+
+        HRESULT hr = fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
+        if (FAILED(hr))
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ SetEventOnCompletion failed for frame {}. HRESULT: 0x{:08X}", frameIndex, hr));
+            return;
+        }
+
+        DWORD waitResult = WaitForSingleObject(fenceEvent, 3000); // 3 second timeout
+        if (waitResult == WAIT_TIMEOUT)
+        {
+            Logger::Log(LogLevel::Error, std::format("⏱️ Wait for frame {} timed out. Possible GPU hang.", frameIndex));
+
+            if (device)
+            {
+                HRESULT reason = device->GetDeviceRemovedReason();
+                if (FAILED(reason))
+                {
+                    Logger::Log(LogLevel::Error, std::format("🚨 Device removed while waiting for frame {}. Reason: 0x{:08X}", frameIndex, reason));
+                }
+            }
+
+            return;
+        }
+        else if (waitResult == WAIT_FAILED)
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ WaitForSingleObject failed for frame {}.", frameIndex));
+            return;
+        }
+
+        Logger::Log(LogLevel::Debug, std::format("✅ Frame {} completed. Fence reached.", frameIndex));
+    }
+    else
+    {
+        Logger::Log(LogLevel::Debug, std::format("✅ Frame {} already completed. No wait needed.", frameIndex));
+    }
+}
+
+
+ //======================
+ // Flush GPU Function   
+ //======================
+void Graphics::FlushGPU()
+{
+    if (!commandQueue || !fence)
+    {
+        Logger::Log(LogLevel::Warning, "⚠️ FlushGPU skipped: missing commandQueue or fence.");
+        return;
+    }
+
+    // ✅ Ensure fenceEvent is valid
+    if (!fenceEvent)
+    {
+        Logger::Log(LogLevel::Warning, "⚠️ fenceEvent was null, recreating...");
+        fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (!fenceEvent)
+        {
+            Logger::Log(LogLevel::Error, "❌ Failed to create fenceEvent for FlushGPU!");
+            return;
+        }
+    }
+
+    // ✅ Increment BEFORE signaling to keep fenceValue unique
+    const UINT64 signalValue = ++fenceValue;
+
+    // ✅ Signal fence
+    HRESULT hr = commandQueue->Signal(fence.Get(), signalValue);
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error, std::format("❌ Failed to signal fence! HRESULT=0x{:08X}", hr));
+        return;
+    }
+
+    // ✅ Wait only if GPU hasn’t finished
+    if (fence->GetCompletedValue() < signalValue)
+    {
+        hr = fence->SetEventOnCompletion(signalValue, fenceEvent);
+        if (FAILED(hr))
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ Failed to set fence completion event! HRESULT=0x{:08X}", hr));
+            return;
+        }
+
+        // Wait indefinitely — but **only after confirming the event is valid**
+        DWORD result = WaitForSingleObject(fenceEvent, INFINITE);
+        if (result != WAIT_OBJECT_0)
+        {
+            Logger::Log(LogLevel::Error,
+                std::format("❌ WaitForSingleObject failed! Error={}", GetLastError()));
+            return;
+        }
+    }
+
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error, std::format(
+            "🚨 Device removed! Reason: 0x{:08X}",
+            device ? device->GetDeviceRemovedReason() : 0
+        ));
+    }
+
+    Logger::Log(LogLevel::Info, "✅ GPU flush completed successfully.");
+}
+
+//==================================================================
+// Create Swap Chain Function                                       
+//==================================================================
+void Graphics::CreateSwapChain(HWND hWnd, UINT width, UINT height) {
+    if (!device || !commandQueue) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Device or CommandQueue is NULL before SwapChain creation!");
+        throw std::runtime_error("Device or CommandQueue is NULL before SwapChain creation!");
+    }
+
+    if (!dxgiFactory) {
+        Logger::Log(LogLevel::Warning, "⚠️ DXGI Factory is NULL! Attempting to recreate...");
+        DX_CHECK(CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory)));
+        Logger::Log(LogLevel::Info, "✅ DXGI Factory successfully recreated.");
+    }
+
+    // ✅ Required to prevent DXGI flip model error
+    FlushGPU();
+
+    if (swapChain) {
+        Logger::Log(LogLevel::Info, "🔁 Releasing old SwapChain...");
+        swapChain.Reset();
+        Sleep(16); // 🔄 One frame delay for safe DXGI cleanup
+    }
+
+    // ✅ Disassociate previous swap chains from this HWND
+    dxgiFactory->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER);
+
+    // Get client rect
+    RECT clientRect = {};
+    if (!GetClientRect(hWnd, &clientRect)) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: GetClientRect failed.");
+        throw std::runtime_error("Failed to get client rect.");
+    }
+
+    UINT dpi = GetDpiForWindow(hWnd);
+    float dpiScale = static_cast<float>(dpi) / 96.0f;
+    Logger::Log(LogLevel::Info, std::format("🧪 DPI: {} (Scale: {:.2f})", dpi, dpiScale));
+
+    UINT clientWidth = std::max((UINT)(clientRect.right - clientRect.left), 640u);
+    UINT clientHeight = std::max((UINT)(clientRect.bottom - clientRect.top), 480u);
+    Logger::Log(LogLevel::Info, std::format("📐 SwapChain Target Size: {}x{}", clientWidth, clientHeight));
+
+    // Setup swap chain
+    DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
+    swapChainDesc.Width = clientWidth;
+    swapChainDesc.Height = clientHeight;
+    swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    swapChainDesc.BufferCount = 3;
+    swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swapChainDesc.SampleDesc.Count = 1;
+    swapChainDesc.Flags = allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+
+    Microsoft::WRL::ComPtr<IDXGISwapChain1> tempSwapChain;
+    HRESULT hr = dxgiFactory->CreateSwapChainForHwnd(
+        commandQueue.Get(), hWnd, &swapChainDesc, nullptr, nullptr, &tempSwapChain
+    );
+
+    if (FAILED(hr) || !tempSwapChain) {
+        Logger::Log(LogLevel::Error, std::format("❌ ERROR: Failed to create SwapChain! HRESULT: 0x{:X}", hr));
+        throw std::runtime_error("Failed to create SwapChain!");
+    }
+
+    hr = tempSwapChain.As(&swapChain);
+    if (FAILED(hr) || !swapChain) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to cast IDXGISwapChain1 to IDXGISwapChain3.");
+        throw std::runtime_error("SwapChain cast failed.");
+    }
+
+    // ✅ Track backbuffer count & fences
+    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+    backBufferCount = swapChainDesc.BufferCount;
+    mainFenceValues.assign(backBufferCount, 0);
+
+    Logger::Log(LogLevel::Info, std::format(
+        "✅ SwapChain Created | Buffers={} CurrentBackBufferIndex={}",
+        backBufferCount, currentBackBufferIndex));
+}
+
+//=================================
+// Resize Swapchain Buffers Function 
+//=================================
+bool Graphics::ResizeSwapChainBuffers(UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags)
+{
+    if (!swapChain) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: ResizeSwapChainBuffers failed — swapChain is NULL!");
+        return false;
+    }
+
+    Logger::Log(LogLevel::Info, std::format("🔄 Resizing SwapChain Buffers | Count: {}, Size: {}x{}, Format: {}, Flags: 0x{:X}",
+        bufferCount, width, height, static_cast<int>(format), flags));
+
+    HRESULT hr = swapChain->ResizeBuffers(bufferCount, width, height, format, flags);
+    if (FAILED(hr)) {
+        Logger::Log(LogLevel::Error, std::format("❌ ERROR: ResizeBuffers() failed! HRESULT: 0x{:08X}", static_cast<uint32_t>(hr)));
+        return false;
+    }
+
+    Logger::Log(LogLevel::Info, "✅ SwapChain Buffers Resized Successfully.");
+    return true;
+}
+
+//======================================
+// Handle Resize Function
+//======================================
+void Graphics::HandleResize(HWND hWnd) {
+    Logger::Log(LogLevel::Info, "🔄 HandleResize() called.");
+
+    if (!swapChain) {
+        Logger::Log(LogLevel::Warning, "⚠️ SwapChain is NULL on resize. Skipping.");
+        return;
+    }
+
+    FlushGPU();
+
+    // Release old buffers
+    for (int i = 0; i < 3; i++) {
+        SafeReleaseResource(backBuffers[i], true);
+    }
+
+    // Resize swap chain buffers
+    RECT clientRect;
+    GetClientRect(hWnd, &clientRect);
+    UINT width = static_cast<UINT>(clientRect.right - clientRect.left);
+    UINT height = static_cast<UINT>(clientRect.bottom - clientRect.top);
+
+    Logger::Log(LogLevel::Info, std::format("📏 New Client Size: {}x{}", width, height));
+
+    ResizeSwapChainBuffers(3, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+
+    CreateRenderTargetViews();
+
+    // Keep engine screen size in sync (used by shaders/cameras, etc.)
+    screenWidth = width;
+    screenHeight = height;
+
+    // Update ImGui display size
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
+    Logger::Log(LogLevel::Info, std::format("🎨 ImGui DisplaySize Updated: {}x{}", width, height));
+}
+
+//==========================================================
+// On Resize Function
+//==========================================================
+void Graphics::OnResize(HWND hWnd, UINT width, UINT height) {
+    if (!swapChain || !device || !commandAllocator)
+        return;
+
+    Logger::Log(LogLevel::Info, std::format("🔄 Resizing SwapChain to {}x{}", width, height));
+
+    // ✅ Ensure GPU is idle before resizing
+    FlushGPU();
+
+    // ✅ Prevent flip model conflict (required by DXGI for resizing)
+    swapChain->SetFullscreenState(FALSE, nullptr);
+
+    // ✅ Get current swap chain descriptor
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    HRESULT hr = swapChain->GetDesc(&desc);
+    if (FAILED(hr)) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to retrieve swap chain description.");
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
+    // ✅ Resize Buffers
+    if (!ResizeSwapChainBuffers(desc.BufferCount,
+        std::max(width, 640u),
+        std::max(height, 480u),
+        desc.BufferDesc.Format,
+        desc.Flags))
+    {
+        Logger::Log(LogLevel::Error, "❌ ERROR: SwapChain resize failed. Attempting device recovery...");
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
+    // ✅ Reset allocator after resizing
+    hr = commandAllocator->Reset();
+    if (FAILED(hr)) {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to reset Command Allocator! HRESULT: " + std::to_string(hr));
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
+    // ✅ Recreate Render Targets
+    CreateRenderTargetViews();
+
+    // ✅ Update DPI-aware scaling
+    ImGuiIO& io = ImGui::GetIO();
+    UINT dpiX = 96, dpiY = 96;
+    HMONITOR monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+    if (SUCCEEDED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY))) {
+        float xScale = std::clamp(dpiX / 96.0f, 0.5f, 2.0f);
+        float yScale = std::clamp(dpiY / 96.0f, 0.5f, 2.0f);
+        io.DisplayFramebufferScale = ImVec2(xScale, yScale);
+        Logger::Log(LogLevel::Info, std::format("📐 ImGui DPI Scale: {:.2f}, {:.2f}", xScale, yScale));
+    }
+    else {
+        io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+        Logger::Log(LogLevel::Warning, "⚠️ Failed to get DPI scale. Defaulting to 1.0.");
+    }
+
+    screenWidth = width;
+    screenHeight = height;
+
+    // ✅ Notify ImGui of window size change
+    if (ImGui::GetCurrentContext())
+        ImGui::GetIO().DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
+}
+
+// NOTE: Do not define a global `swapChain` pointer here. The engine uses the `Graphics::swapChain` member.
+// A global definition with the same name (declared extern in `Include/Graphics.h`) can cause ODR/link issues.
+
+// --------------------
+// Forward Declarations
+// --------------------
+static void ImGui_SrvDescriptorAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu, D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu);
+static void ImGui_SrvDescriptorFree(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE gpu);
+
+//========================================
+// Initialize ImGui Function
+//========================================
+bool Graphics::InitializeImGui(HWND hWnd)
+{
+    fontUploaded = false;
+
+    if (imguiInitialized && imguiPlatformInitialized)
+    {
+        Logger::Log(LogLevel::Info,
+            "ℹ️ ImGui already initialized — publishing GPU resources");
+
+        CacheImGuiResources(
+            ImGui_ImplDX12_GetDevice(),
+            ImGui_ImplDX12_GetSrvHeap()
+        );
+
+        OnImGuiReady();
+        return true;
+    }
+
+    if (!hWnd || !IsWindow(hWnd))
+        throw std::runtime_error("❌ Invalid HWND passed to InitializeImGui.");
+
+    if (!device || !commandQueue)
+        throw std::runtime_error("❌ Device or CommandQueue is NULL before initializing ImGui.");
+
+    // 🔄 Force shutdown of old ImGui context if active
+    if (ImGui::GetCurrentContext())
+    {
+        ImGuiIO& io = ImGui::GetIO();
+
+        // ✅ Ensure platform windows are destroyed first
+        ImGui::DestroyPlatformWindows();
+
+        if (io.BackendRendererUserData)
+        {
+            Logger::Log(LogLevel::Warning, "⚠️ Renderer backend still active. Forcing ImGui_ImplDX12_Shutdown...");
+            ImGui_ImplDX12_Shutdown();
+            io.BackendRendererUserData = nullptr;
+        }
+
+        if (io.BackendPlatformUserData)
+        {
+            Logger::Log(LogLevel::Warning, "⚠️ Platform backend still active. Forcing ImGui_ImplWin32_Shutdown...");
+            ImGui_ImplWin32_Shutdown();
+            io.BackendPlatformUserData = nullptr;
+        }
+
+        Logger::Log(LogLevel::Info, "🧠 Destroying previous ImGui context.");
+        ImGui::DestroyContext();
+    }
+
+    // 🔧 Create new ImGui context
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    ImGui::GetStyle().Alpha = 1.0f;
+
+    PostImGuiInitFixes();
+    SanitizeImGuiStyleAlpha();
+
+    Logger::Log(LogLevel::Info, "✅ ImGui context created.");
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    io.ConfigViewportsNoAutoMerge = true;
+    io.ConfigViewportsNoTaskBarIcon = false; // Optional: Keep window icon in taskbar
+
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.WindowRounding = 0.0f;
+        style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+    }
+
+    SetupImGuiFontsAndScaling(hWnd);
+
+    RECT rect;
+    if (GetClientRect(hWnd, &rect))
+    {
+        io.DisplaySize = ImVec2((float)(rect.right - rect.left), (float)(rect.bottom - rect.top));
+        Logger::Log(LogLevel::Info, std::format("📐 ImGui DisplaySize: {:.0f}x{:.0f}", io.DisplaySize.x, io.DisplaySize.y));
+    }
+
+    // 🧱 Initialize Win32 Platform Backend
+    if (!imguiPlatformInitialized)
+    {
+        if (!ImGui_ImplWin32_Init(hWnd))
+            throw std::runtime_error("❌ ImGui_ImplWin32_Init failed.");
+
+        Logger::Log(LogLevel::Info, std::format("📌 Win32 Backend Init HWND = 0x{:X}", reinterpret_cast<uintptr_t>(hWnd)));
+        Logger::Log(LogLevel::Info, std::format("🔍 BackendPlatformUserData: {}", ImGui::GetIO().BackendPlatformUserData ? "VALID" : "NULL"));
+
+        ImGuiPlatformIO& base_io = ImGui::GetPlatformIO();
+        ImGuiPlatformIO_Extended& platform_io = *(ImGuiPlatformIO_Extended*)&base_io;
+
+        platform_io.Platform_CreateWindow = ImGui_ImplWin32_CreateWindow;
+        platform_io.Platform_DestroyWindow = ImGui_ImplWin32_DestroyWindow;
+        platform_io.Platform_ShowWindow = ImGui_ImplWin32_ShowWindow;
+        platform_io.Platform_SetWindowPos = ImGui_ImplWin32_SetWindowPos;
+        platform_io.Platform_GetWindowPos = ImGui_ImplWin32_GetWindowPos;
+        platform_io.Platform_SetWindowSize = ImGui_ImplWin32_SetWindowSize;
+        platform_io.Platform_GetWindowSize = ImGui_ImplWin32_GetWindowSize;
+        platform_io.Platform_SetWindowFocus = ImGui_ImplWin32_SetWindowFocus;
+        platform_io.Platform_GetWindowFocus = ImGui_ImplWin32_GetWindowFocus;
+        platform_io.Platform_GetWindowMinimized = ImGui_ImplWin32_GetWindowMinimized;
+        platform_io.Platform_SetWindowTitle = ImGui_ImplWin32_SetWindowTitle;
+        platform_io.Platform_SetWindowAlpha = ImGui_ImplWin32_SetWindowAlpha;
+        platform_io.Platform_UpdateWindow = ImGui_ImplWin32_UpdateWindow;
+        platform_io.Platform_GetWindowDpiScale = ImGui_ImplWin32_GetWindowDpiScale;
+        platform_io.Platform_OnChangedViewport = ImGui_ImplWin32_OnChangedViewport;
+        platform_io.Platform_RenderWindow = ImGui_ImplWin32_RenderWindow;
+
+        imguiPlatformInitialized = true;
+        Logger::Log(LogLevel::Info, "✅ ImGui Win32 platform backend initialized.");
+    }
+
+    // 🧱 Initialize DX12 Renderer Backend
+    if (!imguiInitialized)
+    {
+        // ✅ Create GPU descriptor heap for ImGui
+        if (!imguiHeap)
+        {
+            D3D12_DESCRIPTOR_HEAP_DESC desc = {};
+            desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            desc.NumDescriptors = 64; // Allocate more descriptors for safety
+            desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            DX_CHECK(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&imguiHeap)));
+
+            if (rtvHeap)
+            {
+                Logger::Log(LogLevel::Debug, std::format(
+                    "[Engine RTV Heap] StartCPU=0x{:X} | Count={}",
+                    static_cast<uintptr_t>(rtvHeap->GetCPUDescriptorHandleForHeapStart().ptr),
+                    Graphics::frameCount // Use the static frameCount variable from Graphics class
+                ));
+            }
+
+            // ✅ Publish SRV heap for texture allocations
+            g_SRVHeap = imguiHeap.Get();
+
+            Logger::Log(LogLevel::Info, "✅ ImGui GPU descriptor heap created.");
+        }
+
+        // ✅ FIX: Assign CPU + GPU handles for the font SRV
+        imguiFontCPU = imguiHeap->GetCPUDescriptorHandleForHeapStart();
+        imguiFontGPU = imguiHeap->GetGPUDescriptorHandleForHeapStart();
+
+        Logger::Log(LogLevel::Debug, std::format("🔗 Font SRV CPU handle = 0x{:X}", imguiFontCPU.ptr));
+        Logger::Log(LogLevel::Debug, std::format("🔗 Font SRV GPU handle = 0x{:X}", imguiFontGPU.ptr));
+
+        // ✅ Set up ImGui DX12 Init Info
+        ImGui_ImplDX12_InitInfo initInfo = {};
+        initInfo.Device = device.Get();
+        initInfo.CommandQueue = commandQueue.Get();
+        initInfo.CommandList = commandList.Get();
+        initInfo.SrvDescriptorHeap = imguiHeap.Get();
+        initInfo.SrvDescriptorAllocFn = &ImGui_SrvDescriptorAlloc;
+        initInfo.SrvDescriptorFreeFn = &ImGui_SrvDescriptorFree;
+        initInfo.RenderTargetFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        initInfo.DxgiFactory = dxgiFactory.Get();
+        initInfo.NumFramesInFlight = IMGUI_NUM_FRAMES_IN_FLIGHT;
+        initInfo.FontSrvCpuDescHandle = imguiFontCPU;
+        initInfo.FontSrvGpuDescHandle = imguiFontGPU;
+        initInfo.RTVDescriptorHeap = rtvHeap.Get();
+
+        if (!commandAllocator || !commandList)
+            throw std::runtime_error("❌ Missing CommandAllocator or CommandList for ImGui init.");
+
+        if (commandListOpen)
+        {
+            Logger::Log(LogLevel::Warning, "⚠️ Command list open before ImGui init. Closing...");
+            DX_CHECK(commandList->Close());
+            commandListOpen = false;
+        }
+
+        Logger::Log(LogLevel::Debug, "⏳ Waiting for GPU before resetting ImGui allocator...");
+        FlushGPU();
+
+        DX_CHECK(commandAllocator->Reset());
+        DX_CHECK(commandList->Reset(commandAllocator.Get(), nullptr));
+        initInfo.CommandList = commandList.Get();
+
+        if (!ImGui_ImplDX12_Init(&initInfo))
+            throw std::runtime_error("❌ ImGui_ImplDX12_Init failed.");
+
+        // ✅ Upload the font texture now that we have valid SRV handles
+        ImGui_ImplDX12_CreateFontsTexture(device.Get(), commandList.Get());
+        DX_CHECK(commandList->Close());
+        ID3D12CommandList* lists[] = { commandList.Get() };
+        commandQueue->ExecuteCommandLists(1, lists);
+
+        FlushGPU(); // Ensure font is uploaded successfully
+        Logger::Log(LogLevel::Info, "📦 ImGui font texture uploaded successfully.");
+
+        ImGuiPlatformIO& base_io = ImGui::GetPlatformIO();
+        ImGuiPlatformIO_Extended& platform_io = *(ImGuiPlatformIO_Extended*)&base_io;
+
+        platform_io.Renderer_CreateWindow = ImGui_ImplDX12_CreateWindow;
+        platform_io.Renderer_DestroyWindow = ImGui_ImplDX12_DestroyWindow;
+        platform_io.Renderer_SetWindowSize = ImGui_ImplDX12_SetWindowSize;
+        platform_io.Renderer_RenderWindow = ImGui_ImplDX12_RenderWindow;
+        platform_io.Renderer_SwapBuffers = ImGui_ImplDX12_SwapBuffers;
+        platform_io.Renderer_GetWindowFocus = ImGui_ImplDX12_GetWindowFocus;
+        platform_io.Renderer_GetWindowMinimized = ImGui_ImplDX12_GetWindowMinimized;
+        platform_io.Renderer_UpdateWindow = ImGui_ImplDX12_UpdateWindow;
+
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.Alpha = 1.0f;
+        IM_ASSERT(style.Alpha >= 0.0f && style.Alpha <= 1.0f);
+
+        imguiInitialized = true;
+
+        CacheImGuiResources(
+            ImGui_ImplDX12_GetDevice(),
+            ImGui_ImplDX12_GetSrvHeap()
+        );
+
+        OnImGuiReady();
+
+        Logger::Log(LogLevel::Info, "✅ ImGui DX12 Backend Initialized (Published)");
+        return true;
+    }
+
+    // -----------------------------------------------------------
+    // STEP 3 — Hook ImGui PlatformIO Callbacks for Diagnostics
+    // -----------------------------------------------------------
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+
+    // Handle viewport creation
+    platform_io.Renderer_CreateWindow = [](ImGuiViewport* vp)
+        {
+            ImGui_ImplDX12_CreateWindow(vp);
+            Logger::Log(LogLevel::Info, std::format(
+                "🪟 Viewport CREATED | ID=0x{:X} HWND=0x{:X}",
+                vp->ID,
+                reinterpret_cast<uintptr_t>(vp->PlatformHandle)));
+        };
+
+    // Handle per-viewport rendering
+    platform_io.Renderer_RenderWindow = [](ImGuiViewport* vp, void*)
+        {
+            auto* vd = static_cast<ImGui_ImplDX12_ViewportData*>(vp->RendererUserData);
+            if (!vd)
+            {
+                Logger::Log(LogLevel::Error, std::format(
+                    "❌ Renderer_RenderWindow called with NULL RendererUserData! ViewportID=0x{:X}", vp->ID));
+                return;
+            }
+
+            auto start = std::chrono::high_resolution_clock::now();
+            ImGui_ImplDX12_RenderWindow(vp, nullptr);
+            auto end = std::chrono::high_resolution_clock::now();
+
+            vd->LastRenderDurationNs =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+            vd->FrameCounter++;
+
+            Logger::Log(LogLevel::Debug, std::format(
+                "🖼️ Viewport RENDERED | ID=0x{:X} | Frame={} | Duration={}ns",
+                vp->ID, vd->FrameCounter, vd->LastRenderDurationNs));
+        };
+
+    // Handle viewport destruction
+    platform_io.Renderer_DestroyWindow = [](ImGuiViewport* vp)
+        {
+            Logger::Log(LogLevel::Info, std::format(
+                "🗑️ Destroying viewport | ID=0x{:X} HWND=0x{:X}",
+                vp->ID,
+                reinterpret_cast<uintptr_t>(vp->PlatformHandle)));
+
+            ImGui_ImplDX12_DestroyWindow(vp);
+
+            Logger::Log(LogLevel::Info, std::format(
+                "✅ Viewport DESTROYED | ID=0x{:X}", vp->ID));
+        };
+
+    Logger::Log(LogLevel::Info, "✅ ImGui initialization complete.");
+
+    PostImGuiInitFixes();
+
+    // FIX: Ensure all control paths return a value
+    return imguiInitialized && imguiPlatformInitialized;
+}
+
+// ------------------------------------------------------------------
+// Static helpers for descriptor allocation (used in InitInfo struct)
+// ------------------------------------------------------------------
+static void ImGui_SrvDescriptorAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu, D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu)
+{
+    if (!info || !info->SrvDescriptorHeap || !out_cpu || !out_gpu)
+    {
+        Logger::Log(LogLevel::Error, "❌ SrvDescriptorHeap is NULL in descriptor alloc callback.");
+        return;
+    }
+
+    ID3D12Device* dev = info->Device;
+    if (!dev)
+    {
+        Logger::Log(LogLevel::Error, "❌ Device is NULL in descriptor alloc callback.");
+        return;
+    }
+
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    // Slot 0 is reserved for the ImGui font SRV.
+    if (g_SRVDescriptorIndex == 0)
+        g_SRVDescriptorIndex = 1;
+
+    const D3D12_DESCRIPTOR_HEAP_DESC heapDesc = info->SrvDescriptorHeap->GetDesc();
+    if (heapDesc.NumDescriptors == 0)
+    {
+        Logger::Log(LogLevel::Error, "❌ SRV heap has 0 descriptors in descriptor alloc callback.");
+        *out_cpu = {};
+        *out_gpu = {};
+        return;
+    }
+
+    // Prevent overflow. If we hand out an out-of-range descriptor, ImGui may sample garbage (e.g. font atlas)
+    // or hit DEVICE_HUNG. Keep it strict.
+    if (g_SRVDescriptorIndex >= heapDesc.NumDescriptors)
+    {
+        Logger::Log(LogLevel::Error, std::format(
+            "❌ SRV heap exhausted: requested index {} but heap has {} descriptors. Increase imgui heap size.",
+            g_SRVDescriptorIndex, heapDesc.NumDescriptors));
+        *out_cpu = {};
+        *out_gpu = {};
+        return;
+    }
+
+    const UINT index = g_SRVDescriptorIndex++;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = info->SrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu = info->SrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
+    cpu.ptr += (SIZE_T)index * (SIZE_T)inc;
+    gpu.ptr += (UINT64)index * (UINT64)inc;
+
+    *out_cpu = cpu;
+    *out_gpu = gpu;
+}
+
+static void ImGui_SrvDescriptorFree(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE gpu)
+{
+    // 🔄 Add pooling or reuse logic here later if needed
+}
+
+//=============================================
+// Cache ImGui Resources Function
+//==================================================
+void Graphics::CacheImGuiResources(ID3D12Device* inDevice, ID3D12DescriptorHeap* inHeap)
+{
+    if (!inDevice || !inHeap)
+    {
+        Logger::Log(LogLevel::Error,
+            "❌ CacheImGuiResources called with null ImGui device or heap!");
+        return;
+    }
+
+    this->imguiDevice = inDevice;   // non-owning
+    this->imguiSrvHeap = inHeap;    // non-owning
+
+    // Keep the SRV allocator targeting ImGui's heap.
+    g_SRVHeap = inHeap;
+
+    Logger::Log(LogLevel::Info, "✅ Cached ImGui GPU resources (non-owning)");
+    Logger::Log(LogLevel::Info,
+        std::string("🧪 Cached ImGui refs | imguiDevice=") + std::to_string((uintptr_t)this->imguiDevice) +
+        std::string(" imguiSrvHeap=") + std::to_string((uintptr_t)this->imguiSrvHeap));
+}
+
+//==================================================
+// On ImGui Ready Event Function
+//==================================================
+void Graphics::OnImGuiReady()
+{
+    if (imguiReadyPublished)
+        return;
+
+    imguiReadyPublished = true;
+    Logger::Log(LogLevel::Info, "✅ Graphics::OnImGuiReady — GPU resources published");
+}
+
+// ===========================================================
+// Safe Release Resource Function
+// ===========================================================
+void Graphics::SafeReleaseResource(Microsoft::WRL::ComPtr<ID3D12Resource>& resource, bool logNullRelease)
+{
+    if (resource)
+    {
+        uintptr_t address = reinterpret_cast<uintptr_t>(resource.Get());
+        Logger::Log(LogLevel::Info, std::format("🔄 [Resource] Releasing GPU Resource at 0x{:X}", address));
+        resource.Reset();
+        Logger::Log(LogLevel::Info, "✅ [Resource] GPU Resource Released Successfully.");
+    }
+    else if (logNullRelease)
+    {
+        Logger::Log(LogLevel::Debug, "ℹ️ [Resource] SafeReleaseResource: NULL pointer detected (already released or never created).");
+    }
+}
+
+// ===========================================================
+// Recover From Fence Error Function
+// ===========================================================
+void Graphics::RecoverFromFenceError()
+{
+    Logger::Log(LogLevel::Warning, "⚠️ WARNING: Fence error detected. Recreating fence...");
+
+    if (!device)
+        throw std::runtime_error("Device is null in RecoverFromFenceError");
+
+    fence.Reset();
+
+    HRESULT hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to recreate Fence! HRESULT: " + std::to_string(hr));
+        throw std::runtime_error("Fence recreation failed!");
+    }
+
+    fenceValue = 1;
+    if (commandQueue)
+        commandQueue->Signal(fence.Get(), fenceValue);
+
+    Logger::Log(LogLevel::Info, "✅ Fence reinitialized successfully. Resetting GPU sync...");
+}
+
+//==================================================
+// Get Instance Function (Singleton Pattern)
+//==================================================
+Graphics& Graphics::GetInstance()
+{
+    static Graphics instance;
+
+    static bool logged = false;
+    if (!logged)
+    {
+        Logger::Log(LogLevel::Info,
+            std::format("🧠 Graphics singleton instance @ {}", (void*)&instance));
+        logged = true;
+    }
+
+    return instance;
+}
+
+//==================================================
+// Get Device Function
+//==================================================
+ID3D12Device* Graphics::GetDevice() const
+{
+    return device.Get();
+}
+
+//==================================================
+// Get ImGui Device Function
+//==================================================
+ID3D12Device* Graphics::GetImGuiDevice() const
+{
+    return this->imguiDevice;
+}
+
+//==================================================
+// Get ImGui SRV Heap Function
+//==================================================
+ID3D12DescriptorHeap* Graphics::GetImGuiSrvHeap() const
+{
+    return this->imguiSrvHeap;
+}
+
+//==================================================
+// Allocate SRV Function
+//==================================================
+D3D12_CPU_DESCRIPTOR_HANDLE Graphics::AllocateSRV()
+{
+    if (!g_SRVHeap)
+    {
+        Logger::Log(LogLevel::Error, "❌ g_SRVHeap is NULL in AllocateSRV.");
+        return {};
+    }
+
+    // Prefer cached ImGui device pointer (set in CacheImGuiResources)
+    ID3D12Device* dev = Graphics::GetInstance().GetImGuiDevice();
+    if (!dev)
+        dev = Graphics::GetInstance().GetDevice();
+
+    if (!dev)
+    {
+        Logger::Log(LogLevel::Error, "❌ Device is NULL in AllocateSRV.");
+        return {};
+    }
+
+    const UINT descriptorSize = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    // Slot 0 is reserved for the ImGui font SRV.
+    if (g_SRVDescriptorIndex == 0)
+        g_SRVDescriptorIndex = 1;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = g_SRVHeap->GetCPUDescriptorHandleForHeapStart();
+    handle.ptr += static_cast<SIZE_T>(g_SRVDescriptorIndex) * static_cast<SIZE_T>(descriptorSize);
+    ++g_SRVDescriptorIndex;
+    return handle;
+}
+
+//==================================================
+// Post ImGui Init Fixes Function
+//==================================================
+void Graphics::PostImGuiInitFixes()
+{
+    ImGuiIO& io = ImGui::GetIO();
+    if (ImGui::GetMainViewport())
+        ImGui::GetMainViewport()->DpiScale = 1.0f;
+
+    if (!(io.FontGlobalScale > 0.0f && io.FontGlobalScale < 99.0f))
+    {
+        Logger::Log(LogLevel::Warning, "⚠️ ImGui FontGlobalScale out of bounds, resetting to 1.0f");
+        io.FontGlobalScale = 1.0f;
+    }
+    Logger::Log(LogLevel::Info, "✅ ImGui DPI scale and font scale verified.");
+}
+
+//==================================================
+// Setup ImGui Fonts and Scaling Function
+//==================================================
+void Graphics::SetupImGuiFontsAndScaling(HWND hWnd)
+{
+    if (!ImGui::GetCurrentContext())
+    {
+        Logger::Log(LogLevel::Error, "❌ Cannot scale ImGui: no active context.");
+        return;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+
+    HMONITOR monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+    UINT dpiX = 96, dpiY = 96;
+    float scale = 1.0f;
+
+    if (SUCCEEDED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) && dpiX > 0)
+        scale = std::clamp(static_cast<float>(dpiX) / 96.0f, 0.5f, 2.0f);
+
+    // IMPORTANT: avoid accumulating scaling. This function can be called multiple times.
+    // Reset style to a known baseline before applying scaled sizes.
+    ImGui::StyleColorsDark();
+
+    io.Fonts->Clear();
+    ImFontConfig fontCfg;
+    fontCfg.SizePixels = 16.0f * scale;
+    io.Fonts->AddFontDefault(&fontCfg);
+
+    // Render in pixel coords; keep framebuffer scale at 1 to avoid "zoom/crop".
+    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScaleAllSizes(scale);
+    style.Alpha = std::clamp(style.Alpha, 0.0f, 1.0f);
+
+    io.FontGlobalScale = 1.0f;
+
+    io.Fonts->Build();
+
+    Logger::Log(LogLevel::Info, std::format("🖋️ ImGui scale set to {:.2f}, font size {:.1f}px", scale, fontCfg.SizePixels));
+    Logger::Log(LogLevel::Debug, "🔍 ImGui DisplayFramebufferScale.x: " + std::to_string(io.DisplayFramebufferScale.x));
+}
+
+//==================================================
+// Reload ImGui Font Function
+//==================================================
+void Graphics::ReloadImGuiFont(float fontSize)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.Fonts->Locked)
+    {
+        Logger::Log(LogLevel::Warning, std::format("⚠️ Font atlas is locked. Deferring reload to next frame (size: {:.1f})", fontSize));
+        pendingFontSizeReload = fontSize;
+        return;
+    }
+
+    io.Fonts->Clear();
+
+    ImFontConfig config;
+    config.SizePixels = fontSize;
+
+    io.Fonts->AddFontDefault(&config);
+    io.Fonts->Build();
+
+    Logger::Log(LogLevel::Info, std::format("🔁 Font reloaded immediately (size: {:.1f}px)", fontSize));
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.Alpha = std::clamp(style.Alpha, 0.0f, 1.0f);
+}
+
+//==================================================
+// Create Render Target Views Function
+//==================================================
+void Graphics::CreateRenderTargetViews()
+{
+    Logger::Log(LogLevel::Info, "Creating Render Target Views...");
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.NumDescriptors = 64;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    DX_CHECK(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtvHeap)));
+    rtvHeap->SetName(L"MainRTVHeap");
+
+    rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    Logger::Log(LogLevel::Info, std::format("📏 RTV Descriptor Size: {}", rtvDescriptorSize));
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    for (UINT i = 0; i < 3; i++)
+    {
+        DX_CHECK(swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i])));
+        device->CreateRenderTargetView(backBuffers[i].Get(), nullptr, rtvHandle);
+        rtvHandle.Offset(1, rtvDescriptorSize);
+    }
+
+    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+
+    Logger::Log(LogLevel::Info, std::format("🔗 Stored RTV Descriptor Heap: 0x{:X}", reinterpret_cast<size_t>(rtvHeap.Get())));
+}
+
+//==================================================
+// Handle Device Lost Function
+//==================================================
+void Graphics::HandleDeviceLost(HWND hWnd)
+{
+    // Minimal forwarding: call existing recovery path if present elsewhere.
+    // If not present (truncated), log and terminate to avoid undefined behavior.
+    Logger::Log(LogLevel::Error, "❌ HandleDeviceLost(): implementation missing in this build; shutting down.");
+    Shutdown();
+}
+
+bool Graphics::IsUploadReady() const
+{
+    // The splash upload path uses its own temporary allocator+command list.
+    // It only needs the D3D12 device/queue to exist and the ImGui backend to be initialized.
+    // Avoid relying on heap pointers here because the backend may manage/override the heap.
+    return device != nullptr && commandQueue != nullptr && ImGui::GetCurrentContext() != nullptr;
+}

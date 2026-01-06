@@ -1,0 +1,11 @@
+prefix=C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/vcpkg/pkgs/directxtk12_x64-windows
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: DirectXTK12
+Description: DirectX Tool Kit for DirectX 12
+URL: https://go.microsoft.com/fwlink/?LinkID=615561
+Version: 1.6.1
+Requires: DirectXMath, DirectX-Headers
+Cflags: -I${includedir}
+Libs: -lDirectXTK12

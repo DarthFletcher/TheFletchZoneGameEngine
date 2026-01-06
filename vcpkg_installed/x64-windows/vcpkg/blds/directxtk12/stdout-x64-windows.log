@@ -1,0 +1,16 @@
+-- Note: directxtk12 only supports static library linkage. Building static library.
+-- Using cached Microsoft-DirectXTK12-oct2024.tar.gz.
+-- Extracting source C:/Users/fchil/AppData/Local/vcpkg/downloads/Microsoft-DirectXTK12-oct2024.tar.gz
+-- Using source at C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/blds/directxtk12/src/oct2024-b19bcd6174.clean
+-- Found external ninja('1.12.1').
+-- Configuring x64-windows
+-- Building x64-windows-dbg
+-- Building x64-windows-rel
+-- Fixing pkgconfig file: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxtk12_x64-windows/lib/pkgconfig/DirectXTK12.pc
+-- Using cached msys2-mingw-w64-x86_64-pkgconf-1~2.2.0-1-any.pkg.tar.zst.
+-- Using cached msys2-msys2-runtime-3.5.3-3-x86_64.pkg.tar.zst.
+-- Using msys root at C:/Users/fchil/AppData/Local/vcpkg/downloads/tools/msys2/1e74ca60daa10104
+-- Fixing pkgconfig file: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxtk12_x64-windows/debug/lib/pkgconfig/DirectXTK12.pc
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxtk12_x64-windows/share/directxtk12/usage
+-- Installing: C:/Users/fchil/source/repos/TheFletchZoneGameEngine/vcpkg_installed/x64-windows/vcpkg/pkgs/directxtk12_x64-windows/share/directxtk12/copyright
+-- Performing post-build validation

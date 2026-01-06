@@ -1,0 +1,14 @@
+Package: directxtk12
+Version: 2024-10-28
+Depends: directx-dxc, directx-headers, directxmath, vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: cdbc92f35cbefd59b5de1e91e446c99cea4a86e8bdf8ab60817e95e7eb62eb7f
+Description: A collection of helper classes for writing DirectX 12 code in C++.
+Default-Features: xaudio2-9
+
+Package: directxtk12
+Feature: xaudio2-9
+Architecture: x64-windows
+Multi-Arch: same
+Description: Build with XAudio 2.9 support for Windows 10/11

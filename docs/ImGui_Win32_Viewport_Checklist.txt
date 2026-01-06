@@ -1,0 +1,65 @@
+✅ Win32 Multi-Viewport Handling Checklist (Dear ImGui)
+
+------------------------------
+🏁 INITIALIZATION (InitializeImGui or Win32 backend init)
+------------------------------
+☐ Ensure ImGui::CreateContext() is called
+☐ Ensure ImGui::GetIO().ConfigFlags includes ImGuiConfigFlags_ViewportsEnable
+☐ Initialize ImGui_ImplWin32_Init(hWnd)
+☐ Use a custom ImGuiPlatformIO struct (ImGuiPlatformIO_Extended*) if needed
+☐ Assign the following callbacks to ImGui::GetPlatformIO():
+    ☐ Platform_CreateWindow = ImGui_ImplWin32_CreateWindow
+    ☐ Platform_DestroyWindow = ImGui_ImplWin32_DestroyWindow
+    ☐ Platform_ShowWindow = ImGui_ImplWin32_ShowWindow
+    ☐ Platform_SetWindowPos = ImGui_ImplWin32_SetWindowPos
+    ☐ Platform_GetWindowPos = ImGui_ImplWin32_GetWindowPos
+    ☐ Platform_SetWindowSize = ImGui_ImplWin32_SetWindowSize
+    ☐ Platform_GetWindowSize = ImGui_ImplWin32_GetWindowSize
+    ☐ Platform_SetWindowFocus = ImGui_ImplWin32_SetWindowFocus
+    ☐ Platform_GetWindowFocus = ImGui_ImplWin32_GetWindowFocus
+    ☐ Platform_GetWindowMinimized = ImGui_ImplWin32_GetWindowMinimized
+    ☐ Platform_SetWindowTitle = ImGui_ImplWin32_SetWindowTitle
+    ☐ Platform_UpdateWindow = ImGui_ImplWin32_UpdateWindow
+    ☐ Platform_GetWindowDpiScale = ImGui_ImplWin32_GetWindowDpiScale
+    ☐ Platform_OnChangedViewport = ImGui_ImplWin32_OnChangedViewport
+    ☐ Platform_RenderWindow = ImGui_ImplWin32_RenderWindow
+
+------------------------------
+📦 WndProc Handling (Message Loop)
+------------------------------
+☐ Forward messages to ImGui_ImplWin32_WndProcHandler()
+☐ On WM_DPICHANGED, call SetupImGuiFontsAndScaling()
+☐ On WM_SIZE or WM_SIZING, trigger Graphics::OnResize(hWnd, width, height)
+
+------------------------------
+🎨 DPI Awareness
+------------------------------
+☐ Call SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+☐ Handle DPI awareness inside ImGui_ImplWin32_GetWindowDpiScale()
+☐ On monitor change, re-evaluate DPI and scale font/UI
+
+------------------------------
+🔄 Platform Windows Runtime Handling
+------------------------------
+☐ Inside Engine::Run or after Render:
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable):
+        ☐ Call ImGui::UpdatePlatformWindows()
+        ☐ Call ImGui::RenderPlatformWindowsDefault()
+
+☐ Ensure every ImGuiViewport has PlatformHandle = HWND
+☐ Verify HWND is valid before any platform operation
+
+------------------------------
+🛑 Shutdown Cleanup
+------------------------------
+☐ Call ImGui_ImplWin32_Shutdown()
+☐ Ensure ImGui::DestroyContext() is called
+☐ Set BackendPlatformUserData = nullptr if manually managing platform state
+
+------------------------------
+🧪 Debug Tips
+------------------------------
+☐ Log or assert inside each Platform_* function for debugging viewport creation
+☐ Check for DPI mismatches or mouse input desyncs during window dragging
+☐ Verify viewport->PlatformUserData != nullptr during DestroyWindow
+☐ Enable ImGui::GetIO().ConfigViewportsNoAutoMerge if debugging docking issues

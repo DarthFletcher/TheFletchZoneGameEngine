@@ -1,0 +1,6 @@
+Package: directxtk12
+Feature: xaudio2-9
+Architecture: x64-windows
+Multi-Arch: same
+Description: Build with XAudio 2.9 support for Windows 10/11
+Status: install ok half-installed

@@ -1,0 +1,65 @@
+211:    auto* vd = (ImGui_ImplDX12_ViewportData*)viewport->RendererUserData;
+215:        viewport->ID,
+217:        (uintptr_t)viewport->PlatformHandle,
+218:        (UINT)viewport->Size.x, (UINT)viewport->Size.y,
+703:            if (viewport && viewport->RendererUserData)
+711:            viewport->RendererUserData = nullptr;
+1023:    if (viewport->ID == ImGui::GetMainViewport()->ID)
+1030:    ImGui_ImplDX12_ViewportData* vd = (ImGui_ImplDX12_ViewportData*)viewport->RendererUserData;
+1034:            "⚠️ RendererUserData missing — skipping draw (ViewportID=0x{:X})", viewport->ID));
+1049:            "⚠️ Missing SwapChain — skipping draw (ViewportID=0x{:X})", viewport->ID));
+1063:            viewport->ID, fr.FenceValue, fr.Fence->GetCompletedValue()));
+1076:            viewport->ID, backBufferIndex,
+1084:        viewport->ID,
+1118:            "❌ Vertex or Index buffer missing for BB={} | Viewport=0x{:X}", backBufferIndex, viewport->ID));
+1220:                    viewport->ID, reinterpret_cast<uintptr_t>(vd->Hwnd)));
+1252:                        "⚠️ TextureId with null descriptor in viewport=0x{:X}", viewport->ID));
+1298:        viewport->ID, reinterpret_cast<uintptr_t>(vd->Hwnd),
+1512:    HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
+1515:    if (viewport->ID == ImGui::GetMainViewport()->ID)
+1543:        viewport->RendererUserData = vd;
+1547:            viewport->ID, (uintptr_t)hwnd, (uintptr_t)vd));
+1551:	// 📏 Initial size sanitization (do NOT write viewport->Size here; ImGui owns it)
+1552:    ImVec2 raw_size = viewport->Size;
+1557:	//viewport->Size = ImVec2((float)width, (float)height); // Do not assign viewport->Size here.
+1560:    if (!std::isfinite(viewport->DpiScale) || viewport->DpiScale <= 0.0f)
+1561:        viewport->DpiScale = 1.0f;
+1567:        viewport->ID, width, height, viewport->DpiScale));
+1573:            "⚠️ CreateWindow skipped — invalid HWND (ViewportID=0x{:X})", viewport->ID));
+1577:    if (viewport->RendererUserData)
+1581:            viewport->ID, (uintptr_t)hwnd));
+1588:    viewport->RendererUserData = vd;
+1604:        "🧩 Shared CommandQueue set | ViewportID=0x{:X}, HWND=0x{:X}", viewport->ID, (uintptr_t)hwnd));
+1612:        viewport->RendererUserData = nullptr;
+1626:        viewport->RendererUserData = nullptr;
+1635:        viewport->RendererUserData = nullptr;
+1649:        "📶 Fence initialized | CompletedValue={} | ViewportID=0x{:X}", completed, viewport->ID));
+1659:                "❌ Failed to create CommandAllocator[{}] | ViewportID=0x{:X}", i, viewport->ID));
+1661:            viewport->RendererUserData = nullptr;
+1672:            "❌ Failed to create CommandList | ViewportID=0x{:X}", viewport->ID));
+1674:        viewport->RendererUserData = nullptr;
+1696:                "❌ Failed to create VertexBuffer (BB={}) | ViewportID=0x{:X}", i, viewport->ID));
+1698:            viewport->RendererUserData = nullptr;
+1706:                "❌ Failed to map VertexBuffer (BB={}) | ViewportID=0x{:X}", i, viewport->ID));
+1708:            viewport->RendererUserData = nullptr;
+1720:                "❌ Failed to create IndexBuffer (BB={}) | ViewportID=0x{:X}", i, viewport->ID));
+1722:            viewport->RendererUserData = nullptr;
+1730:                "❌ Failed to map IndexBuffer (BB={}) | ViewportID=0x{:X}", i, viewport->ID));
+1732:            viewport->RendererUserData = nullptr;
+1738:            viewport->ID, i, fr.VertexBufferSize, fr.IndexBufferSize));
+1745:        viewport->ID,
+1750:        viewport->ID, (uintptr_t)hwnd, width, height, (uintptr_t)vd));
+1780:        size.x, size.y, viewport->ID));
+1783:    ImGui_ImplDX12_ViewportData* vd = (ImGui_ImplDX12_ViewportData*)viewport->RendererUserData;
+1790:            viewport->ID, (int)size.x, (int)size.y));
+1793:        vd = (ImGui_ImplDX12_ViewportData*)viewport->RendererUserData;
+1805:        viewport->ID, (int)size.x, (int)size.y));
+1811:    if (viewport->PlatformHandle)
+1813:        HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
+1829:    HWND hwnd = (HWND)viewport->PlatformHandleRaw;
+1838:    HWND hwnd = (HWND)viewport->PlatformHandleRaw;
+1847:    HWND hwnd = (HWND)viewport->PlatformHandleRaw;
+1876:    ImGui_ImplDX12_ViewportData* vd = (ImGui_ImplDX12_ViewportData*)viewport->RendererUserData;
+1885:        viewport->ID, (int)new_size.x, (int)new_size.y));
+1909:    viewport->Size = new_size;
+1920:        viewport->ID, (int)new_size.x, (int)new_size.y));

@@ -1,0 +1,65 @@
+
+Dear ImGui + DirectX 12 Validation Checklist
+============================================
+
+🧠 ImGui Frame Lifecycle Checklist (Per Frame)
+---------------------------------------------
+
+1. ✅ Begin Frame
+   Call these once per frame at the beginning:
+   ImGui_ImplDX12_NewFrame();
+   ImGui_ImplWin32_NewFrame();
+   ImGui::NewFrame();
+
+2. 🎯 UI Logic
+   Call all your UI drawing functions between NewFrame() and Render():
+   UI::ShowMainMenu();
+   UI::DrawOverlays();
+
+3. ✅ End Frame and Render
+   Only one of the following is needed — not both:
+   ImGui::Render();
+
+   OR, if needed:
+   ImGui::EndFrame(); 
+   ImGui::Render();   // Only if you need to interrupt
+
+4. 🧱 Main Rendering
+   Always before any draw calls:
+   ID3D12DescriptorHeap* heaps[] = { imguiHeap.Get() };
+   commandList->SetDescriptorHeaps(1, heaps);
+
+   Then render:
+   ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), commandList.Get());
+
+5. 🖼 Multi-Viewport Handling (Only Once!)
+   Handle this only after ImGui::Render() has been called:
+   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+       ImGui::UpdatePlatformWindows();               // Must come AFTER ImGui::Render()
+       ImGui::RenderPlatformWindowsDefault();        // Optional: pass cmd list
+   }
+
+
+🚫 Common Pitfalls
+------------------
+- Calling ImGui::Render() twice in one frame.
+- Calling ImGui::UpdatePlatformWindows() before Render().
+- Calling Render() without NewFrame().
+- Forgetting to close the frame (causes FrameCountEnded assertion).
+
+
+📌 Best Practice
+----------------
+Keep all ImGui lifecycle calls inside Graphics::Render(), including:
+- NewFrame()
+- Render()
+- UpdatePlatformWindows()
+- RenderDrawData()
+
+Let Engine::Run() just call:
+graphics.BeginFrame(hWnd);
+GameLoop(hWnd);
+graphics.EndFrame(hWnd);
+graphics.Present(hWnd);
+
+This centralizes control and avoids sync bugs.

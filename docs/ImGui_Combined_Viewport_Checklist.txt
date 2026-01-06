@@ -1,0 +1,73 @@
+Dear ImGui Win32 Multi-Viewport Checklist (imgui_impl_win32_custom.cpp)
+======================================================================
+✅ 1. Ensure you have a valid HWND per platform window (viewport->PlatformHandle)
+✅ 2. Implement all platform interface overrides in ImGuiPlatformIO:
+    • Platform_CreateWindow
+    • Platform_DestroyWindow
+    • Platform_ShowWindow
+    • Platform_SetWindowPos / GetWindowPos
+    • Platform_SetWindowSize / GetWindowSize
+    • Platform_SetWindowFocus / GetWindowFocus
+    • Platform_GetWindowMinimized
+    • Platform_SetWindowTitle
+    • Platform_SetWindowAlpha
+    • Platform_UpdateWindow
+    • Platform_GetWindowDpiScale
+    • Platform_OnChangedViewport
+    • Platform_RenderWindow
+
+✅ 3. Implement and register ImGui_ImplWin32_CreateWindow:
+    • Use CreateWindowEx to create a borderless child window with correct DPI awareness
+    • Store HWND in viewport->PlatformHandle
+    • Store user data in viewport->PlatformUserData (if needed)
+
+✅ 4. Ensure DPI-aware window size with GetDpiForWindow() and SetProcessDpiAwarenessContext()
+
+✅ 5. Prevent HWND mismatch assertion by passing valid HWND to ImGui_ImplWin32_WndProcHandler()
+
+✅ 6. Update WndProc to call ImGui_ImplWin32_WndProcHandler before default
+
+✅ 7. Implement ImGui_ImplWin32_UpdateWindow() to handle viewport size updates
+
+✅ 8. Handle WM_DPICHANGED to adjust ImGui scaling and window bounds
+
+
+
+Dear ImGui DirectX 12 Multi-Viewport Checklist (imgui_impl_dx12_custom.cpp)
+===========================================================================
+✅ 1. Ensure ImGui_ImplDX12_InitInfo contains:
+    • ID3D12Device*
+    • ID3D12CommandQueue*
+    • ID3D12DescriptorHeap* (CBV/SRV/UAV with SHADER_VISIBLE)
+    • Custom SrvDescriptorAllocFn and FreeFn (for fonts + textures)
+    • Format settings (RTV, DSV)
+
+✅ 2. Implement all renderer interface overrides in ImGuiPlatformIO:
+    • Renderer_CreateWindow
+    • Renderer_DestroyWindow
+    • Renderer_RenderWindow
+    • Renderer_SwapBuffers
+    • Renderer_SetWindowSize
+    • Renderer_GetWindowFocus
+    • Renderer_GetWindowMinimized
+    • Renderer_UpdateWindow
+
+✅ 3. ImGui_ImplDX12_CreateWindow:
+    • Create IDXGISwapChain3 for viewport HWND
+    • Allocate RTVs and command queue per viewport
+    • Initialize ImGui_ImplDX12_ViewportData and assign to viewport->RendererUserData
+
+✅ 4. ImGui_ImplDX12_RenderWindow:
+    • Bind command list
+    • Set descriptor heaps
+    • Call ImGui_ImplDX12_RenderDrawData() with viewport draw data
+
+✅ 5. Track descriptor heap indices or allocate via user callback
+
+✅ 6. Handle ResizeBuffers in Renderer_UpdateWindow
+
+✅ 7. Track Fence per window if needed for GPU sync
+
+✅ 8. Call ImGui_ImplDX12_Shutdown() to release resources and destroy FontTexture
+
+✅ 9. Watch for assertion: "HWND != 0" in ImGui DX12 backend. It means no valid HWND passed to the renderer.

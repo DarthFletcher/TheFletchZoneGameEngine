@@ -30,3 +30,19 @@
 *.exe
 *.out
 *.app
+
+# ===============================
+# Visual Studio / Windows
+# ===============================
+.vs/
+.vscode/
+*.suo
+*.user
+*.VC.db
+*.VC.opendb
+
+# Build output
+Debug/
+Release/
+x64/
+x86/

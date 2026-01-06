@@ -1,0 +1,132 @@
+{
+  "$schema": "https://raw.githubusercontent.com/spdx/spdx-spec/v2.2.1/schemas/spdx-schema.json",
+  "spdxVersion": "SPDX-2.2",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "documentNamespace": "https://spdx.org/spdxdocs/directx-headers-x64-windows-1.614.1-6cb9493a-4030-4e49-be38-669b451e68a1",
+  "name": "directx-headers:x64-windows@1.614.1 606b4894bcf7ea4cbebe8c82072df03e2633257ebe852f1f5a0c270caf28946b",
+  "creationInfo": {
+    "creators": [
+      "Tool: vcpkg-2024-09-30-ab8988503c7cffabfd440b243a383c0a352a023d"
+    ],
+    "created": "2025-01-11T04:45:58Z"
+  },
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-port",
+      "relationshipType": "GENERATES",
+      "relatedSpdxElement": "SPDXRef-binary"
+    },
+    {
+      "spdxElementId": "SPDXRef-port",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-file-0"
+    },
+    {
+      "spdxElementId": "SPDXRef-port",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-file-1"
+    },
+    {
+      "spdxElementId": "SPDXRef-port",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-file-2"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "GENERATED_FROM",
+      "relatedSpdxElement": "SPDXRef-port"
+    },
+    {
+      "spdxElementId": "SPDXRef-file-0",
+      "relationshipType": "CONTAINED_BY",
+      "relatedSpdxElement": "SPDXRef-port"
+    },
+    {
+      "spdxElementId": "SPDXRef-file-1",
+      "relationshipType": "CONTAINED_BY",
+      "relatedSpdxElement": "SPDXRef-port"
+    },
+    {
+      "spdxElementId": "SPDXRef-file-2",
+      "relationshipType": "CONTAINED_BY",
+      "relatedSpdxElement": "SPDXRef-port"
+    }
+  ],
+  "packages": [
+    {
+      "name": "directx-headers",
+      "SPDXID": "SPDXRef-port",
+      "versionInfo": "1.614.1",
+      "downloadLocation": "git+https://github.com/microsoft/vcpkg@b8e051c6e1d0df73d128fe95a1975e2f371959f8",
+      "homepage": "https://devblogs.microsoft.com/directx/",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "description": "Official DirectX 12 Headers",
+      "comment": "This is the port (recipe) consumed by vcpkg."
+    },
+    {
+      "name": "directx-headers:x64-windows",
+      "SPDXID": "SPDXRef-binary",
+      "versionInfo": "606b4894bcf7ea4cbebe8c82072df03e2633257ebe852f1f5a0c270caf28946b",
+      "downloadLocation": "NONE",
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "This is a binary package built by vcpkg."
+    },
+    {
+      "SPDXID": "SPDXRef-resource-1",
+      "name": "Microsoft/DirectX-Headers",
+      "downloadLocation": "git+https://github.com/Microsoft/DirectX-Headers@v1.614.1",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "934108052b9aa54b888c301f358a9d5b8f9ce1a5902e33b80c3273c963d10984faa7da167f1fed203462fe016e30443cb5e0d014de63fc9c0a81a674f757a7a9"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "fileName": "./C:/Users/fchil/AppData/Local/vcpkg/registries/git-trees/b8e051c6e1d0df73d128fe95a1975e2f371959f8/portfile.cmake",
+      "SPDXID": "SPDXRef-file-0",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "647b97491554e3d32aa541a7d788592afe6171d92efbb6ed55deb19b28ac0068"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./C:/Users/fchil/AppData/Local/vcpkg/registries/git-trees/b8e051c6e1d0df73d128fe95a1975e2f371959f8/usage",
+      "SPDXID": "SPDXRef-file-1",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "6711b002997b3fd7e08d3ad8f833f182c60b8e9321d3cdda30472a647fc32f5f"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./C:/Users/fchil/AppData/Local/vcpkg/registries/git-trees/b8e051c6e1d0df73d128fe95a1975e2f371959f8/vcpkg.json",
+      "SPDXID": "SPDXRef-file-2",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "608d1ae3812e08f3a65a52daa637ec34fcfdd89fddda13dda2fe9435be3f4aa3"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    }
+  ]
+}
