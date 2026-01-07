@@ -1,4 +1,4 @@
-// ============================================================================
+// ==========================================================================
 // Custom Dear ImGui DirectX 12 Backend - TheFletchZone Edition
 // Author: TheFletchZone
 // Description: Fully custom standalone backend for DX12 rendering
@@ -49,6 +49,30 @@ static void CreateOrResizeBuffer(
 
 // Swapchain health logging helper
 static void ImGui_ImplDX12_LogSwapChainHealth(const char* tag, IDXGISwapChain3* sc);
+
+static void ImGui_ImplDX12_LogSwapChainHealth(const char* tag, IDXGISwapChain3* sc)
+{
+    if (!sc)
+    {
+        Logger::Log(LogLevel::Warning, std::format("🧪 SwapChainHealth[{}] | swapChain=null", tag ? tag : "<null>"));
+        return;
+    }
+
+    DXGI_SWAP_CHAIN_DESC desc{};
+    HRESULT hrDesc = sc->GetDesc(&desc);
+    const UINT idx = sc->GetCurrentBackBufferIndex();
+
+    Logger::Log(LogLevel::Info, std::format(
+        "🧪 SwapChainHealth[{}] | sc=0x{:X} GetDescHR=0x{:08X} idx={} buffers={} format={} windowed={} flags=0x{:X}",
+        tag ? tag : "<null>",
+        (uintptr_t)sc,
+        (UINT)hrDesc,
+        idx,
+        desc.BufferCount,
+        (int)desc.BufferDesc.Format,
+        desc.Windowed ? 1 : 0,
+        (UINT)desc.Flags));
+}
 
 //-----------------------------------------------------------------------------
 // Parameters & Defines
@@ -354,13 +378,24 @@ static void CreateOrResizeBufferU64(
     CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
     D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
 
-    DX_CHECK(device->CreateCommittedResource(
+    HRESULT hr = device->CreateCommittedResource(
         &heapProps,
         D3D12_HEAP_FLAG_NONE,
         &desc,
         D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr,
-        IID_PPV_ARGS(&buffer)));
+        IID_PPV_ARGS(&buffer));
+
+    if (FAILED(hr) || !buffer)
+    {
+        HRESULT removed = device ? device->GetDeviceRemovedReason() : E_FAIL;
+        Logger::Log(LogLevel::Error, std::format(
+            "❌ CreateCommittedResource (U64) failed. HR=0x{:08X} DeviceRemovedReason=0x{:08X} | RequestedSize={}",
+            static_cast<unsigned int>(hr), static_cast<unsigned int>(removed), static_cast<unsigned long long>(newSize)));
+        buffer.Reset();
+        bufferSize = 0;
+        return;
+    }
 }
 
 //==========================================================================
@@ -413,7 +448,17 @@ static bool ImGui_ImplDX12_CreatePipeline(
     psoDesc.InputLayout = { inputLayout, _countof(inputLayout) };
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+    // IMPORTANT: RTV format must match the swap chain/backbuffer format.
+    // Using a mismatched format can lead to invalid PSO creation or GPU/device removal.
+    DXGI_FORMAT rtFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    if (ImGui_ImplDX12_Data* bd = ImGui_ImplDX12_GetBackendData())
+    {
+        if (bd->InitInfo.RenderTargetFormat != DXGI_FORMAT_UNKNOWN)
+            rtFormat = bd->InitInfo.RenderTargetFormat;
+    }
+    psoDesc.RTVFormats[0] = rtFormat;
+
     psoDesc.SampleDesc.Count = 1;
     psoDesc.SampleDesc.Quality = 0;
     psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
@@ -421,7 +466,7 @@ static bool ImGui_ImplDX12_CreatePipeline(
     HRESULT hr = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&outPipelineState));
     if (FAILED(hr))
     {
-        Logger::Log(LogLevel::Error, "❌ Failed to create GraphicsPipelineState.");
+        Logger::Log(LogLevel::Error, std::format("❌ Failed to create GraphicsPipelineState. HR=0x{:08X} RTVFormat={}", (UINT)hr, (int)rtFormat));
         return false;
     }
 
@@ -450,13 +495,22 @@ static void CreateOrResizeBuffer(
     CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
     D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
 
-    DX_CHECK(device->CreateCommittedResource(
+    HRESULT hr = device->CreateCommittedResource(
         &heapProps,
         D3D12_HEAP_FLAG_NONE,
         &desc,
         D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr,
-        IID_PPV_ARGS(&buffer)));
+        IID_PPV_ARGS(&buffer));
+
+    if (FAILED(hr) || !buffer)
+    {
+        HRESULT removed = device ? device->GetDeviceRemovedReason() : E_FAIL;
+        Logger::Log(LogLevel::Error, std::format(
+            "❌ CreateCommittedResource failed. HR=0x{:08X} DeviceRemovedReason=0x{:08X} | RequestedSize={}",
+            static_cast<unsigned int>(hr), static_cast<unsigned int>(removed), static_cast<unsigned long long>(newSize)));
+        return;
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1154,13 +1208,30 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data,
         viewport->ID, isMainViewport));
 
     // ------------------------------------------------------------
+    // Viewport + MVP
+    // ------------------------------------------------------------
+    const ImVec2& pos = draw_data->DisplayPos;
+    const ImVec2& size = draw_data->DisplaySize;
+
+    if (size.x <= 0.0f || size.y <= 0.0f)
+        return;
+
+    D3D12_VIEWPORT vp{};
+    vp.Width = size.x;
+    vp.Height = size.y;
+    vp.MinDepth = D3D12_MIN_DEPTH;
+    vp.MaxDepth = D3D12_MAX_DEPTH;
+    vp.TopLeftX = pos.x;
+    vp.TopLeftY = pos.y;
+
+    command_list->RSSetViewports(1, &vp);
+
+    // ------------------------------------------------------------
     // Get per-viewport data
     // ------------------------------------------------------------
     ImGui_ImplDX12_ViewportData* vd =
         static_cast<ImGui_ImplDX12_ViewportData*>(viewport->RendererUserData);
 
-    // Main viewport metadata must be created by `ImGui_ImplDX12_CreateWindow()`.
-    // Creating it here and returning would skip the actual draw call (black viewport).
     if (!vd)
     {
         Logger::Log(LogLevel::Error,
@@ -1186,30 +1257,38 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data,
     // Pick the right per-frame resources (main viewport differs from secondary)
     // ------------------------------------------------------------
     Microsoft::WRL::ComPtr<ID3D12Resource>* vertexBuffer = nullptr;
-    Microsoft::WRL::ComPtr<ID3D12Resource>* indexBuffer  = nullptr;
-    UINT64* vertexBufferSize = nullptr;
-    UINT64* indexBufferSize  = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Resource>* indexBuffer = nullptr;
+    UINT64* vertexBufferSizeU64Ptr = nullptr;
+    UINT64* indexBufferSizeU64Ptr = nullptr;
     ImDrawVert** vertexCpuPtr = nullptr;
-    ImDrawIdx**  indexCpuPtr  = nullptr;
+    ImDrawIdx** indexCpuPtr = nullptr;
+
+    ImGui_ImplDX12_FrameResources* frMain = nullptr;
+    using VpFrameResourcesT = std::remove_reference_t<decltype(((ImGui_ImplDX12_ViewportData*)nullptr)->FrameResources[0])>;
+    VpFrameResourcesT* frVp = nullptr;
 
     if (isMainViewport)
     {
         ImGui_ImplDX12_FrameResources& fr_main = bd->FrameResources[frameIndex];
+        frMain = &fr_main;
         vertexBuffer = &fr_main.VertexBuffer;
         indexBuffer = &fr_main.IndexBuffer;
-        vertexBufferSize = reinterpret_cast<UINT64*>(&fr_main.VertexBufferSize);
-        indexBufferSize = reinterpret_cast<UINT64*>(&fr_main.IndexBufferSize);
+
+        // IMPORTANT: keep pointers to a real size value so CreateOrResizeBufferU64 updates persist.
+        vertexBufferSizeU64Ptr = reinterpret_cast<UINT64*>(&fr_main.VertexBufferSize);
+        indexBufferSizeU64Ptr = reinterpret_cast<UINT64*>(&fr_main.IndexBufferSize);
+
         vertexCpuPtr = &fr_main.VertexCpuPtr;
         indexCpuPtr = &fr_main.IndexCpuPtr;
     }
     else
     {
-        using VpFrameResourcesT = std::remove_reference_t<decltype(vd->FrameResources[0])>;
         VpFrameResourcesT& fr_vp = vd->FrameResources[frameIndex];
+        frVp = &fr_vp;
         vertexBuffer = &fr_vp.VertexBuffer;
         indexBuffer = &fr_vp.IndexBuffer;
-        vertexBufferSize = &fr_vp.VertexBufferSize;
-        indexBufferSize = &fr_vp.IndexBufferSize;
+        vertexBufferSizeU64Ptr = &fr_vp.VertexBufferSize;
+        indexBufferSizeU64Ptr = &fr_vp.IndexBufferSize;
         vertexCpuPtr = &fr_vp.VertexCpuPtr;
         indexCpuPtr = &fr_vp.IndexCpuPtr;
     }
@@ -1217,25 +1296,33 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data,
     // ------------------------------------------------------------
     // Ensure buffers exist
     // ------------------------------------------------------------
-    const UINT requiredVB = draw_data->TotalVtxCount * sizeof(ImDrawVert);
-    const UINT requiredIB = draw_data->TotalIdxCount * sizeof(ImDrawIdx);
+    const UINT64 requiredVB = (UINT64)draw_data->TotalVtxCount * (UINT64)sizeof(ImDrawVert);
+    const UINT64 requiredIB = (UINT64)draw_data->TotalIdxCount * (UINT64)sizeof(ImDrawIdx);
 
-    if (requiredVB > *vertexBufferSize || requiredIB > *indexBufferSize ||
+    const UINT64 curVBSize = vertexBufferSizeU64Ptr ? *vertexBufferSizeU64Ptr : 0;
+    const UINT64 curIBSize = indexBufferSizeU64Ptr ? *indexBufferSizeU64Ptr : 0;
+
+    if (requiredVB > curVBSize || requiredIB > curIBSize ||
         vertexBuffer->Get() == nullptr || indexBuffer->Get() == nullptr ||
         *vertexCpuPtr == nullptr || *indexCpuPtr == nullptr)
     {
         ImGuiDx12_Log(LogLevel::Info, "ℹ Resizing ImGui buffers");
 
-        CreateOrResizeBufferU64(*vertexBuffer, *vertexBufferSize, (UINT64)requiredVB, bd->Device.Get());
-        CreateOrResizeBufferU64(*indexBuffer,  *indexBufferSize,  (UINT64)requiredIB, bd->Device.Get());
+        CreateOrResizeBufferU64(*vertexBuffer, *vertexBufferSizeU64Ptr, requiredVB, bd->Device.Get());
+        CreateOrResizeBufferU64(*indexBuffer, *indexBufferSizeU64Ptr, requiredIB, bd->Device.Get());
+
+        // If creation failed (e.g. device lost) bail before trying to map.
+        if (!vertexBuffer->Get() || !indexBuffer->Get())
+        {
+            Logger::Log(LogLevel::Error, "❌ ImGui buffer allocation failed (device may be lost). Skipping ImGui draw.");
+            return;
+        }
 
         *vertexCpuPtr = nullptr;
         *indexCpuPtr = nullptr;
 
-        if (vertexBuffer->Get())
-            DX_CHECK((*vertexBuffer)->Map(0, nullptr, reinterpret_cast<void**>(vertexCpuPtr)));
-        if (indexBuffer->Get())
-            DX_CHECK((*indexBuffer)->Map(0, nullptr, reinterpret_cast<void**>(indexCpuPtr)));
+        DX_CHECK((*vertexBuffer)->Map(0, nullptr, reinterpret_cast<void**>(vertexCpuPtr)));
+        DX_CHECK((*indexBuffer)->Map(0, nullptr, reinterpret_cast<void**>(indexCpuPtr)));
 
         if (!*vertexCpuPtr || !*indexCpuPtr)
         {
@@ -1245,95 +1332,85 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data,
     }
 
     // ------------------------------------------------------------
-    // Upload vertex/index data into the mapped buffers
+    // Upload vertices/indices into mapped buffers
     // ------------------------------------------------------------
     {
-        IM_ASSERT(*vertexCpuPtr != nullptr);
-        IM_ASSERT(*indexCpuPtr != nullptr);
+        ImDrawVert* vtxDst = *vertexCpuPtr;
+        ImDrawIdx* idxDst = *indexCpuPtr;
 
-        ImDrawVert* vtx_dst = *vertexCpuPtr;
-        ImDrawIdx* idx_dst = *indexCpuPtr;
         for (int n = 0; n < draw_data->CmdListsCount; n++)
         {
-            const ImDrawList* cmd_list = draw_data->CmdLists[n];
-            memcpy(vtx_dst, cmd_list->VtxBuffer.Data, (size_t)cmd_list->VtxBuffer.Size * sizeof(ImDrawVert));
-            memcpy(idx_dst, cmd_list->IdxBuffer.Data, (size_t)cmd_list->IdxBuffer.Size * sizeof(ImDrawIdx));
-            vtx_dst += cmd_list->VtxBuffer.Size;
-            idx_dst += cmd_list->IdxBuffer.Size;
+            const ImDrawList* cmd = draw_data->CmdLists[n];
+            memcpy(vtxDst, cmd->VtxBuffer.Data, (size_t)cmd->VtxBuffer.Size * sizeof(ImDrawVert));
+            memcpy(idxDst, cmd->IdxBuffer.Data, (size_t)cmd->IdxBuffer.Size * sizeof(ImDrawIdx));
+            vtxDst += cmd->VtxBuffer.Size;
+            idxDst += cmd->IdxBuffer.Size;
         }
     }
 
     // ------------------------------------------------------------
-    // Pipeline setup
-    // ------------------------------------------------------------
-    command_list->SetPipelineState(bd->PipelineState.Get());
-    command_list->SetGraphicsRootSignature(bd->RootSignature.Get());
-
-    ID3D12DescriptorHeap* heaps[] = { bd->SrvDescHeap.Get() };
-    command_list->SetDescriptorHeaps(1, heaps);
-
-    // Ensure a render target is bound. The engine should have bound it already for the main viewport,
-    // but if it didn't (or another pass changed it), ImGui can draw into nowhere.
-    if (!isMainViewport)
-    {
-        // Secondary viewports bind their own RTVs elsewhere; main viewport RTV binding is engine-owned.
-    }
-
-    // ------------------------------------------------------------
-    // Viewport + MVP
-    // ------------------------------------------------------------
-    D3D12_VIEWPORT vp{};
-    vp.Width = draw_data->DisplaySize.x;
-    vp.Height = draw_data->DisplaySize.y;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    command_list->RSSetViewports(1, &vp);
-
-    // Ensure we don't inherit a tiny/bad scissor from the engine render loop
-    // (common cause of "everything clipped" => black).
-    D3D12_RECT fullScissor{
-        0,
-        0,
-        (LONG)(draw_data->DisplaySize.x > 0.0f ? draw_data->DisplaySize.x : 1.0f),
-        (LONG)(draw_data->DisplaySize.y > 0.0f ? draw_data->DisplaySize.y : 1.0f)
-    };
-    command_list->RSSetScissorRects(1, &fullScissor);
-
-    const ImVec2& pos = draw_data->DisplayPos;
-    const ImVec2& size = draw_data->DisplaySize;
-    float L = pos.x, R = pos.x + size.x;
-    float T = pos.y, B = pos.y + size.y;
-
-    float mvp[4][4] =
-    {
-        { 2.0f / (R - L), 0, 0, 0 },
-        { 0, 2.0f / (T - B), 0, 0 },
-        { 0, 0, 0.5f, 0 },
-        { (R + L) / (L - R), (T + B) / (B - T), 0.5f, 1 }
-    };
-
-    command_list->SetGraphicsRoot32BitConstants(0, 16, mvp, 0);
-
-    // ------------------------------------------------------------
     // Bind buffers
     // ------------------------------------------------------------
+    const UINT vbSizeInBytes = (requiredVB > UINT_MAX) ? UINT_MAX : (UINT)requiredVB;
+    const UINT ibSizeInBytes = (requiredIB > UINT_MAX) ? UINT_MAX : (UINT)requiredIB;
+
     D3D12_VERTEX_BUFFER_VIEW vbv =
     {
         (*vertexBuffer)->GetGPUVirtualAddress(),
-        requiredVB,
+        vbSizeInBytes,
         sizeof(ImDrawVert)
     };
 
     D3D12_INDEX_BUFFER_VIEW ibv =
     {
         (*indexBuffer)->GetGPUVirtualAddress(),
-        requiredIB,
+        ibSizeInBytes,
         (sizeof(ImDrawIdx) == 2) ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT
     };
 
     command_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     command_list->IASetVertexBuffers(0, 1, &vbv);
     command_list->IASetIndexBuffer(&ibv);
+
+    // ------------------------------------------------------------
+    // Bind pipeline (root signature + PSO + root constants)
+    // ------------------------------------------------------------
+    if (!bd->RootSignature || !bd->PipelineState)
+    {
+        Logger::Log(LogLevel::Error, "❌ ImGui pipeline not created (RootSignature/PSO missing)");
+        return;
+    }
+
+    command_list->SetGraphicsRootSignature(bd->RootSignature.Get());
+    command_list->SetPipelineState(bd->PipelineState.Get());
+
+    // Root param 0 = 16x 32-bit constants (ProjectionMatrix)
+    // Match the standard ImGui orthographic projection.
+    const float L = pos.x;
+    const float R = pos.x + size.x;
+    const float T = pos.y;
+    const float B = pos.y + size.y;
+
+    const float mvp[4][4] =
+    {
+        { 2.0f / (R - L), 0.0f,             0.0f, 0.0f },
+        { 0.0f,           2.0f / (T - B),   0.0f, 0.0f },
+        { 0.0f,           0.0f,             1.0f, 0.0f },
+        { (R + L) / (L - R), (T + B) / (B - T), 0.0f, 1.0f },
+    };
+
+    command_list->SetGraphicsRoot32BitConstants(0, 16, mvp, 0);
+
+    // Ensure the ImGui SRV heap is bound before setting descriptor tables.
+    if (!bd->SrvDescHeap)
+    {
+        Logger::Log(LogLevel::Error, "❌ ImGui SRV heap missing");
+        return;
+    }
+    {
+        ID3D12DescriptorHeap* heaps[] = { bd->SrvDescHeap.Get() };
+        command_list->SetDescriptorHeaps(1, heaps);
+    }
 
     // ------------------------------------------------------------
     // Draw
@@ -1374,7 +1451,6 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data,
 
             // Validate TextureId against the bound SRV heap to avoid DEVICE_HUNG on invalid descriptor.
             const D3D12_GPU_DESCRIPTOR_HANDLE heapGpuStart = bd->SrvDescHeap->GetGPUDescriptorHandleForHeapStart();
-            const D3D12_CPU_DESCRIPTOR_HANDLE heapCpuStart = bd->SrvDescHeap->GetCPUDescriptorHandleForHeapStart();
             const D3D12_DESCRIPTOR_HEAP_DESC heapDesc = bd->SrvDescHeap->GetDesc();
             const UINT inc = bd->Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             const UINT64 heapGpuEnd = heapGpuStart.ptr + (UINT64)heapDesc.NumDescriptors * (UINT64)inc;
@@ -1391,26 +1467,6 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data,
                     "❌ ImGui draw skipped: TextureId=0x{:X} not in bound SRV heap [GPUStart=0x{:X}, GPUEnd=0x{:X}, Count={}, Inc={}]",
                     (UINT64)pcmd.TextureId, (UINT64)heapGpuStart.ptr, (UINT64)heapGpuEnd, heapDesc.NumDescriptors, inc));
                 continue;
-            }
-
-            // Diagnostics: confirm heap base + descriptor index used for this draw call (throttled).
-            {
-                static int s_texBindLogCounter = 0;
-                if ((++s_texBindLogCounter % 120) == 0)
-                {
-                    const UINT64 texPtr = (UINT64)pcmd.TextureId;
-                    const UINT64 delta = texPtr - heapGpuStart.ptr;
-                    const UINT index = (inc != 0) ? (UINT)(delta / inc) : 0;
-                    Logger::Log(LogLevel::Info, std::format(
-                        "🧩 ImGuiTexBind | ViewportID=0x{:X} Main={} TexID=0x{:016X} HeapGPUStart=0x{:016X} Inc={} Index={} Clip=({:.1f},{:.1f},{:.1f},{:.1f})",
-                        viewport->ID,
-                        isMainViewport ? 1 : 0,
-                        texPtr,
-                        (UINT64)heapGpuStart.ptr,
-                        inc,
-                        index,
-                        pcmd.ClipRect.x, pcmd.ClipRect.y, pcmd.ClipRect.z, pcmd.ClipRect.w));
-                }
             }
 
             command_list->SetGraphicsRootDescriptorTable(
@@ -1723,19 +1779,25 @@ void ImGui_ImplDX12_CreateWindow(ImGuiViewport* viewport)
     vd->LastSubmittedFenceValue = 0;
     vd->FrameIndex = 0;
     Logger::Log(LogLevel::Debug, std::format("ℹ️ InitInfo.NumFramesInFlight: {}", bd->InitInfo.NumFramesInFlight));
-// Create swapchain and RTVs
-    if (!ImGui_ImplDX12_CreateSwapChainAndResources(viewport, vd) ||
-        !ImGui_ImplDX12_CreateRenderTargets(bd, vd))
-    {
-        Logger::Log(LogLevel::Error, "❌ Failed to create swapchain or render targets.");
-        ImGui_ImplDX12_DestroyWindow(viewport);
-        viewport->RendererUserData = nullptr;
-        return;
-    }
+
+    // Secondary viewport swapchain creation is not supported in this build.
+    Logger::Log(LogLevel::Warning, "⚠️ ImGui DX12: Secondary viewport swapchain creation is disabled.");
+    return;
+
+    // Create swapchain and RTVs
+    // NOTE: Secondary viewport swapchains are not supported in this build.
+    // if (!ImGui_ImplDX12_CreateSwapChainAndResources(viewport, vd))
+    // {
+    //     Logger::Log(LogLevel::Error, "❌ Failed to create swapchain or render targets.");
+    //     ImGui_ImplDX12_DestroyWindow(viewport);
+    //     viewport->RendererUserData = nullptr;
+    //     return;
+    // }
 
     for (UINT i = 0; i < ImGui_ImplDX12_ViewportData::BufferCount; i++)
         vd->CurrentStates[i] = D3D12_RESOURCE_STATE_PRESENT;
-// Fence creation
+
+    // Fence creation (only once)
     HRESULT hr = vd->Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&vd->Fence));
     if (FAILED(hr) || !vd->Fence)
     {
@@ -1755,19 +1817,16 @@ void ImGui_ImplDX12_CreateWindow(ImGuiViewport* viewport)
         return;
     }
 
-    // Set fence values to current GPU completion value
+    // Initialize fence values.
     UINT64 completed = vd->Fence->GetCompletedValue();
     if (completed == UINT64_MAX) completed = 0;
-
     for (UINT i = 0; i < ImGui_ImplDX12_ViewportData::BufferCount; ++i)
         vd->FenceValues[i] = completed;
-
     vd->LastSubmittedFenceValue = completed;
-    vd->FrameIndex = 0;
 
     Logger::Log(LogLevel::Debug, "✅ Fence initialized");
 
-// Command Allocators
+    // Command Allocators
     for (UINT i = 0; i < ImGui_ImplDX12_ViewportData::BufferCount; i++)
     {
         hr = vd->Device->CreateCommandAllocator(
@@ -1789,204 +1848,12 @@ void ImGui_ImplDX12_CreateWindow(ImGuiViewport* viewport)
     }
     vd->CommandList->Close();
     Logger::Log(LogLevel::Info, "✅ Command allocators + command list created successfully.");
-// Dynamic buffers (VB + IB)
-    vd->VertexBufferSize = std::max<UINT64>(vd->VertexBufferSize, 5000);
-    vd->IndexBufferSize = std::max<UINT64>(vd->IndexBufferSize, 10000);
 
-    D3D12_HEAP_PROPERTIES heapProps = { D3D12_HEAP_TYPE_UPLOAD };
-    D3D12_RESOURCE_DESC vbDesc = {};
-    vbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    vbDesc.Width = vd->VertexBufferSize * sizeof(ImDrawVert);
-    vbDesc.Height = 1;
-    vbDesc.DepthOrArraySize = 1;
-    vbDesc.MipLevels = 1;
-    vbDesc.SampleDesc.Count = 1;
-    vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    // NOTE: Per-viewport persistent VB/IB are not used by this renderer path; it uses FrameResources[].
+    // Avoid allocating duplicate buffers here.
 
-    hr = bd->InitInfo.Device->CreateCommittedResource(
-        &heapProps, D3D12_HEAP_FLAG_NONE, &vbDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(&vd->VertexBuffer));
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error, "❌ Failed to create Vertex Buffer!");
-        return;
-    }
-
-    D3D12_RESOURCE_DESC ibDesc = vbDesc;
-    ibDesc.Width = vd->IndexBufferSize * sizeof(ImDrawIdx);
-
-    hr = bd->InitInfo.Device->CreateCommittedResource(
-        &heapProps, D3D12_HEAP_FLAG_NONE, &ibDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(&vd->IndexBuffer));
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error, "❌ Failed to create Index Buffer!");
-        return;
-    }
-    Logger::Log(LogLevel::Info, "✅ Dynamic buffers allocated successfully.");
-// Fence
-    hr = bd->InitInfo.Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&vd->Fence));
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error, std::format("❌ Failed to create Fence | HRESULT=0x{:08X}", (UINT)hr));
-        return;
-    }
-
-    vd->FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    if (!vd->FenceEvent)
-    {
-        Logger::Log(LogLevel::Error, "❌ Failed to create FenceEvent!");
-        return;
-    }
-
-    for (UINT i = 0; i < ImGui_ImplDX12_ViewportData::BufferCount; i++)
-        vd->FenceValues[i] = 0;
-
-    vd->FrameIndex = vd->SwapChain->GetCurrentBackBufferIndex();
-
-    vd->LastSubmittedFenceValue = 0;
-
-    Logger::Log(LogLevel::Info, "✅ Fence + FenceEvent initialized successfully.");
-}
-
-// -----------------------------------------------------------------------------
-// Public wrapper: Create swapchain + per-viewport resources
-// (Some builds expect this symbol via the header; keep it exported.)
-// -----------------------------------------------------------------------------
-// FIX: Remove infinite recursion by providing a real implementation or a call to a static/internal helper.
-bool ImGui_ImplDX12_CreateSwapChainAndResources(ImGuiViewport* viewport, ImGui_ImplDX12_ViewportData* vd)
-{
-    if (!viewport || !vd)
-    {
-        Logger::Log(LogLevel::Error,
-            "❌ CreateSwapChainAndResources: null viewport or viewport data");
-        return false;
-    }
-
-    HWND hwnd = (HWND)viewport->PlatformHandle;
-    if (!::IsWindow(hwnd))
-    {
-        Logger::Log(LogLevel::Error,
-            "❌ CreateSwapChainAndResources: invalid HWND");
-        return false;
-    }
-
-    ImGui_ImplDX12_Data* bd = ImGui_ImplDX12_GetBackendData();
-    if (!bd || !bd->Device || !bd->CommandQueue)
-    {
-        Logger::Log(LogLevel::Error,
-            "❌ CreateSwapChainAndResources: backend not initialized");
-        return false;
-    }
-
-    // ---------------------------------------------------------------------
-    // Clamp viewport size (critical — you already learned this the hard way)
-    // ---------------------------------------------------------------------
-    UINT width = (UINT)ImMax(64.0f, viewport->Size.x);
-    UINT height = (UINT)ImMax(64.0f, viewport->Size.y);
-
-    // ---------------------------------------------------------------------
-    // Create swap chain
-    // ---------------------------------------------------------------------
-    DXGI_SWAP_CHAIN_DESC1 desc = {};
-    desc.Width = width;
-    desc.Height = height;
-    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    desc.BufferCount = bd->NumFramesInFlight;
-    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    desc.SampleDesc.Count = 1;
-    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    desc.Scaling = DXGI_SCALING_STRETCH;
-    desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-
-    ComPtr<IDXGISwapChain1> swapChain1;
-    HRESULT hr = bd->DxgiFactory->CreateSwapChainForHwnd(
-        bd->CommandQueue.Get(),
-        hwnd,
-        &desc,
-        nullptr,
-        nullptr,
-        &swapChain1
-    );
-
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error,
-            std::format("❌ CreateSwapChainForHwnd failed (hr=0x{:08X})", hr));
-        return false;
-    }
-
-    hr = swapChain1.As(&vd->SwapChain);
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error,
-            "❌ Failed to query IDXGISwapChain3");
-        return false;
-    }
-
-    vd->BackBufferCount = desc.BufferCount;
-    vd->CurrentBackBufferIndex = vd->SwapChain->GetCurrentBackBufferIndex();
-
-    // ---------------------------------------------------------------------
-    // Create RTV heap (PER-VIEWPORT)
-    // ---------------------------------------------------------------------
-    D3D12_DESCRIPTOR_HEAP_DESC rtvDesc = {};
-    rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    rtvDesc.NumDescriptors = vd->BackBufferCount;
-    rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-
-    hr = bd->Device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&vd->RTVHeap));
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error,
-            "❌ Failed to create RTV heap for viewport");
-        return false;
-    }
-
-    // ---------------------------------------------------------------------
-    // Create render targets
-    // ---------------------------------------------------------------------
-    if (!ImGui_ImplDX12_CreateRenderTargets(bd, vd))
-    {
-        Logger::Log(LogLevel::Error,
-            "❌ Failed to create render targets");
-        return false;
-    }
-
-    Logger::Log(LogLevel::Info,
-        std::format(
-            "✅ SwapChain created for viewport 0x{:X} ({}x{}, buffers={})",
-            viewport->ID, width, height, vd->BackBufferCount));
-
-    return true;
-}
-
-static void ImGui_ImplDX12_LogSwapChainHealth(const char* tag, IDXGISwapChain3* sc)
-{
-    if (!sc)
-    {
-        Logger::Log(LogLevel::Warning, std::format("🧪 SwapChainHealth[{}] | swapChain=null", tag ? tag : "<null>"));
-        return;
-    }
-
-    DXGI_SWAP_CHAIN_DESC desc = {};
-    HRESULT hrDesc = sc->GetDesc(&desc);
-
-    UINT idx = 0;
-    HRESULT hrIdx = S_OK;
-    idx = sc->GetCurrentBackBufferIndex();
-
-    Logger::Log(LogLevel::Info, std::format(
-        "🧪 SwapChainHealth[{}] | sc=0x{:X} GetDescHR=0x{:08X} GetIdxHR=0x{:08X} idx={} buffers={} format={} windowed={} flags=0x{:X}",
-        tag ? tag : "<null>",
-        (uintptr_t)sc,
-        (UINT)hrDesc,
-        (UINT)hrIdx,
-        idx,
-        desc.BufferCount,
-        (int)desc.BufferDesc.Format,
-        desc.Windowed ? 1 : 0,
-        (UINT)desc.Flags));
+    // Swapchain creation for secondary viewports is currently not supported in this engine build.
+    // The engine runs with `ImGuiConfigFlags_ViewportsEnable` disabled, so we can safely early-out.
+    Logger::Log(LogLevel::Warning, "⚠️ ImGui DX12: Secondary viewport swapchain creation is disabled.");
+    return;
 }

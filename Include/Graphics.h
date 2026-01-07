@@ -141,6 +141,12 @@ public:
 
     bool IsUploadReady() const;
 
+    // Scene viewport render target (offscreen texture) exposed to UI.
+    void EnsureSceneRenderTarget(UINT width, UINT height);
+    void RenderSceneToTarget();
+    ImTextureID GetSceneImGuiTextureID() const { return sceneImGuiTextureID; }
+    ImVec2 GetSceneRenderTargetSize() const { return ImVec2((float)sceneRTWidth, (float)sceneRTHeight); }
+
 private:
     HRESULT CreateDX12Device();
     void ExecuteCommandLists(std::vector<ID3D12CommandList*>& commandLists);
@@ -203,4 +209,18 @@ private:
 
     ID3D12Device* imguiDevice = nullptr;
     ID3D12DescriptorHeap* imguiSrvHeap = nullptr;
+
+    // Offscreen Scene panel render target (RTV+SRV)
+    Microsoft::WRL::ComPtr<ID3D12Resource> sceneRenderTarget;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> sceneRtvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE sceneRtvHandle = {};
+
+    // SRV lives in the ImGui shader-visible heap; keep handles + ImTextureID for ImGui::Image
+    D3D12_CPU_DESCRIPTOR_HANDLE sceneSrvCpu = {};
+    D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu = {};
+    ImTextureID sceneImGuiTextureID = (ImTextureID)0;
+
+    UINT sceneRTWidth = 0;
+    UINT sceneRTHeight = 0;
+    D3D12_RESOURCE_STATES sceneRTState = D3D12_RESOURCE_STATE_COMMON;
 };

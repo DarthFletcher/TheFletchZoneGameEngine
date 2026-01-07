@@ -89,9 +89,11 @@ void Graphics::EnsureValidCommandQueue() {
 // Initializes frame timing and other members
 // Ensures proper cleanup on destruction
 //===============================================
+
 Graphics::Graphics() : commandListOpen(false) {
     frameStart = std::chrono::high_resolution_clock::now();
 }
+
 Graphics::~Graphics() {
     Shutdown();
 }
@@ -104,6 +106,7 @@ Graphics::~Graphics() {
 // Example: Graphics::GetInstance().ToggleVSync(true); // Enable VSync
 // Example: Graphics::GetInstance().ToggleVSync(false); // Disable VSync
 //===============================================
+
 void Graphics::ToggleVSync(bool enable) {
     Graphics::vsyncEnabled = enable;
     Logger::Log(LogLevel::Info, "✅ VSync " + std::string(enable ? "Enabled" : "Disabled"));
@@ -119,6 +122,7 @@ void Graphics::ToggleVSync(bool enable) {
 // Usage: auto future = Graphics::GetInstance().LoadTextureAsync("path/to/texture.png");
 // The future can be used to check when loading is complete
 //===============================================
+
 std::future<void> Graphics::LoadTextureAsync(std::string filePath) {
     return std::async(std::launch::async, [filePath]() {
         Logger::Log(LogLevel::Info, "🔄 Loading Texture: " + std::string(filePath.begin(), filePath.end()));
@@ -383,6 +387,17 @@ void Graphics::Shutdown()
     }
 
     // 2. Now free DX12 resources safely
+    // Release scene RT resources (must be before device reset)
+    sceneRenderTarget.Reset();
+    sceneRtvHeap.Reset();
+    sceneImGuiTextureID = (ImTextureID)0;
+    sceneSrvCpu = {};
+    sceneSrvGpu = {};
+    sceneRtvHandle = {};
+    sceneRTWidth = 0;
+    sceneRTHeight = 0;
+    sceneRTState = D3D12_RESOURCE_STATE_COMMON;
+
     for (int i = 0; i < NUM_BACK_BUFFERS; i++)
         SafeReleaseResource(backBuffers[i], true);
 
@@ -855,6 +870,9 @@ void Graphics::Render(HWND hWnd)
     if (!commandList || !ImGui::GetCurrentContext())
         return;
 
+    // Render the Scene viewport target first (so UI can display it via ImGui::Image)
+    RenderSceneToTarget();
+
     // -----------------------------------------------------------------
     // Render health snapshot (throttled)
     // -----------------------------------------------------------------
@@ -1233,7 +1251,6 @@ void Graphics::SignalFence()
 //==============================
 // Wait For Frame Function
 //==============================
-
 void Graphics::WaitForFrame(UINT frameIndex)
 {
     if (!fence)
@@ -1403,7 +1420,9 @@ void Graphics::CreateSwapChain(HWND hWnd, UINT width, UINT height) {
     swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     swapChainDesc.SampleDesc.Count = 1;
-    swapChainDesc.Flags = allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    swapChainDesc.SampleDesc.Quality = 0;
+    // swapChainDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN; // ❌ not a DXGI_SWAP_CHAIN_DESC1 field
+    // Ensure scaling is set instead (if not already).
     swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
 
     Microsoft::WRL::ComPtr<IDXGISwapChain1> tempSwapChain;
@@ -1923,7 +1942,7 @@ static void ImGui_SrvDescriptorFree(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DES
     // 🔄 Add pooling or reuse logic here later if needed
 }
 
-//=============================================
+//==================================================
 // Cache ImGui Resources Function
 //==================================================
 void Graphics::CacheImGuiResources(ID3D12Device* inDevice, ID3D12DescriptorHeap* inHeap)
@@ -2200,20 +2219,173 @@ void Graphics::CreateRenderTargetViews()
 }
 
 //==================================================
-// Handle Device Lost Function
+// Offscreen Scene Panel Render Target
 //==================================================
-void Graphics::HandleDeviceLost(HWND hWnd)
+void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
 {
-    // Minimal forwarding: call existing recovery path if present elsewhere.
-    // If not present (truncated), log and terminate to avoid undefined behavior.
-    Logger::Log(LogLevel::Error, "❌ HandleDeviceLost(): implementation missing in this build; shutting down.");
-    Shutdown();
+    if (!device || !imguiHeap)
+        return;
+
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+
+    if (sceneRenderTarget && sceneRTWidth == width && sceneRTHeight == height)
+        return;
+
+    // If resizing/recreating, ensure GPU is idle (keeps this simple and safe).
+    FlushGPU();
+
+    sceneRenderTarget.Reset();
+    sceneRtvHeap.Reset();
+    sceneRtvHandle = {};
+    sceneRTState = D3D12_RESOURCE_STATE_COMMON;
+
+    // Create the offscreen texture (render target)
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Alignment = 0;
+    texDesc.Width = width;
+    texDesc.Height = height;
+    texDesc.DepthOrArraySize = 1;
+    texDesc.MipLevels = 1;
+    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.SampleDesc.Quality = 0;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = texDesc.Format;
+    clearValue.Color[0] = 0.10f;
+    clearValue.Color[1] = 0.10f;
+    clearValue.Color[2] = 0.12f;
+    clearValue.Color[3] = 1.0f;
+
+    CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+    HRESULT hr = device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &texDesc,
+        D3D12_RESOURCE_STATE_COMMON,
+        &clearValue,
+        IID_PPV_ARGS(&sceneRenderTarget));
+
+    if (FAILED(hr) || !sceneRenderTarget)
+    {
+        Logger::Log(LogLevel::Error, std::format("❌ Failed to create Scene render target. HR=0x{:08X}", (UINT)hr));
+        return;
+    }
+
+    sceneRenderTarget->SetName(L"SceneRenderTarget");
+
+    // RTV heap for the scene render target (CPU-only)
+    D3D12_DESCRIPTOR_HEAP_DESC rtvDesc = {};
+    rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvDesc.NumDescriptors = 1;
+    rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    hr = device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&sceneRtvHeap));
+    if (FAILED(hr) || !sceneRtvHeap)
+    {
+        Logger::Log(LogLevel::Error, std::format("❌ Failed to create Scene RTV heap. HR=0x{:08X}", (UINT)hr));
+        sceneRenderTarget.Reset();
+        return;
+    }
+    sceneRtvHeap->SetName(L"SceneRTVHeap");
+
+    sceneRtvHandle = sceneRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    device->CreateRenderTargetView(sceneRenderTarget.Get(), nullptr, sceneRtvHandle);
+
+    // SRV descriptor in ImGui heap (shader-visible)
+    // NOTE: We allocate a CPU handle from the shared ImGui heap and compute matching GPU handle.
+    ID3D12Device* dev = GetImGuiDevice();
+    if (!dev)
+        dev = device.Get();
+
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    sceneSrvCpu = Graphics::AllocateSRV();
+    if (sceneSrvCpu.ptr == 0)
+    {
+        Logger::Log(LogLevel::Error, "❌ Failed to allocate SRV for Scene render target (sceneSrvCpu=0)");
+        return;
+    }
+
+    // Compute GPU handle for the same slot used by AllocateSRV().
+    // AllocateSRV increments g_SRVDescriptorIndex after assigning; so current slot is (g_SRVDescriptorIndex - 1).
+    sceneSrvGpu = imguiHeap->GetGPUDescriptorHandleForHeapStart();
+    sceneSrvGpu.ptr += (UINT64)(g_SRVDescriptorIndex - 1) * (UINT64)inc;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+
+    device->CreateShaderResourceView(sceneRenderTarget.Get(), &srvDesc, sceneSrvCpu);
+
+    // ImGui expects ImTextureID to reference a GPU descriptor handle (DX12 backend convention).
+    sceneImGuiTextureID = (ImTextureID)sceneSrvGpu.ptr;
+
+    sceneRTWidth = width;
+    sceneRTHeight = height;
+
+    Logger::Log(LogLevel::Info, std::format("✅ Scene render target created: {}x{} | SRV GPU=0x{:X}",
+        sceneRTWidth, sceneRTHeight, (UINT64)sceneSrvGpu.ptr));
 }
 
-bool Graphics::IsUploadReady() const
+void Graphics::RenderSceneToTarget()
 {
-    // The splash upload path uses its own temporary allocator+command list.
-    // It only needs the D3D12 device/queue to exist and the ImGui backend to be initialized.
-    // Avoid relying on heap pointers here because the backend may manage/override the heap.
-    return device != nullptr && commandQueue != nullptr && ImGui::GetCurrentContext() != nullptr;
+    // Scene RT is optional; only render if it exists.
+    if (!commandListOpen || !commandList || !device)
+        return;
+
+    if (!sceneRenderTarget || sceneRTWidth == 0 || sceneRTHeight == 0 || sceneRtvHandle.ptr == 0)
+        return;
+
+    // Transition to render target
+    if (sceneRTState != D3D12_RESOURCE_STATE_RENDER_TARGET)
+    {
+        CD3DX12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(
+            sceneRenderTarget.Get(),
+            sceneRTState,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        commandList->ResourceBarrier(1, &toRT);
+        sceneRTState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    }
+
+    // Bind RTV
+    commandList->OMSetRenderTargets(1, &sceneRtvHandle, FALSE, nullptr);
+
+    // Set viewport/scissor
+    D3D12_VIEWPORT vp = {};
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = 0.0f;
+    vp.Width = (float)sceneRTWidth;
+    vp.Height = (float)sceneRTHeight;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+
+    D3D12_RECT sc = { 0, 0, (LONG)sceneRTWidth, (LONG)sceneRTHeight };
+    commandList->RSSetViewports(1, &vp);
+    commandList->RSSetScissorRects(1, &sc);
+
+    // Clear (locked neutral background)
+    const float clearColor[4] = { 0.10f, 0.10f, 0.12f, 1.0f };
+    commandList->ClearRenderTargetView(sceneRtvHandle, clearColor, 0, nullptr);
+
+    // Transition to shader resource for ImGui sampling
+    CD3DX12_RESOURCE_BARRIER toSRV = CD3DX12_RESOURCE_BARRIER::Transition(
+        sceneRenderTarget.Get(),
+        sceneRTState,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    commandList->ResourceBarrier(1, &toSRV);
+    sceneRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+}
+
+// Minimal definition for HandleDeviceLost to satisfy linker
+void Graphics::HandleDeviceLost(HWND hWnd)
+{
+    Logger::Log(LogLevel::Error, "❌ Device lost detected. (Recovery not implemented yet)");
+    (void)hWnd;
 }

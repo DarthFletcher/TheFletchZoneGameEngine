@@ -30,7 +30,7 @@ private:
     static LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam); // ✅ Window message handler
 
     // Engine Components
-    Graphics graphics;
+    Graphics& graphics = Graphics::GetInstance();
     Input input;
     Timer timer;
     Game game;

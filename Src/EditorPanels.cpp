@@ -1,6 +1,7 @@
 #include "EditorPanels.h"
 
 #include "imgui.h"
+#include "Graphics.h"
 
 namespace EditorPanels
 {
@@ -12,9 +13,26 @@ namespace EditorPanels
             auto& panel = Scene();
             if (!panel.open)
                 return;
+
             if (ImGui::Begin(panel.name, &panel.open))
             {
-                ImGui::Text("\xef\x8e\xae Scene View");
+                ImVec2 size = ImGui::GetContentRegionAvail();
+                const UINT w = (UINT)(size.x > 1.0f ? size.x : 1.0f);
+                const UINT h = (UINT)(size.y > 1.0f ? size.y : 1.0f);
+
+                auto& gfx = Graphics::GetInstance();
+                gfx.EnsureSceneRenderTarget(w, h);
+
+                ImTextureID tex = gfx.GetSceneImGuiTextureID();
+                if (tex)
+                {
+                    // Note: UVs flipped vertically for DX12 texture coordinates
+                    ImGui::Image(tex, size, ImVec2(0, 1), ImVec2(1, 0));
+                }
+                else
+                {
+                    ImGui::TextUnformatted("Scene render target not ready...");
+                }
             }
             ImGui::End();
         }

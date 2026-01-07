@@ -5,6 +5,7 @@
 #include "Engine.h"
 #include "HintMacros.h"
 #include "Logger.h"
+#include "CrashDiagnostics.h"
 
 const char* DpiAwarenessToString(DPI_AWARENESS awareness) {
     switch (awareness) {
@@ -63,6 +64,8 @@ int WINAPI WinMain(
 ) {
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
+
+    CrashDiagnostics::Initialize(L"CrashDumps");
 
     // 🔧 Fix DPI-related mouse/input offset issues
     EnableDPIAwareness();

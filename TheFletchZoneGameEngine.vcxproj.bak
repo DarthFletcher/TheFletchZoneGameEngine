@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -228,7 +228,6 @@
     <None Include="cpp.hint" />
     <None Include="include\macros.hints" />
     <None Include="packages.config" />
-    <None Include="tools\FixShaderBuildStep.ps1" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />
@@ -247,6 +246,8 @@
       <ShaderModel>5.0</ShaderModel>
       <EntryPoint>PSMain</EntryPoint>
     </FxCompile>
+    <FxCompile Include="shaders\scene_grid_ps.hlsl" />
+    <FxCompile Include="shaders\scene_grid_vs.hlsl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

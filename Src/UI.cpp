@@ -350,7 +350,12 @@ namespace UI {
             // Match the DockSpace region below the command strip inside the dockspace root.
             const float toolbarH = GetCommandStripReservedHeight();
             const float topPadding = ImGui::GetStyle().ItemSpacing.y;
-            const ImVec2 dockSize = ImVec2(viewport->WorkSize.x, (std::max)(0.0f, viewport->WorkSize.y - toolbarH - topPadding));
+
+            // ImGui asserts dock node sizes are non-negative. Clamp aggressively to a safe minimum.
+            constexpr float kMinDockDim = 64.0f;
+            const float safeW = (std::max)(kMinDockDim, viewport->WorkSize.x);
+            const float safeH = (std::max)(kMinDockDim, viewport->WorkSize.y - toolbarH - topPadding);
+            const ImVec2 dockSize = ImVec2(safeW, safeH);
             ImGui::DockBuilderSetNodeSize(dockspaceID, dockSize);
 
             ImGuiID dock_main = dockspaceID;

@@ -9,20 +9,8 @@ IMGUI_IMPL_API void ImGui_ImplDX12_DestroyWindowEx(ImGuiViewport* viewport, bool
     if (!viewport)
         return;
 
-    auto* vd = (ImGui_ImplDX12_ViewportData*)viewport->RendererUserData;
+    // Avoid freeing GPU resources from this stub TU. The engine disables viewports.
     viewport->RendererUserData = nullptr;
-
-    if (!vd)
-        return;
-
-    // Minimal safe cleanup (engine owns most objects for main viewport)
-    if (vd->FenceEvent)
-    {
-        CloseHandle(vd->FenceEvent);
-        vd->FenceEvent = nullptr;
-    }
-
-    IM_DELETE(vd);
 }
 
 IMGUI_IMPL_API HRESULT ImGui_ImplDX12_PresentViewport(ImGuiViewport* viewport, ImGui_ImplDX12_ViewportData* vd)
@@ -93,6 +81,11 @@ IMGUI_IMPL_API bool ImGui_ImplDX12_GetWindowMinimized(ImGuiViewport* viewport)
         return true;
 
     return ::IsIconic(hwnd) != FALSE;
+}
+
+bool ImGui_ImplDX12_CreateSwapChainAndResources(ImGuiViewport* viewport, ImGui_ImplDX12_ViewportData* vd)
+{
+    return false;
 }
 
 IMGUI_IMPL_API void ImGui_ImplDX12_SwapBuffers(ImGuiViewport* viewport, void* render_arg)
