@@ -13,21 +13,14 @@ struct VSInput
 
 struct VSOutput
 {
-    float4 pos      : SV_POSITION;
-    float4 color    : COLOR;
-    float3 worldPos : TEXCOORD0;
+    float4 pos   : SV_POSITION;
+    float4 color : COLOR;
 };
 
 VSOutput main(VSInput input)
 {
     VSOutput o;
-
-    // Pass through world position for fade calculations in PS.
-    o.worldPos = input.pos;
-
-    // Transform to clip space.
     o.pos = mul(float4(input.pos, 1.0f), gViewProj);
-
     o.color = input.color;
     return o;
 }

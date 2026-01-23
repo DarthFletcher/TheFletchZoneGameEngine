@@ -226,8 +226,10 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
+    <None Include="Directory.Build.targets" />
     <None Include="include\macros.hints" />
     <None Include="packages.config" />
+    <None Include="tools\FixSceneShaderBuildStep.ps1" />
     <None Include="tools\FixShaderBuildStep.ps1" />
   </ItemGroup>
   <ItemGroup>
@@ -247,6 +249,15 @@
       <ShaderModel>5.0</ShaderModel>
       <EntryPoint>PSMain</EntryPoint>
     </FxCompile>
+    <FxCompile Include="shaders\scene_grid_ps.hlsl" />
+    <FxCompile Include="shaders\scene_grid_vs.hlsl" />
+    <FxCompile Include="shaders\scene_triangle_ps.hlsl" />
+    <FxCompile Include="shaders\scene_triangle_vs.hlsl" />
+    <FxCompile Remove="shaders\\scene_triangle_ps.hlsl" />
+    <FxCompile Remove="shaders\\scene_triangle_vs.hlsl" />
+    <FxCompile Remove="shaders\\scene_grid_ps.hlsl" />
+    <FxCompile Remove="shaders\\scene_grid_vs.hlsl" />
+    <FxCompile Include="shaders\scene_triangle_vs.hlsl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

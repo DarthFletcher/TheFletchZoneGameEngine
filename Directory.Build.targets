@@ -1,0 +1,15 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Copy runtime shader sources next to the built executable so D3DCompileFromFile can find them -->
+  <Target Name="CopyRuntimeShaders" AfterTargets="Build">
+    <ItemGroup>
+      <_RuntimeShaderFiles Include="$(MSBuildProjectDirectory)\shaders\**\*.*" />
+    </ItemGroup>
+
+    <MakeDir Directories="$(OutDir)shaders" />
+
+    <Copy
+      SourceFiles="@(_RuntimeShaderFiles)"
+      DestinationFiles="@(_RuntimeShaderFiles->'$(OutDir)shaders\%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
+</Project>

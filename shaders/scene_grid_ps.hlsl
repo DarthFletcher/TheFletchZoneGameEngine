@@ -1,12 +1,16 @@
 struct PSInput
 {
-    float4 pos   : SV_Position;
+    float4 pos   : SV_POSITION;
     float4 color : COLOR;
     float3 worldPos : TEXCOORD0;
 };
 
-float3 gCameraPos;
-float  gGridFadeDist;
+cbuffer SceneCB : register(b0)
+{
+    float4x4 gViewProj;
+    float3 gCameraPos;
+    float  gGridFadeDist;
+};
 
 float4 main(PSInput input) : SV_Target
 {

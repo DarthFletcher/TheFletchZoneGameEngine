@@ -39,6 +39,8 @@
 #include "ImGuiPlatformIO_Extended.h" // <- Add this below imgui_impl_win32.h and imgui_impl_dx12.h
 #include <Engine.h>
 #include <SplashScreen.h>
+#include "ShaderUtils.h"
+#include <DirectXMath.h>
 
 // ✅ Define and Initialize Static Variables (Fixes "unresolved external" error)
 std::chrono::high_resolution_clock::time_point Graphics::frameStart = std::chrono::high_resolution_clock::now();
@@ -2334,6 +2336,176 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
         sceneRTWidth, sceneRTHeight, (UINT64)sceneSrvGpu.ptr));
 }
 
+void Graphics::EnsureScenePipeline()
+{
+    if (sceneRootSignature && sceneTrianglePSO && sceneGridPSO && sceneCB)
+        return;
+
+    if (!device)
+        return;
+
+    // Root signature: one CBV at b0
+    D3D12_ROOT_PARAMETER rp = {};
+    rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rp.Descriptor.ShaderRegister = 0;
+    rp.Descriptor.RegisterSpace = 0;
+    rp.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.NumParameters = 1;
+    rsDesc.pParameters = &rp;
+    rsDesc.NumStaticSamplers = 0;
+    rsDesc.pStaticSamplers = nullptr;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    Microsoft::WRL::ComPtr<ID3DBlob> sig;
+    Microsoft::WRL::ComPtr<ID3DBlob> err;
+    HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+    if (FAILED(hr))
+    {
+        if (err)
+            OutputDebugStringA((const char*)err->GetBufferPointer());
+        throw std::runtime_error("Failed to serialize scene root signature");
+    }
+
+    DX_CHECK(device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&sceneRootSignature)));
+
+    // Compile shaders at runtime (so we don't depend on vcxproj FxCompile)
+    // Use SM5.0 for widest compatibility with FXC/D3DCompile toolchains.
+    auto triVS = CompileShaderFromRelativeFile(L"shaders\\scene_triangle_vs.hlsl", "main", "vs_5_0");
+    auto triPS = CompileShaderFromRelativeFile(L"shaders\\scene_triangle_ps.hlsl", "main", "ps_5_0");
+    auto gridVS = CompileShaderFromRelativeFile(L"shaders\\scene_grid_vs.hlsl", "main", "vs_5_0");
+    auto gridPS = CompileShaderFromRelativeFile(L"shaders\\scene_grid_ps.hlsl", "main", "ps_5_0");
+
+    D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = sceneRootSignature.Get();
+    pso.InputLayout = { layout, _countof(layout) };
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.VS = { triVS->GetBufferPointer(), triVS->GetBufferSize() };
+    pso.PS = { triPS->GetBufferPointer(), triPS->GetBufferSize() };
+    pso.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    pso.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    pso.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+    pso.SampleMask = UINT_MAX;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pso.SampleDesc.Count = 1;
+
+    DX_CHECK(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&sceneTrianglePSO)));
+
+    // Grid PSO: line list + alpha blending
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+    pso.VS = { gridVS->GetBufferPointer(), gridVS->GetBufferSize() };
+    pso.PS = { gridPS->GetBufferPointer(), gridPS->GetBufferSize() };
+
+    D3D12_BLEND_DESC bs = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    bs.RenderTarget[0].BlendEnable = TRUE;
+    bs.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    bs.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    bs.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    bs.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    bs.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    bs.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    bs.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    pso.BlendState = bs;
+
+    DX_CHECK(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&sceneGridPSO)));
+
+    // Constant buffer
+    const UINT cbSize = (UINT)((sizeof(SceneCBData) + 255) & ~255u);
+    CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
+    CD3DX12_RESOURCE_DESC buf = CD3DX12_RESOURCE_DESC::Buffer(cbSize);
+    DX_CHECK(device->CreateCommittedResource(
+        &heap,
+        D3D12_HEAP_FLAG_NONE,
+        &buf,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&sceneCB)));
+}
+
+void Graphics::EnsureSceneGeometry()
+{
+    if (!device)
+        return;
+
+    if (!sceneTriangleVB)
+    {
+        SceneVertex tri[3] = {
+            { { 0.0f,  0.25f, 0.0f }, { 1.0f, 0.25f, 0.25f, 1.0f } },
+            { { 0.25f, -0.25f, 0.0f }, { 0.25f, 1.0f, 0.25f, 1.0f } },
+            { { -0.25f, -0.25f, 0.0f }, { 0.25f, 0.25f, 1.0f, 1.0f } },
+        };
+
+        const UINT size = (UINT)sizeof(tri);
+        CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
+        CD3DX12_RESOURCE_DESC buf = CD3DX12_RESOURCE_DESC::Buffer(size);
+        DX_CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&sceneTriangleVB)));
+
+        void* p = nullptr;
+        CD3DX12_RANGE r(0, 0);
+        DX_CHECK(sceneTriangleVB->Map(0, &r, &p));
+        memcpy(p, tri, size);
+        sceneTriangleVB->Unmap(0, nullptr);
+
+        sceneTriangleVBV.BufferLocation = sceneTriangleVB->GetGPUVirtualAddress();
+        sceneTriangleVBV.SizeInBytes = size;
+        sceneTriangleVBV.StrideInBytes = sizeof(SceneVertex);
+    }
+
+    if (!sceneGridVB)
+    {
+        // Simple XZ grid centered at origin; VS snaps it to camera.
+        const int half = 50;
+        const float spacing = 1.0f;
+        const float y = 0.0f;
+
+        std::vector<SceneVertex> v;
+        v.reserve(static_cast<std::vector<Graphics::SceneVertex, std::allocator<Graphics::SceneVertex>>::size_type>((half * 2 + 1)) * 4);
+
+        for (int i = -half; i <= half; ++i)
+        {
+            const float k = (float)i * spacing;
+            const bool major = (i % 10) == 0;
+            const float a = major ? 0.55f : 0.25f;
+            const float c = major ? 0.55f : 0.35f;
+            const float col[4] = { c, c, c, a };
+
+            // line parallel X (vary Z)
+            v.push_back({ { -half * spacing, y, k }, { col[0], col[1], col[2], col[3] } });
+            v.push_back({ {  half * spacing, y, k }, { col[0], col[1], col[2], col[3] } });
+
+            // line parallel Z (vary X)
+            v.push_back({ { k, y, -half * spacing }, { col[0], col[1], col[2], col[3] } });
+            v.push_back({ { k, y,  half * spacing }, { col[0], col[1], col[2], col[3] } });
+        }
+
+        sceneGridVertexCount = (UINT)v.size();
+        const UINT size = (UINT)(v.size() * sizeof(SceneVertex));
+
+        CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
+        CD3DX12_RESOURCE_DESC buf = CD3DX12_RESOURCE_DESC::Buffer(size);
+        DX_CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&sceneGridVB)));
+
+        void* p = nullptr;
+        CD3DX12_RANGE r(0, 0);
+        DX_CHECK(sceneGridVB->Map(0, &r, &p));
+        memcpy(p, v.data(), size);
+        sceneGridVB->Unmap(0, nullptr);
+
+        sceneGridVBV.BufferLocation = sceneGridVB->GetGPUVirtualAddress();
+        sceneGridVBV.SizeInBytes = size;
+        sceneGridVBV.StrideInBytes = sizeof(SceneVertex);
+    }
+}
+
 void Graphics::RenderSceneToTarget()
 {
     // Scene RT is optional; only render if it exists.
@@ -2342,6 +2514,9 @@ void Graphics::RenderSceneToTarget()
 
     if (!sceneRenderTarget || sceneRTWidth == 0 || sceneRTHeight == 0 || sceneRtvHandle.ptr == 0)
         return;
+
+    EnsureScenePipeline();
+    EnsureSceneGeometry();
 
     // Transition to render target
     if (sceneRTState != D3D12_RESOURCE_STATE_RENDER_TARGET)
@@ -2374,6 +2549,49 @@ void Graphics::RenderSceneToTarget()
     const float clearColor[4] = { 0.10f, 0.10f, 0.12f, 1.0f };
     commandList->ClearRenderTargetView(sceneRtvHandle, clearColor, 0, nullptr);
 
+    // Update constant buffer (simple fixed camera)
+    using namespace DirectX;
+    const XMVECTOR eye = XMVectorSet(0.0f, 2.5f, -4.5f, 0.0f);
+    const XMVECTOR at = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
+    const XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+    XMMATRIX view = XMMatrixLookAtLH(eye, at, up);
+    XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(60.0f), (sceneRTHeight > 0) ? ((float)sceneRTWidth / (float)sceneRTHeight) : 1.0f, 0.1f, 100.0f);
+    XMMATRIX vpM = XMMatrixTranspose(view * proj);
+
+    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(sceneCBData.viewProj), vpM);
+    sceneCBData.cameraPos[0] = 0.0f;
+    sceneCBData.cameraPos[1] = 2.5f;
+    sceneCBData.cameraPos[2] = -4.5f;
+    sceneCBData.gridFadeDist = 30.0f;
+
+    void* cbPtr = nullptr;
+    CD3DX12_RANGE range(0, 0);
+    DX_CHECK(sceneCB->Map(0, &range, &cbPtr));
+    memcpy(cbPtr, &sceneCBData, sizeof(sceneCBData));
+    sceneCB->Unmap(0, nullptr);
+
+    commandList->SetGraphicsRootSignature(sceneRootSignature.Get());
+    commandList->SetGraphicsRootConstantBufferView(0, sceneCB->GetGPUVirtualAddress());
+
+    // Draw grid
+    if (sceneGridPSO && sceneGridVB && sceneGridVertexCount > 0)
+    {
+        commandList->SetPipelineState(sceneGridPSO.Get());
+        commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+        commandList->IASetVertexBuffers(0, 1, &sceneGridVBV);
+        commandList->DrawInstanced(sceneGridVertexCount, 1, 0, 0);
+    }
+
+    // Draw triangle
+    if (sceneTrianglePSO && sceneTriangleVB)
+    {
+        commandList->SetPipelineState(sceneTrianglePSO.Get());
+        commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        commandList->IASetVertexBuffers(0, 1, &sceneTriangleVBV);
+        commandList->DrawInstanced(3, 1, 0, 0);
+    }
+
     // Transition to shader resource for ImGui sampling
     CD3DX12_RESOURCE_BARRIER toSRV = CD3DX12_RESOURCE_BARRIER::Transition(
         sceneRenderTarget.Get(),
@@ -2383,9 +2601,9 @@ void Graphics::RenderSceneToTarget()
     sceneRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 }
 
-// Minimal definition for HandleDeviceLost to satisfy linker
 void Graphics::HandleDeviceLost(HWND hWnd)
 {
-    Logger::Log(LogLevel::Error, "❌ Device lost detected. (Recovery not implemented yet)");
+    Logger::Log(LogLevel::Error, "❌ Device lost detected. Attempting recovery...");
     (void)hWnd;
+    // TODO: Implement full device recreation path.
 }

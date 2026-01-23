@@ -223,4 +223,34 @@ private:
     UINT sceneRTWidth = 0;
     UINT sceneRTHeight = 0;
     D3D12_RESOURCE_STATES sceneRTState = D3D12_RESOURCE_STATE_COMMON;
+
+    struct SceneVertex
+    {
+        float pos[3];
+        float color[4];
+    };
+
+    struct alignas(256) SceneCBData
+    {
+        float viewProj[16];
+        float cameraPos[3];
+        float gridFadeDist;
+    };
+
+    void EnsureScenePipeline();
+    void EnsureSceneGeometry();
+
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> sceneRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> sceneTrianglePSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> sceneGridPSO;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> sceneTriangleVB;
+    D3D12_VERTEX_BUFFER_VIEW sceneTriangleVBV = {};
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> sceneGridVB;
+    D3D12_VERTEX_BUFFER_VIEW sceneGridVBV = {};
+    UINT sceneGridVertexCount = 0;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> sceneCB;
+    SceneCBData sceneCBData = {};
 };

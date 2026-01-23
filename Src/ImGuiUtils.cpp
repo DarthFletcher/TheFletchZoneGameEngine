@@ -317,6 +317,9 @@ ImTextureID ImGuiUtils::CreateTextureFromMemory(
         return 0;
     }
 
+    // Give the resource a useful debug name (helps D3D12 debug layer diagnostics)
+    texture->SetName(std::format(L"ImGuiUtilsTexture {}x{}", width, height).c_str());
+
     UINT64 uploadSize = 0;
     device->GetCopyableFootprints(&texDesc, 0, 1, 0, nullptr, nullptr, nullptr, &uploadSize);
 
@@ -337,6 +340,8 @@ ImTextureID ImGuiUtils::CreateTextureFromMemory(
             std::format("❌ CreateTextureFromMemory() - Failed CreateCommittedResource (UPLOAD). HRESULT=0x{:X}", (UINT)hr));
         return 0;
     }
+
+    uploadBuffer->SetName(std::format(L"ImGuiUtilsTextureUpload {}x{}", width, height).c_str());
 
     // ==========================================================
     // 4. Record copy using a TEMP command allocator/list.
@@ -372,6 +377,7 @@ ImTextureID ImGuiUtils::CreateTextureFromMemory(
             std::format("❌ CreateTextureFromMemory() - Failed to create upload command allocator. HRESULT=0x{:X}", (UINT)hr));
         return 0;
     }
+    uploadAlloc->SetName(L"ImGuiUtilsTextureUploadAlloc");
 
     hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, uploadAlloc.Get(), nullptr, IID_PPV_ARGS(&uploadList));
     if (FAILED(hr) || !uploadList)
@@ -379,6 +385,27 @@ ImTextureID ImGuiUtils::CreateTextureFromMemory(
         CloseHandle(uploadFenceEvent);
         Logger::Log(LogLevel::Error,
             std::format("❌ CreateTextureFromMemory() - Failed to create upload command list. HRESULT=0x{:X}", (UINT)hr));
+        return 0;
+    }
+    uploadList->SetName(L"ImGuiUtilsTextureUploadList");
+
+    // D3D12 command lists are created in the recording state; close + Reset to start from a clean known state.
+    // This avoids edge cases where a caller assumes the list starts closed.
+    (void)uploadList->Close();
+    hr = uploadAlloc->Reset();
+    if (FAILED(hr))
+    {
+        CloseHandle(uploadFenceEvent);
+        Logger::Log(LogLevel::Error,
+            std::format("❌ CreateTextureFromMemory() - Failed to reset upload command allocator. HRESULT=0x{:X}", (UINT)hr));
+        return 0;
+    }
+    hr = uploadList->Reset(uploadAlloc.Get(), nullptr);
+    if (FAILED(hr))
+    {
+        CloseHandle(uploadFenceEvent);
+        Logger::Log(LogLevel::Error,
+            std::format("❌ CreateTextureFromMemory() - Failed to reset upload command list. HRESULT=0x{:X}", (UINT)hr));
         return 0;
     }
 
