@@ -21,7 +21,7 @@ namespace EditorPanels
                 const UINT h = (UINT)(size.y > 1.0f ? size.y : 1.0f);
 
                 auto& gfx = Graphics::GetInstance();
-                gfx.EnsureSceneRenderTarget(w, h);
+                gfx.RequestSceneRenderTargetResize(w, h);
 
                 ImTextureID tex = gfx.GetSceneImGuiTextureID();
                 if (tex)

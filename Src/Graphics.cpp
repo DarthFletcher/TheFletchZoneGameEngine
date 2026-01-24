@@ -685,6 +685,12 @@ void Graphics::BeginFrame(HWND hWnd)
     static UINT64 g_FrameCounter = 0;
     Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter));
 
+    // Apply pending main window swapchain resize before anything else.
+    ApplyPendingResize(hWnd);
+
+    // Process any pending scene RT resize before we open/reset the command list for this frame.
+    ProcessPendingSceneRenderTargetResize();
+
     // -----------------------------------------------------------------
     // Frame health snapshot (throttled)
     // -----------------------------------------------------------------
@@ -1571,7 +1577,8 @@ void Graphics::OnResize(HWND hWnd, UINT width, UINT height) {
         float xScale = std::clamp(dpiX / 96.0f, 0.5f, 2.0f);
         float yScale = std::clamp(dpiY / 96.0f, 0.5f, 2.0f);
         io.DisplayFramebufferScale = ImVec2(xScale, yScale);
-        Logger::Log(LogLevel::Info, std::format("📐 ImGui DPI Scale: {:.2f}, {:.2f}", xScale, yScale));
+        Logger::Log(LogLevel::Info, std::format(
+            "📐 ImGui DPI Scale: {:.2f}, {:.2f}", xScale, yScale));
     }
     else {
         io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
@@ -2234,6 +2241,15 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     if (sceneRenderTarget && sceneRTWidth == width && sceneRTHeight == height)
         return;
 
+    // Never recreate while recording commands. Defer to next safe point.
+    if (commandListOpen)
+    {
+        pendingSceneRTW = width;
+        pendingSceneRTH = height;
+        pendingSceneRTResize = true;
+        return;
+    }
+
     // If resizing/recreating, ensure GPU is idle (keeps this simple and safe).
     FlushGPU();
 
@@ -2299,24 +2315,30 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     device->CreateRenderTargetView(sceneRenderTarget.Get(), nullptr, sceneRtvHandle);
 
     // SRV descriptor in ImGui heap (shader-visible)
-    // NOTE: We allocate a CPU handle from the shared ImGui heap and compute matching GPU handle.
+    // NOTE: Allocate the SRV slot once and reuse it across resizes to avoid descriptor exhaustion.
     ID3D12Device* dev = GetImGuiDevice();
     if (!dev)
         dev = device.Get();
 
     const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    sceneSrvCpu = Graphics::AllocateSRV();
     if (sceneSrvCpu.ptr == 0)
     {
-        Logger::Log(LogLevel::Error, "❌ Failed to allocate SRV for Scene render target (sceneSrvCpu=0)");
-        return;
-    }
+        sceneSrvCpu = Graphics::AllocateSRV();
+        if (sceneSrvCpu.ptr == 0)
+        {
+            Logger::Log(LogLevel::Error, "❌ Failed to allocate SRV for Scene render target (sceneSrvCpu=0)");
+            return;
+        }
 
-    // Compute GPU handle for the same slot used by AllocateSRV().
-    // AllocateSRV increments g_SRVDescriptorIndex after assigning; so current slot is (g_SRVDescriptorIndex - 1).
-    sceneSrvGpu = imguiHeap->GetGPUDescriptorHandleForHeapStart();
-    sceneSrvGpu.ptr += (UINT64)(g_SRVDescriptorIndex - 1) * (UINT64)inc;
+        // Compute GPU handle for the same slot used by AllocateSRV().
+        // AllocateSRV increments g_SRVDescriptorIndex after assigning; so current slot is (g_SRVDescriptorIndex - 1).
+        sceneSrvGpu = imguiHeap->GetGPUDescriptorHandleForHeapStart();
+        sceneSrvGpu.ptr += (UINT64)(g_SRVDescriptorIndex - 1) * (UINT64)inc;
+
+        // ImGui expects ImTextureID to reference a GPU descriptor handle (DX12 backend convention).
+        sceneImGuiTextureID = (ImTextureID)sceneSrvGpu.ptr;
+    }
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -2325,9 +2347,6 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     srvDesc.Texture2D.MipLevels = 1;
 
     device->CreateShaderResourceView(sceneRenderTarget.Get(), &srvDesc, sceneSrvCpu);
-
-    // ImGui expects ImTextureID to reference a GPU descriptor handle (DX12 backend convention).
-    sceneImGuiTextureID = (ImTextureID)sceneSrvGpu.ptr;
 
     sceneRTWidth = width;
     sceneRTHeight = height;
@@ -2549,20 +2568,25 @@ void Graphics::RenderSceneToTarget()
     const float clearColor[4] = { 0.10f, 0.10f, 0.12f, 1.0f };
     commandList->ClearRenderTargetView(sceneRtvHandle, clearColor, 0, nullptr);
 
-    // Update constant buffer (simple fixed camera)
+    // Update constant buffer (SceneCamera)
     using namespace DirectX;
-    const XMVECTOR eye = XMVectorSet(0.0f, 2.5f, -4.5f, 0.0f);
-    const XMVECTOR at = XMVectorSet(0.0f, 0.0f, 0.0f, 0.0f);
-    const XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
-    XMMATRIX view = XMMatrixLookAtLH(eye, at, up);
-    XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(60.0f), (sceneRTHeight > 0) ? ((float)sceneRTWidth / (float)sceneRTHeight) : 1.0f, 0.1f, 100.0f);
-    XMMATRIX vpM = XMMatrixTranspose(view * proj);
+    const float aspect = (sceneRTHeight > 0) ? (static_cast<float>(sceneRTWidth) / static_cast<float>(sceneRTHeight)) : 1.0f;
 
+    const XMMATRIX view = sceneCamera.GetView();
+    const XMMATRIX proj = sceneCamera.GetProj(aspect);
+
+    const XMMATRIX vpM = XMMatrixTranspose(view * proj);
     XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(sceneCBData.viewProj), vpM);
-    sceneCBData.cameraPos[0] = 0.0f;
-    sceneCBData.cameraPos[1] = 2.5f;
-    sceneCBData.cameraPos[2] = -4.5f;
+
+    // Camera position from inverse view matrix translation
+    const XMMATRIX invView = XMMatrixInverse(nullptr, view);
+    XMFLOAT4X4 invViewF;
+    XMStoreFloat4x4(&invViewF, invView);
+    sceneCBData.cameraPos[0] = invViewF._41;
+    sceneCBData.cameraPos[1] = invViewF._42;
+    sceneCBData.cameraPos[2] = invViewF._43;
+
     sceneCBData.gridFadeDist = 30.0f;
 
     void* cbPtr = nullptr;
@@ -2601,9 +2625,114 @@ void Graphics::RenderSceneToTarget()
     sceneRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 }
 
+// ==================================
+// Request Scene Render Target Resize
+// ==================================
+void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height)
+{
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+
+    if (sceneRenderTarget && sceneRTWidth == width && sceneRTHeight == height)
+        return;
+
+    pendingSceneRTW = width;
+    pendingSceneRTH = height;
+    pendingSceneRTResize = true;
+}
+
+// ==================================
+// Process Pending Scene Render Target Resize
+// ==================================
+void Graphics::ProcessPendingSceneRenderTargetResize()
+{
+    if (!pendingSceneRTResize)
+        return;
+
+    if (commandListOpen)
+        return;
+
+    EnsureSceneRenderTarget(pendingSceneRTW, pendingSceneRTH);
+    pendingSceneRTResize = false;
+}
+
 void Graphics::HandleDeviceLost(HWND hWnd)
 {
     Logger::Log(LogLevel::Error, "❌ Device lost detected. Attempting recovery...");
     (void)hWnd;
     // TODO: Implement full device recreation path.
+}
+
+void Graphics::RequestResize(UINT width, UINT height)
+{
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+
+    pendingWidth = width;
+    pendingHeight = height;
+    pendingResize = true;
+}
+
+void Graphics::ApplyPendingResize(HWND hWnd)
+{
+    if (!pendingResize)
+        return;
+
+    if (commandListOpen)
+        return;
+
+    if (!swapChain || !device)
+        return;
+
+    // If minimized, skip resize until we get a usable client size again.
+    if (pendingWidth == 0 || pendingHeight == 0)
+        return;
+
+    FlushGPU();
+
+    // Release old backbuffers
+    for (int i = 0; i < 3; ++i)
+        SafeReleaseResource(backBuffers[i], false);
+
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    HRESULT hrDesc = swapChain->GetDesc(&desc);
+    if (FAILED(hrDesc))
+    {
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to retrieve swap chain description in ApplyPendingResize().");
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
+    const UINT w = (std::max)(pendingWidth, 1u);
+    const UINT h = (std::max)(pendingHeight, 1u);
+
+    HRESULT hr = swapChain->ResizeBuffers(
+        desc.BufferCount,
+        w,
+        h,
+        desc.BufferDesc.Format,
+        desc.Flags);
+
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error, std::format("❌ ERROR: swapChain->ResizeBuffers failed in ApplyPendingResize(). HR=0x{:08X}", (UINT)hr));
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
+    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+
+    CreateRenderTargetViews();
+
+    // Keep engine screen size in sync
+    screenWidth = w;
+    screenHeight = h;
+
+    // Ensure ImGui display size matches (keeps docking + calculations stable)
+    if (ImGui::GetCurrentContext())
+        ImGui::GetIO().DisplaySize = ImVec2((float)w, (float)h);
+
+    pendingResize = false;
+
+    Logger::Log(LogLevel::Info, std::format("✅ Swapchain resized (deferred): {}x{}", w, h));
 }

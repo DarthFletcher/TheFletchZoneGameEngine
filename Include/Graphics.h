@@ -22,6 +22,8 @@
 #include <future>
 #include <algorithm>
 
+#include "SceneCamera.h"
+
 extern HWND mainHwnd;
 extern ID3D12DescriptorHeap* g_SRVHeap;
 
@@ -143,9 +145,14 @@ public:
 
     // Scene viewport render target (offscreen texture) exposed to UI.
     void EnsureSceneRenderTarget(UINT width, UINT height);
+    void RequestSceneRenderTargetResize(UINT width, UINT height);
+    void ProcessPendingSceneRenderTargetResize();
     void RenderSceneToTarget();
     ImTextureID GetSceneImGuiTextureID() const { return sceneImGuiTextureID; }
     ImVec2 GetSceneRenderTargetSize() const { return ImVec2((float)sceneRTWidth, (float)sceneRTHeight); }
+
+    // Deferred main swapchain resize (called from WM_SIZE). Applied at top of BeginFrame.
+    void RequestResize(UINT width, UINT height);
 
 private:
     HRESULT CreateDX12Device();
@@ -155,6 +162,7 @@ private:
     void CreateSwapChain(HWND hWnd, UINT width, UINT height);
     bool ResizeSwapChainBuffers(UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags);
     void HandleResize(HWND hWnd);
+    void ApplyPendingResize(HWND hWnd);
 
     bool fontUploaded = false;
     HWND hWnd = nullptr;
@@ -209,6 +217,18 @@ private:
 
     ID3D12Device* imguiDevice = nullptr;
     ID3D12DescriptorHeap* imguiSrvHeap = nullptr;
+
+    SceneCamera sceneCamera;
+
+    // Deferred main swapchain resize state
+    UINT pendingWidth = 0;
+    UINT pendingHeight = 0;
+    bool pendingResize = false;
+
+    // Scene RT resize is deferred to a safe point (when command list is not recording).
+    UINT pendingSceneRTW = 0;
+    UINT pendingSceneRTH = 0;
+    bool pendingSceneRTResize = false;
 
     // Offscreen Scene panel render target (RTV+SRV)
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneRenderTarget;
