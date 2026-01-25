@@ -151,6 +151,20 @@ public:
     ImTextureID GetSceneImGuiTextureID() const { return sceneImGuiTextureID; }
     ImVec2 GetSceneRenderTargetSize() const { return ImVec2((float)sceneRTWidth, (float)sceneRTHeight); }
 
+    // Editor access
+    SceneCamera& GetSceneCamera() { return sceneCamera; }
+
+    // Diagnostics helpers (read-only)
+    UINT GetBackBufferIndex() const { return currentBackBufferIndex; }
+    UINT GetSwapChainWidth() const { return (UINT)screenWidth; }
+    UINT GetSwapChainHeight() const { return (UINT)screenHeight; }
+
+    UINT GetSceneRTWidth() const { return sceneRTWidth; }
+    UINT GetSceneRTHeight() const { return sceneRTHeight; }
+    bool IsSceneRTPendingResize() const { return pendingSceneRTResize; }
+    UINT GetPendingSceneRTWidth() const { return pendingSceneRTW; }
+    UINT GetPendingSceneRTHeight() const { return pendingSceneRTH; }
+
     // Deferred main swapchain resize (called from WM_SIZE). Applied at top of BeginFrame.
     void RequestResize(UINT width, UINT height);
 

@@ -17,5 +17,8 @@ namespace EditorPanels
     EditorPanel& Assets();
     EditorPanel& DebugOverlay();
 
+    EditorPanel& Diagnostics();
+    EditorPanel& LogViewer();
+
     void DrawAll();
 }

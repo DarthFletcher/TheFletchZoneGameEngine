@@ -104,6 +104,47 @@ void Logger::Shutdown() {
     }
 }
 
+void Logger::ClearAllLogs()
+{
+    std::lock_guard<std::mutex> lock(logMutex);
+    for (auto& [_, logs] : categorizedLogs)
+        logs.clear();
+}
+
+std::vector<std::string> Logger::GetRecentLogs(size_t maxLines)
+{
+    std::lock_guard<std::mutex> lock(logMutex);
+
+    // Flatten across categories (best-effort in insertion order by category vectors).
+    // Minimal-risk approach: use the default "General" first if present; then include others.
+    std::vector<std::string> out;
+    out.reserve(maxLines);
+
+    auto appendTail = [&](const std::vector<std::string>& v)
+    {
+        if (out.size() >= maxLines) return;
+        const size_t take = (std::min)(maxLines - out.size(), v.size());
+        const size_t start = v.size() - take;
+        for (size_t i = start; i < v.size(); ++i)
+            out.push_back(v[i]);
+    };
+
+    auto itGeneral = categorizedLogs.find("General");
+    if (itGeneral != categorizedLogs.end())
+        appendTail(itGeneral->second);
+
+    for (const auto& [cat, logs] : categorizedLogs)
+    {
+        if (cat == "General")
+            continue;
+        appendTail(logs);
+        if (out.size() >= maxLines)
+            break;
+    }
+
+    return out;
+}
+
 // Timestamp helper
 std::string Logger::GetCurrentTimestamp() {
     auto now = std::chrono::system_clock::now();

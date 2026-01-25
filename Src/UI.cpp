@@ -642,6 +642,8 @@ namespace UI {
                  auto& inspector = EditorPanels::Inspector();
                  auto& assets = EditorPanels::Assets();
                  auto& debugOverlay = EditorPanels::DebugOverlay();
+                 auto& diagnostics = EditorPanels::Diagnostics();
+                 auto& logViewer = EditorPanels::LogViewer();
 
                  ImGui::MenuItem(scene.name, nullptr, &scene.open);
                  ImGui::MenuItem(hierarchy.name, nullptr, &hierarchy.open);
@@ -649,6 +651,8 @@ namespace UI {
                  ImGui::MenuItem(assets.name, nullptr, &assets.open);
                  ImGui::Separator();
                  ImGui::MenuItem(debugOverlay.name, nullptr, &debugOverlay.open);
+                 ImGui::MenuItem(diagnostics.name, nullptr, &diagnostics.open);
+                 ImGui::MenuItem(logViewer.name, nullptr, &logViewer.open);
                  ImGui::Separator();
                  ImGui::MenuItem("Command Strip", nullptr, &g_showCommandStrip);
                  ImGui::MenuItem("Frame Diagnostics", nullptr, &g_showFrameDiag);

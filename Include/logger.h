@@ -40,8 +40,12 @@ public:
     // Memory usage helper (engine debug tracking)
     static void LogMemoryUsage(const std::string& context = "Memory");
 
-	// HRESULT to string helper
+    // HRESULT to string helper
     static const char* DX12_HRToString(HRESULT hr);
+
+    // Log viewer support
+    static void ClearAllLogs();
+    static std::vector<std::string> GetRecentLogs(size_t maxLines);
 
 private:
     static std::ofstream logFile;
