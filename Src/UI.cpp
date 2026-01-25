@@ -641,11 +641,14 @@ namespace UI {
                  auto& hierarchy = EditorPanels::Hierarchy();
                  auto& inspector = EditorPanels::Inspector();
                  auto& assets = EditorPanels::Assets();
+                 auto& debugOverlay = EditorPanels::DebugOverlay();
 
                  ImGui::MenuItem(scene.name, nullptr, &scene.open);
                  ImGui::MenuItem(hierarchy.name, nullptr, &hierarchy.open);
                  ImGui::MenuItem(inspector.name, nullptr, &inspector.open);
                  ImGui::MenuItem(assets.name, nullptr, &assets.open);
+                 ImGui::Separator();
+                 ImGui::MenuItem(debugOverlay.name, nullptr, &debugOverlay.open);
                  ImGui::Separator();
                  ImGui::MenuItem("Command Strip", nullptr, &g_showCommandStrip);
                  ImGui::MenuItem("Frame Diagnostics", nullptr, &g_showFrameDiag);
@@ -775,24 +778,7 @@ namespace UI {
 
     // 🔍 Optional Debug Overlay
     void DrawOverlays() {
-        ImGuiViewport* vp = ImGui::GetMainViewport();
-        if (vp)
-            ImGui::SetNextWindowViewport(vp->ID);
-        // Make overlay readable and not dockable.
-        ImGui::SetNextWindowBgAlpha(0.85f);
-        ImGui::SetNextWindowPos(ImVec2(vp ? vp->WorkPos.x + 10.0f : 10.0f, vp ? vp->WorkPos.y + 10.0f : 10.0f), ImGuiCond_Always);
-
-        ImGui::Begin("TFZ_DebugOverlay",
-            nullptr,
-            ImGuiWindowFlags_NoDocking |
-            ImGuiWindowFlags_NoTitleBar |
-            ImGuiWindowFlags_AlwaysAutoResize |
-            ImGuiWindowFlags_NoSavedSettings |
-            ImGuiWindowFlags_NoFocusOnAppearing |
-            ImGuiWindowFlags_NoNav);
-        ImGui::Text("✅ ImGui is rendering!");
-        ImGui::Text("🎮 FPS: %.1f", ImGui::GetIO().Framerate);
-        ImGui::End();
+        // Debug overlay is now a dockable panel (see EditorPanels::DebugOverlay()).
     }
 
     void DrawSplashOverlay()

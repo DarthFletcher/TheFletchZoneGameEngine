@@ -15,6 +15,7 @@ namespace EditorPanels
     EditorPanel& Hierarchy();
     EditorPanel& Inspector();
     EditorPanel& Assets();
+    EditorPanel& DebugOverlay();
 
     void DrawAll();
 }

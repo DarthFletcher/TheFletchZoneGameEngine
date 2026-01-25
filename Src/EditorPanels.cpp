@@ -86,10 +86,30 @@ namespace EditorPanels
         }
     };
 
+    static EditorPanel g_debugOverlay{
+        "Debug Overlay",
+        false,
+        []()
+        {
+            auto& panel = DebugOverlay();
+            if (!panel.open)
+                return;
+
+            if (ImGui::Begin(panel.name, &panel.open))
+            {
+                ImGui::Text("ImGui is rendering");
+                ImGui::Separator();
+                ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+            }
+            ImGui::End();
+        }
+    };
+
     EditorPanel& Scene() { return g_scene; }
     EditorPanel& Hierarchy() { return g_hierarchy; }
     EditorPanel& Inspector() { return g_inspector; }
     EditorPanel& Assets() { return g_assets; }
+    EditorPanel& DebugOverlay() { return g_debugOverlay; }
 
     void DrawAll()
     {
@@ -97,5 +117,6 @@ namespace EditorPanels
         if (g_hierarchy.open) g_hierarchy.draw();
         if (g_inspector.open) g_inspector.draw();
         if (g_assets.open) g_assets.draw();
+        if (g_debugOverlay.open) g_debugOverlay.draw();
     }
 }
