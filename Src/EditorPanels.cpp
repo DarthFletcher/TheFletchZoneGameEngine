@@ -8,6 +8,16 @@
 
 namespace EditorPanels
 {
+    static const char* ViewModeLabel(ViewMode m)
+    {
+        switch (m)
+        {
+        case ViewMode::Mode2D: return "2D";
+        case ViewMode::Mode3D:
+        default: return "3D";
+        }
+    }
+
     static EditorPanel g_scene{
         "Scene",
         true,
@@ -17,13 +27,28 @@ namespace EditorPanels
             if (!panel.open)
                 return;
 
+            auto& gfx = Graphics::GetInstance();
+
             if (ImGui::Begin(panel.name, &panel.open))
             {
+                // Header view mode dropdown (kept lightweight; uses existing menu routing rules).
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("View");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(90.0f);
+                if (ImGui::BeginCombo("##SceneViewMode", ViewModeLabel(gfx.GetViewMode())))
+                {
+                    const bool sel3d = (gfx.GetViewMode() == ViewMode::Mode3D);
+                    const bool sel2d = (gfx.GetViewMode() == ViewMode::Mode2D);
+                    if (ImGui::Selectable("3D", sel3d)) gfx.SetViewMode(ViewMode::Mode3D);
+                    if (ImGui::Selectable("2D", sel2d)) gfx.SetViewMode(ViewMode::Mode2D);
+                    ImGui::EndCombo();
+                }
+
                 ImVec2 size = ImGui::GetContentRegionAvail();
                 const UINT w = (UINT)(size.x > 1.0f ? size.x : 1.0f);
                 const UINT h = (UINT)(size.y > 1.0f ? size.y : 1.0f);
 
-                auto& gfx = Graphics::GetInstance();
                 gfx.RequestSceneRenderTargetResize(w, h);
 
                 ImTextureID tex = gfx.GetSceneImGuiTextureID();
@@ -51,7 +76,10 @@ namespace EditorPanels
                             if (wheel != 0.0f)
                                 wheelDelta = wheel * 120.0f; // match WM_MOUSEWHEEL units
 
-                            gfx.GetSceneCamera().UpdateOrbit(io.MouseDelta.x, io.MouseDelta.y, wheelDelta, rmb, mmb, precision);
+                            const bool orbit = (gfx.GetViewMode() == ViewMode::Mode3D) ? rmb : false;
+                            const bool pan = mmb;
+
+                            gfx.GetSceneCamera().UpdateOrbit(io.MouseDelta.x, io.MouseDelta.y, wheelDelta, orbit, pan, precision);
                         }
                     }
                 }

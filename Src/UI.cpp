@@ -774,10 +774,41 @@ namespace UI {
          }
     }
 
+    static const char* ViewModeLabel(ViewMode m)
+    {
+        switch (m)
+        {
+        case ViewMode::Mode2D: return "2D";
+        case ViewMode::Mode3D:
+        default: return "3D";
+        }
+    }
+
     void DrawMainMenuBar()
     {
-        // Menu bar is rendered inside the dockspace host window via ImGui::BeginMenuBar().
-        // Intentionally left empty to avoid using ImGui::BeginMainMenuBar() in a dockspace editor.
+        if (!ImGui::BeginMainMenuBar())
+            return;
+
+        auto& gfx = Graphics::GetInstance();
+
+        if (ImGui::BeginMenu("Options"))
+        {
+            if (ImGui::BeginMenu("View Mode"))
+            {
+                const bool sel3d = (gfx.GetViewMode() == ViewMode::Mode3D);
+                const bool sel2d = (gfx.GetViewMode() == ViewMode::Mode2D);
+                if (ImGui::MenuItem("3D", nullptr, sel3d)) gfx.SetViewMode(ViewMode::Mode3D);
+                if (ImGui::MenuItem("2D", nullptr, sel2d)) gfx.SetViewMode(ViewMode::Mode2D);
+                ImGui::EndMenu();
+            }
+            ImGui::EndMenu();
+        }
+
+        // Lightweight indicator in the menu bar.
+        ImGui::SameLine();
+        ImGui::Text("View: %s", ViewModeLabel(gfx.GetViewMode()));
+
+        ImGui::EndMainMenuBar();
     }
 
     // 🔍 Optional Debug Overlay

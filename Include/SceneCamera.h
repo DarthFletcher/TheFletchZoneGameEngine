@@ -9,6 +9,7 @@ public:
 
     DirectX::XMMATRIX GetView() const;
     DirectX::XMMATRIX GetProj(float aspect) const;
+    DirectX::XMMATRIX GetOrthoProj(float aspect) const;
 
     void SetEye(float x, float y, float z) { eye_ = DirectX::XMVectorSet(x, y, z, 1.0f); }
     void SetTarget(float x, float y, float z) { target_ = DirectX::XMVectorSet(x, y, z, 1.0f); }
@@ -16,6 +17,7 @@ public:
 
     void SetFovYRadians(float fovY) { fovY_ = fovY; }
     void SetNearFar(float nearZ, float farZ) { nearZ_ = nearZ; farZ_ = farZ; }
+    void SetOrthoHeight(float h) { orthoHeight_ = h; }
 
     // Orbit camera controls (Scene view)
     void UpdateOrbit(float deltaX, float deltaY, float wheelDelta, bool orbit, bool pan, bool precision);
@@ -25,6 +27,7 @@ public:
     float GetPitch() const { return pitch_; }
     float GetDistance() const { return distance_; }
     DirectX::XMVECTOR GetTarget() const { return target_; }
+    float GetOrthoHeight() const { return orthoHeight_; }
 
 private:
     // Backing vectors used for rendering.
@@ -40,4 +43,7 @@ private:
     float fovY_ = DirectX::XMConvertToRadians(60.0f);
     float nearZ_ = 0.1f;
     float farZ_ = 100.0f;
+
+    // Ortho (2D view) zoom scale expressed as view height in world units.
+    float orthoHeight_ = 10.0f;
 };

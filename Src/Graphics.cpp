@@ -59,6 +59,9 @@ static bool ImGuiFrameStarted = false; // ✅ Track ImGui frame lifecycle
 static bool imguiReadyPublished = false;
 static bool g_ImGuiRenderedThisFrame = false;
 
+// Tracks which view mode the scene grid VB was built for (so we can rebuild on mode swap)
+static ViewMode g_LastSceneGridBuiltViewMode = ViewMode::Mode3D;
+
 // Static variable to track the next available SRV descriptor
 static UINT g_SRVDescriptorIndex = 1; // slot 0 reserved for ImGui font
 
@@ -2452,6 +2455,9 @@ void Graphics::EnsureScenePipeline()
 
 void Graphics::EnsureSceneGeometry()
 {
+    if (sceneTriangleVB && sceneGridVB)
+        return;
+
     if (!device)
         return;
 
@@ -2479,15 +2485,19 @@ void Graphics::EnsureSceneGeometry()
         sceneTriangleVBV.StrideInBytes = sizeof(SceneVertex);
     }
 
-    if (!sceneGridVB)
+    // Rebuild grid VB if not created yet OR if view mode changed (orientation swap)
+    if (!sceneGridVB || g_LastSceneGridBuiltViewMode != GetViewMode())
     {
-        // Simple XZ grid centered at origin; VS snaps it to camera.
+        sceneGridVB.Reset();
+
         const int half = 50;
         const float spacing = 1.0f;
-        const float y = 0.0f;
 
         std::vector<SceneVertex> v;
-        v.reserve(static_cast<std::vector<Graphics::SceneVertex, std::allocator<Graphics::SceneVertex>>::size_type>((half * 2 + 1)) * 4);
+        v.reserve(static_cast<size_t>((half * 2 + 1) * 4));
+
+        const bool mode3D = (GetViewMode() == ViewMode::Mode3D);
+        g_LastSceneGridBuiltViewMode = GetViewMode();
 
         for (int i = -half; i <= half; ++i)
         {
@@ -2497,13 +2507,32 @@ void Graphics::EnsureSceneGeometry()
             const float c = major ? 0.55f : 0.35f;
             const float col[4] = { c, c, c, a };
 
-            // line parallel X (vary Z)
-            v.push_back({ { -half * spacing, y, k }, { col[0], col[1], col[2], col[3] } });
-            v.push_back({ {  half * spacing, y, k }, { col[0], col[1], col[2], col[3] } });
+            if (mode3D)
+            {
+                // XZ grid at Y=0
+                const float y = 0.0f;
 
-            // line parallel Z (vary X)
-            v.push_back({ { k, y, -half * spacing }, { col[0], col[1], col[2], col[3] } });
-            v.push_back({ { k, y,  half * spacing }, { col[0], col[1], col[2], col[3] } });
+                // line parallel X (vary Z)
+                v.push_back({ { -half * spacing, y, k }, { col[0], col[1], col[2], col[3] } });
+                v.push_back({ {  half * spacing, y, k }, { col[0], col[1], col[2], col[3] } });
+
+                // line parallel Z (vary X)
+                v.push_back({ { k, y, -half * spacing }, { col[0], col[1], col[2], col[3] } });
+                v.push_back({ { k, y,  half * spacing }, { col[0], col[1], col[2], col[3] } });
+            }
+            else
+            {
+                // XY grid at Z=0
+                const float z = 0.0f;
+
+                // line parallel X (vary Y)
+                v.push_back({ { -half * spacing, k, z }, { col[0], col[1], col[2], col[3] } });
+                v.push_back({ {  half * spacing, k, z }, { col[0], col[1], col[2], col[3] } });
+
+                // line parallel Y (vary X)
+                v.push_back({ { k, -half * spacing, z }, { col[0], col[1], col[2], col[3] } });
+                v.push_back({ { k,  half * spacing, z }, { col[0], col[1], col[2], col[3] } });
+            }
         }
 
         sceneGridVertexCount = (UINT)v.size();

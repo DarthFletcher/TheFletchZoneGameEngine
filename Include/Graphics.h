@@ -32,6 +32,15 @@ struct FrameRenderBuffer {
     Microsoft::WRL::ComPtr<ID3D12Resource> VertexBuffer;
 };
 
+enum class ViewMode
+{
+    Mode3D,
+    Mode2D
+};
+
+// Editor setting (kept in Graphics module for now)
+inline ViewMode g_EditorViewMode = ViewMode::Mode3D;
+
 class Graphics {
 public:
     void EnsureValidCommandQueue();
@@ -153,6 +162,10 @@ public:
 
     // Editor access
     SceneCamera& GetSceneCamera() { return sceneCamera; }
+
+    // View mode (editor setting)
+    ViewMode GetViewMode() const { return g_EditorViewMode; }
+    void SetViewMode(ViewMode mode) { g_EditorViewMode = mode; }
 
     // Diagnostics helpers (read-only)
     UINT GetBackBufferIndex() const { return currentBackBufferIndex; }
