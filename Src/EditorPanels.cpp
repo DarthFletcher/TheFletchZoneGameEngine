@@ -4,6 +4,7 @@
 #include "Graphics.h"
 #include "Logger.h"
 
+#include <format>
 #include <string>
 
 namespace EditorPanels
@@ -59,6 +60,41 @@ namespace EditorPanels
 
                     const bool hovered = ImGui::IsItemHovered();
                     const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+
+                    // Cache scene image rect for picking
+                    const ImVec2 sceneMin = ImGui::GetItemRectMin();
+
+                    // Scene picking (LMB) - preserve camera-nav priority (RMB orbit / MMB pan)
+                    if (hovered)
+                    {
+                        ImGuiIO& io = ImGui::GetIO();
+                        const bool lmbClicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+                        const bool rmbDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                        const bool mmbDown = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+
+                        if (!io.WantCaptureMouse && lmbClicked && !rmbDown && !mmbDown)
+                        {
+                            DirectX::XMFLOAT3 hit{};
+                            PickRay ray{};
+
+                            const bool hitOk = (gfx.GetViewMode() == ViewMode::Mode2D)
+                                ? gfx.TryPickSceneGridZ0(io.MousePos, sceneMin, size, hit, &ray)
+                                : gfx.TryPickSceneGridY0(io.MousePos, sceneMin, size, hit, &ray);
+
+                            if (hitOk)
+                            {
+                                Logger::Log(LogLevel::Info, std::format(
+                                    "Pick hit: ({:.3f}, {:.3f}, {:.3f}) | ray o=({:.3f},{:.3f},{:.3f}) d=({:.3f},{:.3f},{:.3f})",
+                                    hit.x, hit.y, hit.z,
+                                    ray.origin.x, ray.origin.y, ray.origin.z,
+                                    ray.dir.x, ray.dir.y, ray.dir.z));
+                            }
+                            else
+                            {
+                                Logger::Log(LogLevel::Info, "Pick miss (no plane intersection)");
+                            }
+                        }
+                    }
 
                     if (hovered || focused)
                     {

@@ -41,6 +41,12 @@ enum class ViewMode
 // Editor setting (kept in Graphics module for now)
 inline ViewMode g_EditorViewMode = ViewMode::Mode3D;
 
+struct PickRay
+{
+    DirectX::XMFLOAT3 origin;
+    DirectX::XMFLOAT3 dir;
+};
+
 class Graphics {
 public:
     void EnsureValidCommandQueue();
@@ -180,6 +186,11 @@ public:
 
     // Deferred main swapchain resize (called from WM_SIZE). Applied at top of BeginFrame.
     void RequestResize(UINT width, UINT height);
+
+    // Scene picking helpers
+    PickRay ComputeScenePickRay(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize) const;
+    bool TryPickSceneGridY0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay = nullptr) const;
+    bool TryPickSceneGridZ0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay = nullptr) const;
 
 private:
     HRESULT CreateDX12Device();
