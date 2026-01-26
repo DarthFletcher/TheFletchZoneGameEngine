@@ -125,7 +125,7 @@ namespace UI {
         // Log secondary viewport/windows mapping
         LogImGuiSecondaryWindows();
 
-        // Diagnostic overlay (top-left) to confirm execution order.
+        // Diagnostic window (dockable) to confirm execution order.
         if (g_showFrameDiag)
         {
             const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -134,25 +134,15 @@ namespace UI {
             const ImVec2 workPos = vp ? vp->WorkPos : ImVec2(0, 0);
             const ImVec2 workSize = vp ? vp->WorkSize : ImVec2(0, 0);
 
-            ImGui::SetNextWindowBgAlpha(0.35f);
-            ImGui::SetNextWindowPos(ImVec2(workPos.x + 8.0f, workPos.y + 8.0f), ImGuiCond_Always);
-            if (vp)
-                ImGui::SetNextWindowViewport(vp->ID);
-            ImGui::Begin("TFZ_FrameDiag",
-                nullptr,
-                ImGuiWindowFlags_NoDocking |
-                ImGuiWindowFlags_NoTitleBar |
-                ImGuiWindowFlags_AlwaysAutoResize |
-                ImGuiWindowFlags_NoSavedSettings |
-                ImGuiWindowFlags_NoFocusOnAppearing |
-                ImGuiWindowFlags_NoNav);
-
-            ImGui::Text("Frame: %d", g_editorShellFrameCounter);
-            ImGui::Text("BeginDockSpace(): %s", g_dockspaceTouchedThisFrame ? "YES" : "NO");
-            ImGui::Text("DrawCommandStrip(): %s", g_commandStripTouchedThisFrame ? "YES" : "NO");
-            ImGui::Separator();
-            ImGui::Text("Viewport Pos: (%.0f, %.0f) Size: (%.0f, %.0f)", vpPos.x, vpPos.y, vpSize.x, vpSize.y);
-            ImGui::Text("WorkPos:     (%.0f, %.0f) WorkSize: (%.0f, %.0f)", workPos.x, workPos.y, workSize.x, workSize.y);
+            if (ImGui::Begin("Frame Diagnostics", &g_showFrameDiag))
+            {
+                ImGui::Text("Frame: %d", g_editorShellFrameCounter);
+                ImGui::Text("BeginDockSpace(): %s", g_dockspaceTouchedThisFrame ? "YES" : "NO");
+                ImGui::Text("DrawCommandStrip(): %s", g_commandStripTouchedThisFrame ? "YES" : "NO");
+                ImGui::Separator();
+                ImGui::Text("Viewport Pos: (%.0f, %.0f) Size: (%.0f, %.0f)", vpPos.x, vpPos.y, vpSize.x, vpSize.y);
+                ImGui::Text("WorkPos:     (%.0f, %.0f) WorkSize: (%.0f, %.0f)", workPos.x, workPos.y, workSize.x, workSize.y);
+            }
             ImGui::End();
         }
     }
