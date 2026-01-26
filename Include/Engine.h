@@ -7,6 +7,7 @@
 #include "Game.h"
 #include "Logger.h"
 #include "HintMacros.h"
+#include "EditorState.h"
 
 static constexpr int NUM_BACK_BUFFERS = 3;
 
@@ -15,6 +16,9 @@ public:
     bool Initialize(HINSTANCE hInstance, int nCmdShow); // ✅ Initialize engine with instance and show command
     void Run();                                         // ✅ Main game loop
     void Shutdown();                                    // ✅ Clean up resources
+
+    EditorState& GetEditorState() { return editorState; }
+    const EditorState& GetEditorState() const { return editorState; }
 
 private:
     // Initialization
@@ -34,6 +38,8 @@ private:
     Input input;
     Timer timer;
     Game game;
+
+    EditorState editorState;
 
     void GameLoop(HWND hWnd);
 

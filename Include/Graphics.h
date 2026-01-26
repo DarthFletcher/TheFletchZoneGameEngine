@@ -23,6 +23,7 @@
 #include <algorithm>
 
 #include "SceneCamera.h"
+#include "EditorCommon.h"
 
 extern HWND mainHwnd;
 extern ID3D12DescriptorHeap* g_SRVHeap;
@@ -30,12 +31,6 @@ extern ID3D12DescriptorHeap* g_SRVHeap;
 struct FrameRenderBuffer {
     Microsoft::WRL::ComPtr<ID3D12Resource> IndexBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> VertexBuffer;
-};
-
-enum class ViewMode
-{
-    Mode3D,
-    Mode2D
 };
 
 // Editor setting (kept in Graphics module for now)

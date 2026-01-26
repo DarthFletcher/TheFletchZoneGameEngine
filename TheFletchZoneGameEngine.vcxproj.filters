@@ -129,6 +129,12 @@
     <ClInclude Include="include\CrashDiagnostics.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Include\SceneCamera.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Include\EditorCommon.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui_demo.cpp">
@@ -218,6 +224,9 @@
     <ClCompile Include="src\CrashDiagnostics.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Src\SceneCamera.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="TheFletchZoneGameEngine.rc">
@@ -240,6 +249,9 @@
       <Filter>Header Files</Filter>
     </None>
     <None Include="packages.config" />
+    <None Include="Directory.Build.targets" />
+    <None Include="tools\FixSceneShaderBuildStep.ps1" />
+    <None Include="tools\FixShaderBuildStep.ps1" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />
@@ -251,7 +263,6 @@
     <FxCompile Include="shaders\imgui_vs.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\scene_grid_vs.hlsl" />
-    <FxCompile Include="shaders\scene_grid_ps.hlsl" />
+    <FxCompile Include="shaders\scene_triangle_vs.hlsl" />
   </ItemGroup>
 </Project>

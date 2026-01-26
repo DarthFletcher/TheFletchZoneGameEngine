@@ -1,0 +1,124 @@
+#pragma once
+
+#include <DirectXMath.h>
+#include <cstdint>
+
+#include "EditorCommon.h"
+
+// Forward declare to avoid heavy includes.
+// Your Entity class exists already in your project.
+class Entity;
+
+// =====================================================
+// Editor interaction enums
+// =====================================================
+enum class CameraNavMode : uint8_t
+{
+    Unity_AltMouse = 0,   // Alt + LMB/MMB/RMB
+    Blender_MMB,          // MMB orbit/pan
+    TFZ_RMB               // RMB orbit + MMB pan (TFZ style)
+};
+
+enum class GridMode : uint8_t
+{
+    Infinite_CameraPivot = 0,
+    Fixed_WorldOrigin
+};
+
+// =====================================================
+// Selection
+// =====================================================
+struct EditorSelection
+{
+    Entity* entity = nullptr;
+
+    // Always keep a "selection position" even if entity is null.
+    // This is useful for spawning gizmos / debug markers.
+    DirectX::XMFLOAT3 position = { 0.0f, 0.0f, 0.0f };
+
+    bool hasSelection() const { return entity != nullptr; }
+
+    void Clear()
+    {
+        entity = nullptr;
+        position = { 0.0f, 0.0f, 0.0f };
+    }
+};
+
+// =====================================================
+// Gizmo interaction (Translate Gizmo foundation)
+// =====================================================
+struct GizmoInteraction
+{
+    // Which axis is currently hovered (hot)
+    // -1 = none, 0 = X, 1 = Y, 2 = Z
+    int hotAxis = -1;
+
+    // Which axis is being dragged (active)
+    // -1 = none, 0 = X, 1 = Y, 2 = Z
+    int activeAxis = -1;
+
+    bool dragging = false;
+
+    // Used for ray-plane drag logic
+    DirectX::XMFLOAT3 dragStartHit = { 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT3 dragStartPos = { 0.0f, 0.0f, 0.0f };
+
+    // Some drag systems need a "valid hit start"
+    bool hasDragStartHit = false;
+
+    void Reset()
+    {
+        hotAxis = -1;
+        activeAxis = -1;
+        dragging = false;
+        hasDragStartHit = false;
+        dragStartHit = { 0.0f, 0.0f, 0.0f };
+        dragStartPos = { 0.0f, 0.0f, 0.0f };
+    }
+};
+
+// =====================================================
+// TFZ Grab Mode (optional for later, safe to include now)
+// =====================================================
+struct TFZGrabState
+{
+    bool active = false;      // currently grabbing
+    bool canceled = false;
+
+    // Axis lock: -1 none, 0 X, 1 Y, 2 Z
+    int lockAxis = -1;
+
+    // Start state for cancel/commit
+    DirectX::XMFLOAT3 startHit = { 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT3 startPos = { 0.0f, 0.0f, 0.0f };
+};
+
+// =====================================================
+// Main Editor State
+// =====================================================
+struct EditorState
+{
+    // Modes
+    CameraNavMode cameraNavMode = CameraNavMode::Unity_AltMouse;
+    GridMode gridMode = GridMode::Infinite_CameraPivot;
+    ViewMode viewMode = ViewMode::Mode3D;
+
+    // Core interaction state
+    EditorSelection selection;
+    GizmoInteraction gizmo;
+
+    // TFZ mode (optional)
+    TFZGrabState grab;
+
+    // Debug toggles (optional)
+    bool showDiagnostics = true;
+    bool showLogViewer = true;
+    bool showDebugOverlay = true;
+
+    void ResetAllInteraction()
+    {
+        gizmo.Reset();
+        grab = TFZGrabState{};
+    }
+};

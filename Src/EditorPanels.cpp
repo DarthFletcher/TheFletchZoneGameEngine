@@ -1,6 +1,7 @@
 #include "EditorPanels.h"
 
 #include "imgui.h"
+#include "EditorCommon.h"
 #include "Graphics.h"
 #include "Logger.h"
 

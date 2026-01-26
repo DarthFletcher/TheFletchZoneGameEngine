@@ -161,6 +161,7 @@
     <ClInclude Include="include\BootProgress.h" />
     <ClInclude Include="include\Config.h" />
     <ClInclude Include="include\CrashDiagnostics.h" />
+    <ClInclude Include="Include\EditorCommon.h" />
     <ClInclude Include="include\EditorPanels.h" />
     <ClInclude Include="include\Engine.h" />
     <ClInclude Include="include\Entity.h" />
