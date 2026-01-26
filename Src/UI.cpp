@@ -7,6 +7,9 @@
 #include <Graphics.h>
 #include "SplashScreen.h"
 #include "EditorPanels.h"
+#include "EditorState.h"
+
+extern Engine* g_engineInstance;
 
 namespace UI {
 
@@ -614,6 +617,52 @@ namespace UI {
              if (ImGui::MenuItem("VSync", nullptr, vsyncEnabled)) {
                  vsyncEnabled = !vsyncEnabled;
                  Logger::Log(LogLevel::Info, vsyncEnabled ? "✅ VSync Enabled" : "⛔ VSync Disabled");
+             }
+
+             // Shared editor state
+             extern Engine* g_engineInstance;
+             EditorState& editor = ::g_engineInstance->GetEditorState();
+
+             if (ImGui::BeginMenu("Camera Navigation"))
+             {
+                 const bool isUnity = (editor.cameraNavMode == CameraNavMode::Unity_AltMouse);
+                 const bool isBlender = (editor.cameraNavMode == CameraNavMode::Blender_MMB);
+                 const bool isTFZ = (editor.cameraNavMode == CameraNavMode::TFZ_RMB);
+
+                 if (ImGui::MenuItem("Unity (Alt + Mouse)", nullptr, isUnity))
+                     editor.cameraNavMode = CameraNavMode::Unity_AltMouse;
+                 if (ImGui::MenuItem("Blender (MMB)", nullptr, isBlender))
+                     editor.cameraNavMode = CameraNavMode::Blender_MMB;
+                 if (ImGui::MenuItem("TFZ (RMB)", nullptr, isTFZ))
+                     editor.cameraNavMode = CameraNavMode::TFZ_RMB;
+
+                 ImGui::EndMenu();
+             }
+
+             if (ImGui::BeginMenu("View Mode"))
+             {
+                 const bool is3D = (editor.viewMode == ViewMode::Mode3D);
+                 const bool is2D = (editor.viewMode == ViewMode::Mode2D);
+
+                 if (ImGui::MenuItem("3D", nullptr, is3D))
+                     editor.viewMode = ViewMode::Mode3D;
+                 if (ImGui::MenuItem("2D", nullptr, is2D))
+                     editor.viewMode = ViewMode::Mode2D;
+
+                 ImGui::EndMenu();
+             }
+
+             if (ImGui::BeginMenu("Grid Mode"))
+             {
+                 const bool isInfinite = (editor.gridMode == GridMode::Infinite_CameraPivot);
+                 const bool isFixed = (editor.gridMode == GridMode::Fixed_WorldOrigin);
+
+                 if (ImGui::MenuItem("Infinite", nullptr, isInfinite))
+                     editor.gridMode = GridMode::Infinite_CameraPivot;
+                 if (ImGui::MenuItem("Fixed (World Origin)", nullptr, isFixed))
+                     editor.gridMode = GridMode::Fixed_WorldOrigin;
+
+                 ImGui::EndMenu();
              }
 
              // Custom Themes

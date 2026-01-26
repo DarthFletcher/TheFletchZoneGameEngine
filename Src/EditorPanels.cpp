@@ -118,6 +118,7 @@ namespace EditorPanels
                             const bool mmb = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
 
                             const bool alt = io.KeyAlt;
+                            const bool ctrl = io.KeyCtrl;
 
                             float wheelDelta = 0.0f;
                             if (io.MouseWheel != 0.0f)
@@ -125,37 +126,52 @@ namespace EditorPanels
 
                             bool orbit = false;
                             bool pan = false;
+                            bool dolly = false;
 
-                            // Map nav mode -> orbit/pan inputs
+                            // Map nav mode -> orbit/pan/dolly inputs
                             switch (editor.cameraNavMode)
                             {
                             case CameraNavMode::Unity_AltMouse:
-                                // Unity: Alt+LMB orbit, Alt+MMB pan, Alt+RMB zoom-drag (treated as orbit for now)
-                                if (alt)
-                                {
-                                    orbit = (gfx.GetViewMode() == ViewMode::Mode3D) ? (lmb || rmb) : false;
-                                    pan = mmb;
-                                }
+                                orbit = alt && lmb && (gfx.GetViewMode() == ViewMode::Mode3D);
+                                pan = alt && mmb;
+                                dolly = alt && rmb;
                                 break;
 
                             case CameraNavMode::Blender_MMB:
-                                // Blender: MMB orbit, Shift+MMB pan (also allow MMB pan in 2D)
-                                orbit = (gfx.GetViewMode() == ViewMode::Mode3D) ? mmb : false;
+                                orbit = mmb && !precision && !ctrl && (gfx.GetViewMode() == ViewMode::Mode3D);
                                 pan = mmb && precision;
+                                dolly = mmb && ctrl;
                                 break;
 
                             case CameraNavMode::TFZ_RMB:
                             default:
-                                // TFZ: RMB orbit (3D), MMB pan
-                                orbit = (gfx.GetViewMode() == ViewMode::Mode3D) ? rmb : false;
+                                orbit = rmb && !ctrl && (gfx.GetViewMode() == ViewMode::Mode3D);
                                 pan = mmb;
+                                dolly = rmb && ctrl;
                                 break;
+                            }
+
+                            const bool navActive = orbit || pan || dolly || (wheelDelta != 0.0f);
+
+                            // If camera nav is active, cancel gizmo dragging and prevent starting LMB selection/drag.
+                            if (navActive)
+                            {
+                                if (editor.gizmo.dragging)
+                                    editor.gizmo.Reset();
                             }
 
                             // Never allow LMB picking to be interpreted as camera nav.
                             // Also prevents accidental pan while clicking.
                             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                                 pan = false;
+
+                            // Dolly is implemented by converting mouse vertical delta into wheel-like zoom.
+                            // (Keeps the camera logic centralized in SceneCamera::UpdateOrbit())
+                            if (dolly)
+                            {
+                                const float dollyScale = precision ? 0.75f : 1.5f;
+                                wheelDelta += (-io.MouseDelta.y) * dollyScale * 120.0f;
+                            }
 
                             gfx.GetSceneCamera().UpdateOrbit(io.MouseDelta.x, io.MouseDelta.y, wheelDelta, orbit, pan, precision);
                         }
