@@ -779,16 +779,19 @@ namespace UI {
         if (!ImGui::BeginMainMenuBar())
             return;
 
-        auto& gfx = Graphics::GetInstance();
-
         if (ImGui::BeginMenu("Options"))
         {
             if (ImGui::BeginMenu("View Mode"))
             {
-                const bool sel3d = (gfx.GetViewMode() == ViewMode::Mode3D);
-                const bool sel2d = (gfx.GetViewMode() == ViewMode::Mode2D);
-                if (ImGui::MenuItem("3D", nullptr, sel3d)) gfx.SetViewMode(ViewMode::Mode3D);
-                if (ImGui::MenuItem("2D", nullptr, sel2d)) gfx.SetViewMode(ViewMode::Mode2D);
+                auto& gfx = Graphics::GetInstance();
+                const bool is3D = (gfx.GetViewMode() == ViewMode::Mode3D);
+                const bool is2D = (gfx.GetViewMode() == ViewMode::Mode2D);
+
+                if (ImGui::MenuItem("3D", nullptr, is3D))
+                    gfx.SetViewMode(ViewMode::Mode3D);
+                if (ImGui::MenuItem("2D", nullptr, is2D))
+                    gfx.SetViewMode(ViewMode::Mode2D);
+
                 ImGui::EndMenu();
             }
             ImGui::EndMenu();
@@ -796,7 +799,7 @@ namespace UI {
 
         // Lightweight indicator in the menu bar.
         ImGui::SameLine();
-        ImGui::Text("View: %s", ViewModeLabel(gfx.GetViewMode()));
+        ImGui::Text("View: %s", ViewModeLabel(Graphics::GetInstance().GetViewMode()));
 
         ImGui::EndMainMenuBar();
     }

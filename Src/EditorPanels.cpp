@@ -4,6 +4,8 @@
 #include "EditorCommon.h"
 #include "Graphics.h"
 #include "Logger.h"
+#include "EditorState.h"
+#include "Engine.h"
 
 #include <format>
 #include <string>
@@ -97,24 +99,63 @@ namespace EditorPanels
                         }
                     }
 
+                    // Camera input gate: only when interacting with the Scene image OR the Scene window is focused.
+                    // (Prevents input feeling "stuck" when the image hover detection is flaky.)
                     if (hovered || focused)
                     {
                         ImGuiIO& io = ImGui::GetIO();
 
-                        const bool precision = io.KeyShift;
-                        const bool rmb = ImGui::IsMouseDown(ImGuiMouseButton_Right);
-                        const bool mmb = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
-                        const float wheel = io.MouseWheel;
-
-                        // Avoid fighting ImGui when it wants to capture mouse (e.g. dragging other widgets).
+                        // Avoid fighting ImGui when it wants to capture mouse.
                         if (!io.WantCaptureMouse)
                         {
-                            float wheelDelta = 0.0f;
-                            if (wheel != 0.0f)
-                                wheelDelta = wheel * 120.0f; // match WM_MOUSEWHEEL units
+                            extern Engine* g_engineInstance;
+                            EditorState& editor = g_engineInstance->GetEditorState();
 
-                            const bool orbit = (gfx.GetViewMode() == ViewMode::Mode3D) ? rmb : false;
-                            const bool pan = mmb;
+                            const bool precision = io.KeyShift;
+
+                            const bool lmb = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                            const bool rmb = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                            const bool mmb = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+
+                            const bool alt = io.KeyAlt;
+
+                            float wheelDelta = 0.0f;
+                            if (io.MouseWheel != 0.0f)
+                                wheelDelta = io.MouseWheel * 120.0f; // match WM_MOUSEWHEEL units
+
+                            bool orbit = false;
+                            bool pan = false;
+
+                            // Map nav mode -> orbit/pan inputs
+                            switch (editor.cameraNavMode)
+                            {
+                            case CameraNavMode::Unity_AltMouse:
+                                // Unity: Alt+LMB orbit, Alt+MMB pan, Alt+RMB zoom-drag (treated as orbit for now)
+                                if (alt)
+                                {
+                                    orbit = (gfx.GetViewMode() == ViewMode::Mode3D) ? (lmb || rmb) : false;
+                                    pan = mmb;
+                                }
+                                break;
+
+                            case CameraNavMode::Blender_MMB:
+                                // Blender: MMB orbit, Shift+MMB pan (also allow MMB pan in 2D)
+                                orbit = (gfx.GetViewMode() == ViewMode::Mode3D) ? mmb : false;
+                                pan = mmb && precision;
+                                break;
+
+                            case CameraNavMode::TFZ_RMB:
+                            default:
+                                // TFZ: RMB orbit (3D), MMB pan
+                                orbit = (gfx.GetViewMode() == ViewMode::Mode3D) ? rmb : false;
+                                pan = mmb;
+                                break;
+                            }
+
+                            // Never allow LMB picking to be interpreted as camera nav.
+                            // Also prevents accidental pan while clicking.
+                            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                                pan = false;
 
                             gfx.GetSceneCamera().UpdateOrbit(io.MouseDelta.x, io.MouseDelta.y, wheelDelta, orbit, pan, precision);
                         }

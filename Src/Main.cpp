@@ -56,6 +56,8 @@ static void EnableDPIAwareness() {
     Logger::Log(LogLevel::Info, std::format("🧮 Desktop DPI: {} (Scale: {:.2f}x)", dpi, dpiScale));
 }
 
+Engine* g_engineInstance = nullptr;
+
 int WINAPI WinMain(
     _In_ HINSTANCE hInstance,
     _In_opt_ HINSTANCE hPrevInstance,
@@ -72,6 +74,7 @@ int WINAPI WinMain(
 
     // 🎮 Launch engine
     Engine engine;
+    g_engineInstance = &engine;
 
     if (!engine.Initialize(hInstance, nCmdShow)) {
         MessageBox(nullptr, L"Failed to initialize the engine.", L"Error", MB_OK | MB_ICONERROR);
@@ -80,6 +83,8 @@ int WINAPI WinMain(
 
     engine.Run();
     engine.Shutdown();
+
+    g_engineInstance = nullptr;
 
     return 0;
 }
