@@ -306,4 +306,9 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneCB;
     SceneCBData sceneCBData = {};
+
+    // Scene axes (XYZ) debug lines
+    Microsoft::WRL::ComPtr<ID3D12Resource> sceneAxesVB;
+    D3D12_VERTEX_BUFFER_VIEW sceneAxesVBV = {};
+    UINT sceneAxesVertexCount = 0;
 };

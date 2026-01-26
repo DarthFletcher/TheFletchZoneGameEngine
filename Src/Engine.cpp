@@ -599,3 +599,41 @@ void Engine::GameLoop(HWND hWnd)
     Update();
     graphics.Render(hWnd);
 }
+
+// =============================
+// Engine State Machine
+// =============================
+namespace
+{
+    static Engine::State g_engineState = Engine::State::Editing;
+}
+
+Engine::State Engine::GetState()
+{
+    return g_engineState;
+}
+
+void Engine::SetState(State s)
+{
+    if (g_engineState == s)
+        return;
+
+    g_engineState = s;
+    Logger::Log(LogLevel::Info, std::format("Engine state -> {}",
+        (s == State::Editing) ? "Editing" : (s == State::Playing) ? "Playing" : "Paused"));
+}
+
+void Engine::NewScene()
+{
+    Logger::Log(LogLevel::Info, "NewScene called");
+}
+
+void Engine::SaveScene()
+{
+    Logger::Log(LogLevel::Info, "SaveScene called");
+}
+
+void Engine::LoadScene()
+{
+    Logger::Log(LogLevel::Info, "LoadScene called");
+}

@@ -13,6 +13,20 @@ static constexpr int NUM_BACK_BUFFERS = 3;
 
 class Engine {
 public:
+    enum class State
+    {
+        Editing,
+        Playing,
+        Paused
+    };
+
+    static State GetState();
+    static void SetState(State s);
+
+    static void NewScene();
+    static void SaveScene();
+    static void LoadScene();
+
     bool Initialize(HINSTANCE hInstance, int nCmdShow); // ✅ Initialize engine with instance and show command
     void Run();                                         // ✅ Main game loop
     void Shutdown();                                    // ✅ Clean up resources

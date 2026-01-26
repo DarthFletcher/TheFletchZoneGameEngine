@@ -9,6 +9,7 @@
 
 #include <format>
 #include <string>
+#include <chrono>
 
 namespace EditorPanels
 {
@@ -20,6 +21,18 @@ namespace EditorPanels
         case ViewMode::Mode3D:
         default: return "3D";
         }
+    }
+
+    static std::chrono::steady_clock::time_point g_ScenePanelDiag_Last = std::chrono::steady_clock::now();
+    static bool ScenePanelDiag_ShouldLog(std::chrono::milliseconds interval = std::chrono::milliseconds(1000))
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - g_ScenePanelDiag_Last >= interval)
+        {
+            g_ScenePanelDiag_Last = now;
+            return true;
+        }
+        return false;
     }
 
     static EditorPanel g_scene{
@@ -58,6 +71,15 @@ namespace EditorPanels
                 ImTextureID tex = gfx.GetSceneImGuiTextureID();
                 if (tex)
                 {
+                    if (ScenePanelDiag_ShouldLog())
+                    {
+                        // NOTE: In this codebase ImTextureID is treated as a D3D12 CPU descriptor handle ptr.
+                        Logger::Log(LogLevel::Debug, std::format(
+                            "[SceneDiag] Scene panel ImGui::Image tex=0x{:X} size=({:.1f},{:.1f}) rtSize=({:.0f},{:.0f})",
+                            (UINT64)tex, size.x, size.y,
+                            gfx.GetSceneRenderTargetSize().x, gfx.GetSceneRenderTargetSize().y));
+                    }
+
                     // Note: UVs flipped vertically for DX12 texture coordinates
                     ImGui::Image(tex, size, ImVec2(0, 1), ImVec2(1, 0));
 

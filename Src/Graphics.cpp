@@ -68,7 +68,34 @@ static UINT g_SRVDescriptorIndex = 1; // slot 0 reserved for ImGui font
 // After includes, at file scope
 ID3D12DescriptorHeap* g_SRVHeap = nullptr; // global definition
 
-void SanitizeImGuiStyleAlpha(); // ✅ Add this here
+// Scene diagnostics (throttled)
+static std::chrono::steady_clock::time_point g_SceneDiag_Last = std::chrono::steady_clock::now();
+static uint64_t g_SceneDiag_Frame = 0;
+
+static bool SceneDiag_ShouldLog(std::chrono::milliseconds interval = std::chrono::milliseconds(1000))
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (now - g_SceneDiag_Last >= interval)
+    {
+        g_SceneDiag_Last = now;
+        return true;
+    }
+    return false;
+}
+
+static const char* D3D12StateToString(D3D12_RESOURCE_STATES s)
+{
+    switch (s)
+    {
+    case D3D12_RESOURCE_STATE_COMMON: return "COMMON";
+    case D3D12_RESOURCE_STATE_RENDER_TARGET: return "RENDER_TARGET";
+    case D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE: return "PIXEL_SHADER_RESOURCE";
+    case D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE: return "NON_PIXEL_SHADER_RESOURCE";
+    case D3D12_RESOURCE_STATE_COPY_DEST: return "COPY_DEST";
+    case D3D12_RESOURCE_STATE_COPY_SOURCE: return "COPY_SOURCE";
+    default: return "(other)";
+    }
+}
 
 // Converts a wide string (std::wstring) to a UTF-8 encoded std::string
 static std::string WStringToUTF8(const std::wstring& wstr)
@@ -90,7 +117,7 @@ void Graphics::EnsureValidCommandQueue() {
 }
 //===============================================
 // Constructor & Destructor Functions
-// ===============================================
+// --------------------------------
 // Initializes frame timing and other members
 // Ensures proper cleanup on destruction
 //===============================================
@@ -369,6 +396,18 @@ bool Graphics::Initialize(HWND hWnd)
 void Graphics::Shutdown()
 {
     Logger::Log(LogLevel::Info, "🔻 Shutting down graphics...");
+
+    // Ensure we are not mid-recording when releasing GPU resources.
+    if (commandListOpen)
+    {
+        Logger::Log(LogLevel::Warning, "⚠️ Shutdown called while command list is open; attempting to close it before releasing resources.");
+        if (commandList)
+        {
+            (void)commandList->Close();
+        }
+        commandListOpen = false;
+    }
+
     FlushGPU();  // ✅ Always flush first
 
     // 1. Shut down ImGui BEFORE freeing ANY DX12 heaps
@@ -2156,6 +2195,17 @@ void Graphics::SetupImGuiFontsAndScaling(HWND hWnd)
     fontCfg.SizePixels = 16.0f * scale;
     io.Fonts->AddFontDefault(&fontCfg);
 
+    // Merge Font Awesome (optional). If missing, we keep running and fall back to text labels.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        ImFontConfig config;
+        config.MergeMode = true;
+        config.PixelSnapH = true;
+        static const ImWchar ranges[] = { 0xf000, 0xf8ff, 0 };
+        const float iconSize = fontCfg.SizePixels;
+        io.Fonts->AddFontFromFileTTF("Assets/Fonts/fa-solid-900.ttf", iconSize, &config, ranges);
+    }
+
     // Render in pixel coords; keep framebuffer scale at 1 to avoid "zoom/crop".
     io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
 
@@ -2172,7 +2222,7 @@ void Graphics::SetupImGuiFontsAndScaling(HWND hWnd)
 }
 
 //==================================================
-// Reload ImGui Font Function
+// Reload ImGui Font
 //==================================================
 void Graphics::ReloadImGuiFont(float fontSize)
 {
@@ -2191,6 +2241,17 @@ void Graphics::ReloadImGuiFont(float fontSize)
 
     io.Fonts->AddFontDefault(&config);
     io.Fonts->Build();
+
+    // Merge Font Awesome (optional). If missing, we keep running and fall back to text labels.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        ImFontConfig config;
+        config.MergeMode = true;
+        config.PixelSnapH = true;
+        static const ImWchar ranges[] = { 0xf000, 0xf8ff, 0 };
+        const float iconSize = fontSize;
+        io.Fonts->AddFontFromFileTTF("Assets/Fonts/fa-solid-900.ttf", iconSize, &config, ranges);
+    }
 
     Logger::Log(LogLevel::Info, std::format("🔁 Font reloaded immediately (size: {:.1f}px)", fontSize));
 
@@ -2238,23 +2299,25 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     if (!device || !imguiHeap)
         return;
 
-    width = (std::max)(1u, width);
-    height = (std::max)(1u, height);
-
-    if (sceneRenderTarget && sceneRTWidth == width && sceneRTHeight == height)
-        return;
-
-    // Never recreate while recording commands. Defer to next safe point.
+    // If we need to resize while recording, defer (don't Flush/Reset mid-list).
     if (commandListOpen)
     {
+        width = (std::max)(1u, width);
+        height = (std::max)(1u, height);
         pendingSceneRTW = width;
         pendingSceneRTH = height;
         pendingSceneRTResize = true;
         return;
     }
 
+    if (sceneRenderTarget && sceneRTWidth == width && sceneRTHeight == height)
+        return;
+
     // If resizing/recreating, ensure GPU is idle (keeps this simple and safe).
     FlushGPU();
+
+    // IMPORTANT: avoid releasing a previously referenced scene SRV/RT before GPU is done.
+    // At this point commandListOpen==false and we flushed, so it is safe.
 
     sceneRenderTarget.Reset();
     sceneRtvHeap.Reset();
@@ -2354,8 +2417,14 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     sceneRTWidth = width;
     sceneRTHeight = height;
 
-    Logger::Log(LogLevel::Info, std::format("✅ Scene render target created: {}x{} | SRV GPU=0x{:X}",
-        sceneRTWidth, sceneRTHeight, (UINT64)sceneSrvGpu.ptr));
+    // When recreating or creating the scene SRV, log the CPU/GPU descriptor handles.
+    // (This verifies the descriptor slot ImGui will sample from.)
+    if (SceneDiag_ShouldLog())
+    {
+        Logger::Log(LogLevel::Debug, std::format(
+            "[SceneDiag] EnsureSceneRenderTarget: Scene SRV handles cpu=0x{:X} gpu=0x{:X} rt={}x{}",
+            (UINT64)sceneSrvCpu.ptr, (UINT64)sceneSrvGpu.ptr, sceneRTWidth, sceneRTHeight));
+    }
 }
 
 void Graphics::EnsureScenePipeline()
@@ -2455,7 +2524,8 @@ void Graphics::EnsureScenePipeline()
 
 void Graphics::EnsureSceneGeometry()
 {
-    if (sceneTriangleVB && sceneGridVB)
+    // Triangle VB is mode-independent, grid VB depends on view mode.
+    if (sceneTriangleVB && sceneGridVB && sceneAxesVB && g_LastSceneGridBuiltViewMode == GetViewMode())
         return;
 
     if (!device)
@@ -2483,6 +2553,49 @@ void Graphics::EnsureSceneGeometry()
         sceneTriangleVBV.BufferLocation = sceneTriangleVB->GetGPUVirtualAddress();
         sceneTriangleVBV.SizeInBytes = size;
         sceneTriangleVBV.StrideInBytes = sizeof(SceneVertex);
+    }
+
+    // Axes VB: rebuild if missing OR if view mode changed (2D uses XY axes, 3D uses XYZ)
+    if (!sceneAxesVB || g_LastSceneGridBuiltViewMode != GetViewMode())
+    {
+        sceneAxesVB.Reset();
+
+        const bool mode3D = (GetViewMode() == ViewMode::Mode3D);
+
+        std::vector<SceneVertex> a;
+        a.reserve(mode3D ? 6 : 4);
+
+        // X axis (red)
+        a.push_back({ { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.15f, 0.15f, 1.0f } });
+        a.push_back({ { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.15f, 0.15f, 1.0f } });
+
+        // Y axis (green)
+        a.push_back({ { 0.0f, 0.0f, 0.0f }, { 0.15f, 1.0f, 0.15f, 1.0f } });
+        a.push_back({ { 0.0f, 1.0f, 0.0f }, { 0.15f, 1.0f, 0.15f, 1.0f } });
+
+        if (mode3D)
+        {
+            // Z axis (blue)
+            a.push_back({ { 0.0f, 0.0f, 0.0f }, { 0.25f, 0.35f, 1.0f, 1.0f } });
+            a.push_back({ { 0.0f, 0.0f, 1.0f }, { 0.25f, 0.35f, 1.0f, 1.0f } });
+        }
+
+        sceneAxesVertexCount = (UINT)a.size();
+        const UINT size = (UINT)(a.size() * sizeof(SceneVertex));
+
+        CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
+        CD3DX12_RESOURCE_DESC buf = CD3DX12_RESOURCE_DESC::Buffer(size);
+        DX_CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&sceneAxesVB)));
+
+        void* p = nullptr;
+        CD3DX12_RANGE r(0, 0);
+        DX_CHECK(sceneAxesVB->Map(0, &r, &p));
+        memcpy(p, a.data(), size);
+        sceneAxesVB->Unmap(0, nullptr);
+
+        sceneAxesVBV.BufferLocation = sceneAxesVB->GetGPUVirtualAddress();
+        sceneAxesVBV.SizeInBytes = size;
+        sceneAxesVBV.StrideInBytes = sizeof(SceneVertex);
     }
 
     // Rebuild grid VB if not created yet OR if view mode changed (orientation swap)
@@ -2556,15 +2669,51 @@ void Graphics::EnsureSceneGeometry()
 
 void Graphics::RenderSceneToTarget()
 {
+    ++g_SceneDiag_Frame;
+
+    const bool wantLog = SceneDiag_ShouldLog();
+
+    if (wantLog)
+    {
+        Logger::Log(LogLevel::Debug, std::format(
+            "[SceneDiag] RenderSceneToTarget begin: frame={} cmdOpen={} cmdList={} device={} sceneRT={} state={} cb={} rs={} triPSO={} gridPSO={}",
+            g_SceneDiag_Frame,
+            commandListOpen ? 1 : 0,
+            commandList ? 1 : 0,
+            device ? 1 : 0,
+            sceneRenderTarget ? 1 : 0,
+            D3D12StateToString(sceneRTState),
+            sceneCB ? 1 : 0,
+            sceneRootSignature ? 1 : 0,
+            sceneTrianglePSO ? 1 : 0,
+            sceneGridPSO ? 1 : 0));
+    }
+
     // Scene RT is optional; only render if it exists.
     if (!commandListOpen || !commandList || !device)
+    {
+        if (wantLog)
+            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: command list not ready");
         return;
+    }
 
-    if (!sceneRenderTarget || sceneRTWidth == 0 || sceneRTHeight == 0 || sceneRtvHandle.ptr == 0)
+    if (!sceneRenderTarget)
+    {
+        if (wantLog)
+            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: sceneRenderTarget is null");
         return;
+    }
 
+    // Ensure pipeline/geometry/CB exist before recording draw calls.
     EnsureScenePipeline();
     EnsureSceneGeometry();
+
+    if (!sceneCB || !sceneRootSignature)
+    {
+        if (wantLog)
+            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: scene pipeline not ready (cb/rootSig missing)");
+        return;
+    }
 
     // Transition to render target
     if (sceneRTState != D3D12_RESOURCE_STATE_RENDER_TARGET)
@@ -2603,7 +2752,9 @@ void Graphics::RenderSceneToTarget()
     const float aspect = (sceneRTHeight > 0) ? (static_cast<float>(sceneRTWidth) / static_cast<float>(sceneRTHeight)) : 1.0f;
 
     const XMMATRIX view = sceneCamera.GetView();
-    const XMMATRIX proj = sceneCamera.GetProj(aspect);
+    const XMMATRIX proj = (GetViewMode() == ViewMode::Mode2D)
+        ? sceneCamera.GetOrthoProj(aspect)
+        : sceneCamera.GetProj(aspect);
 
     const XMMATRIX vpM = XMMatrixTranspose(view * proj);
     XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(sceneCBData.viewProj), vpM);
@@ -2624,6 +2775,15 @@ void Graphics::RenderSceneToTarget()
     memcpy(cbPtr, &sceneCBData, sizeof(sceneCBData));
     sceneCB->Unmap(0, nullptr);
 
+    // After constant buffer update, log a few viewProj elements.
+    if (wantLog)
+    {
+        const float* m = sceneCBData.viewProj;
+        Logger::Log(LogLevel::Debug, std::format(
+            "[SceneDiag] CB viewProj sample: m00={:.4f} m01={:.4f} m10={:.4f} m11={:.4f} m22={:.4f} m33={:.4f}",
+            m[0], m[1], m[4], m[5], m[10], m[15]));
+    }
+
     commandList->SetGraphicsRootSignature(sceneRootSignature.Get());
     commandList->SetGraphicsRootConstantBufferView(0, sceneCB->GetGPUVirtualAddress());
 
@@ -2634,6 +2794,15 @@ void Graphics::RenderSceneToTarget()
         commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
         commandList->IASetVertexBuffers(0, 1, &sceneGridVBV);
         commandList->DrawInstanced(sceneGridVertexCount, 1, 0, 0);
+    }
+
+    // Draw axes (on top of grid)
+    if (sceneGridPSO && sceneAxesVB && sceneAxesVertexCount > 0)
+    {
+        commandList->SetPipelineState(sceneGridPSO.Get());
+        commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+        commandList->IASetVertexBuffers(0, 1, &sceneAxesVBV);
+        commandList->DrawInstanced(sceneAxesVertexCount, 1, 0, 0);
     }
 
     // Draw triangle
@@ -2652,6 +2821,15 @@ void Graphics::RenderSceneToTarget()
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     commandList->ResourceBarrier(1, &toSRV);
     sceneRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    if (wantLog)
+    {
+        Logger::Log(LogLevel::Debug, std::format(
+            "[SceneDiag] RenderSceneToTarget end: state={} (expected PIXEL_SHADER_RESOURCE); SceneSRV cpu=0x{:X} gpu=0x{:X}",
+            D3D12StateToString(sceneRTState),
+            (UINT64)sceneSrvCpu.ptr,
+            (UINT64)sceneSrvGpu.ptr));
+    }
 }
 
 // ==================================
@@ -2661,6 +2839,18 @@ void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height)
 {
     width = (std::max)(1u, width);
     height = (std::max)(1u, height);
+
+    // If no RT exists yet, create it immediately if we're at a safe point.
+    // Otherwise, defer to ProcessPendingSceneRenderTargetResize().
+    if (!sceneRenderTarget)
+    {
+        if (!commandListOpen)
+        {
+            pendingSceneRTResize = false;
+            EnsureSceneRenderTarget(width, height);
+            return;
+        }
+    }
 
     if (sceneRenderTarget && sceneRTWidth == width && sceneRTHeight == height)
         return;

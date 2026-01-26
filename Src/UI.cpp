@@ -8,6 +8,7 @@
 #include "SplashScreen.h"
 #include "EditorPanels.h"
 #include "EditorState.h"
+#include "EditorIcons.h"
 
 extern Engine* g_engineInstance;
 
@@ -108,14 +109,8 @@ namespace UI {
         g_dockspaceTouchedThisFrame = false;
         g_commandStripTouchedThisFrame = false;
 
-        // Immutable editor frame submission order:
-        // 1) Dockspace host (menu bar)
-        // 2) Toolbar / command strip
-        // 3) Dockable panels
-        // 4) Overlays
-        // 5) EndDockSpaceFrame() (apply pending layout build)
-        // 6) Optional debug windows
         UI::BeginDockSpace();
+        UI::DrawToolbar();
         UI::DrawEditorPanels();
         UI::DrawOverlays();
         UI::EndDockSpaceFrame();
@@ -373,7 +368,7 @@ namespace UI {
         static void DrawCommandStripContents()
          {
              // Left
-             if (ImGui::Button("☰ Project")) { /* popup later */ }
+             if (ImGui::Button(ICON_FA_BARS " Project")) { /* popup later */ }
              ImGui::SameLine();
              if (ImGui::Button("Scene")) {}
              ImGui::SameLine();
@@ -389,17 +384,29 @@ namespace UI {
                  return ImGui::CalcTextSize(label).x + framePadX * 2.0f;
              };
 
-             const char* playLabel = "▶ Play";
-             const char* pauseLabel = "⏸ Pause";
-             const char* stopLabel = "⏹ Stop";
-             const char* settingsLabel = "⚙ Settings";
+             // Engine state
+             const Engine::State s = Engine::GetState();
+             const bool playing = (s == Engine::State::Playing);
+             const bool paused = (s == Engine::State::Paused);
 
-             const float playW = calcButtonW(playLabel);
-             const float pauseW = calcButtonW(pauseLabel);
-             const float stopW = calcButtonW(stopLabel);
+             // Use visible labels, but add hidden IDs to keep them unique/stable.
+             const char* playLabel = ICON_FA_PLAY " Play##CmdPlay";
+             const char* pauseLabel = ICON_FA_PAUSE " Pause##CmdPause";
+             const char* stopLabel = ICON_FA_STOP " Stop##CmdStop";
+             const char* settingsLabel = ICON_FA_GEAR " Settings##CmdSettings";
+
+             // NOTE: width calculations must use the visible portion, not the hidden IDs.
+             const char* playVisible = ICON_FA_PLAY " Play";
+             const char* pauseVisible = ICON_FA_PAUSE " Pause";
+             const char* stopVisible = ICON_FA_STOP " Stop";
+             const char* settingsVisible = ICON_FA_GEAR " Settings";
+
+             const float playW = calcButtonW(playVisible);
+             const float pauseW = calcButtonW(pauseVisible);
+             const float stopW = calcButtonW(stopVisible);
              const float centerGroupW = playW + pauseW + stopW + spacingX * 2.0f;
 
-             const float settingsW = calcButtonW(settingsLabel);
+             const float settingsW = calcButtonW(settingsVisible);
 
              // Content region coordinates
              const float contentMinX = ImGui::GetWindowContentRegionMin().x;
@@ -434,20 +441,36 @@ namespace UI {
 
              // Center group
              ImGui::SameLine(centerStartX);
-             ImGui::Button(playLabel);
-             ImGui::SameLine();
-             ImGui::Button(pauseLabel);
-             ImGui::SameLine();
-             ImGui::Button(stopLabel);
 
-             // Right (only right-align if it won't overlap the center group)
-             const float afterCenterX = ImGui::GetCursorPosX();
-             if (afterCenterX + spacingX <= rightStartX)
-                 ImGui::SameLine(rightStartX);
-             else
-                 ImGui::SameLine();
+             if (playing)
+                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.70f, 0.20f, 1.0f));
+             if (ImGui::Button(playLabel))
+                 Engine::SetState(Engine::State::Playing);
+             if (playing)
+                 ImGui::PopStyleColor();
 
-             ImGui::Button(settingsLabel);
+             ImGui::SameLine();
+
+             if (paused)
+                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80f, 0.70f, 0.10f, 1.0f));
+             if (ImGui::Button(pauseLabel))
+                 Engine::SetState(Engine::State::Paused);
+             if (paused)
+                 ImGui::PopStyleColor();
+
+             ImGui::SameLine();
+
+             if (ImGui::Button(stopLabel))
+                 Engine::SetState(Engine::State::Editing);
+
+            // Right (only right-align if it won't overlap the center group)
+            const float afterCenterX = ImGui::GetCursorPosX();
+            if (afterCenterX + spacingX <= rightStartX)
+                ImGui::SameLine(rightStartX);
+            else
+                ImGui::SameLine();
+
+            (void)ImGui::Button(settingsLabel);
          }
      }
 
@@ -862,4 +885,87 @@ namespace UI {
     {
       SplashScreen::DrawSplash();
     }
+}
+
+namespace UI {
+
+    // ...existing code...
+
+    void DrawToolbar()
+    {
+        g_commandStripTouchedThisFrame = true;
+
+        if (!g_showCommandStrip)
+            return;
+
+        ImGuiViewport* vp = ImGui::GetMainViewport();
+        if (!vp)
+            return;
+
+        const float stripH = GetCommandStripReservedHeight();
+        const ImVec2 pos = vp->WorkPos;
+        const ImVec2 size = ImVec2(vp->WorkSize.x, stripH);
+
+        ImGui::SetNextWindowPos(pos);
+        ImGui::SetNextWindowSize(size);
+
+        const ImGuiWindowFlags flags =
+            ImGuiWindowFlags_NoDocking |
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoSavedSettings;
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+
+        if (ImGui::Begin("##Toolbar", nullptr, flags))
+        {
+            const Engine::State s = Engine::GetState();
+            const bool playing = (s == Engine::State::Playing);
+            const bool paused = (s == Engine::State::Paused);
+
+            const char* playLabel = ICON_FA_PLAY "##Play";
+            const char* pauseLabel = ICON_FA_PAUSE "##Pause";
+            const char* stopLabel = ICON_FA_STOP "##Stop";
+
+            if (playing)
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.70f, 0.20f, 1.0f));
+            if (ImGui::Button(playLabel))
+                Engine::SetState(Engine::State::Playing);
+            if (playing)
+                ImGui::PopStyleColor();
+
+            ImGui::SameLine();
+
+            if (paused)
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80f, 0.70f, 0.10f, 1.0f));
+            if (ImGui::Button(pauseLabel))
+                Engine::SetState(Engine::State::Paused);
+            if (paused)
+                ImGui::PopStyleColor();
+
+            ImGui::SameLine();
+
+            if (ImGui::Button(stopLabel))
+                Engine::SetState(Engine::State::Editing);
+
+            ImGui::SameLine();
+            ImGui::Dummy(ImVec2(12.0f, 0.0f));
+            ImGui::SameLine();
+
+            const char* stateText = (s == Engine::State::Editing) ? "Editing" : (s == Engine::State::Playing) ? "Playing" : "Paused";
+            ImGui::TextUnformatted(stateText);
+        }
+        ImGui::End();
+
+        ImGui::PopStyleVar(3);
+
+        // Reserve the strip area from docking.
+        vp->WorkPos.y += stripH;
+        vp->WorkSize.y -= stripH;
+    }
+
 }

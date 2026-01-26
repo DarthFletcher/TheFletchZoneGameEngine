@@ -162,6 +162,7 @@
     <ClInclude Include="include\Config.h" />
     <ClInclude Include="include\CrashDiagnostics.h" />
     <ClInclude Include="Include\EditorCommon.h" />
+    <ClInclude Include="Include\EditorIcons.h" />
     <ClInclude Include="include\EditorPanels.h" />
     <ClInclude Include="include\Engine.h" />
     <ClInclude Include="include\Entity.h" />
