@@ -442,6 +442,12 @@ void Graphics::Shutdown()
     sceneRTHeight = 0;
     sceneRTState = D3D12_RESOURCE_STATE_COMMON;
 
+    // Release scene depth resources
+    sceneDepth.Reset();
+    sceneDsvHeap.Reset();
+    sceneDsvHandle = {};
+    sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
+
     for (int i = 0; i < NUM_BACK_BUFFERS; i++)
         SafeReleaseResource(backBuffers[i], true);
 
@@ -2324,6 +2330,12 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     sceneRtvHandle = {};
     sceneRTState = D3D12_RESOURCE_STATE_COMMON;
 
+    // Depth resources track the Scene RT size too.
+    sceneDepth.Reset();
+    sceneDsvHeap.Reset();
+    sceneDsvHandle = {};
+    sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
+
     // Create the offscreen texture (render target)
     D3D12_RESOURCE_DESC texDesc = {};
     texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -2414,6 +2426,54 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
 
     device->CreateShaderResourceView(sceneRenderTarget.Get(), &srvDesc, sceneSrvCpu);
 
+    // ---- Scene depth buffer (D32_FLOAT) ----
+    {
+        D3D12_RESOURCE_DESC depthDesc = {};
+        depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        depthDesc.Alignment = 0;
+        depthDesc.Width = width;
+        depthDesc.Height = height;
+        depthDesc.DepthOrArraySize = 1;
+        depthDesc.MipLevels = 1;
+        depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        depthDesc.SampleDesc.Count = 1;
+        depthDesc.SampleDesc.Quality = 0;
+        depthDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+        D3D12_CLEAR_VALUE depthClear = {};
+        depthClear.Format = DXGI_FORMAT_D32_FLOAT;
+        depthClear.DepthStencil.Depth = 1.0f;
+        depthClear.DepthStencil.Stencil = 0;
+
+        CD3DX12_HEAP_PROPERTIES depthHeap(D3D12_HEAP_TYPE_DEFAULT);
+        DX_CHECK(device->CreateCommittedResource(
+            &depthHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &depthDesc,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            &depthClear,
+            IID_PPV_ARGS(&sceneDepth)));
+
+        sceneDepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+
+        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
+        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        dsvHeapDesc.NumDescriptors = 1;
+        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        DX_CHECK(device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&sceneDsvHeap)));
+
+        sceneDsvHandle = sceneDsvHeap->GetCPUDescriptorHandleForHeapStart();
+
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
+        dsvDesc.Texture2D.MipSlice = 0;
+
+        device->CreateDepthStencilView(sceneDepth.Get(), &dsvDesc, sceneDsvHandle);
+    }
+
     sceneRTWidth = width;
     sceneRTHeight = height;
 
@@ -2429,37 +2489,11 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
 
 void Graphics::EnsureScenePipeline()
 {
-    if (sceneRootSignature && sceneTrianglePSO && sceneGridPSO && sceneCB)
+    if (sceneTrianglePSO && sceneGridPSO && sceneCB)
         return;
 
     if (!device)
         return;
-
-    // Root signature: one CBV at b0
-    D3D12_ROOT_PARAMETER rp = {};
-    rp.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    rp.Descriptor.ShaderRegister = 0;
-    rp.Descriptor.RegisterSpace = 0;
-    rp.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 1;
-    rsDesc.pParameters = &rp;
-    rsDesc.NumStaticSamplers = 0;
-    rsDesc.pStaticSamplers = nullptr;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    Microsoft::WRL::ComPtr<ID3DBlob> sig;
-    Microsoft::WRL::ComPtr<ID3DBlob> err;
-    HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
-    if (FAILED(hr))
-    {
-        if (err)
-            OutputDebugStringA((const char*)err->GetBufferPointer());
-        throw std::runtime_error("Failed to serialize scene root signature");
-    }
-
-    DX_CHECK(device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&sceneRootSignature)));
 
     // Compile shaders at runtime (so we don't depend on vcxproj FxCompile)
     // Use SM5.0 for widest compatibility with FXC/D3DCompile toolchains.
@@ -2482,11 +2516,14 @@ void Graphics::EnsureScenePipeline()
     pso.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
     pso.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
     pso.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.DepthStencilState.DepthEnable = TRUE;
+    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
     pso.DepthStencilState.StencilEnable = FALSE;
     pso.SampleMask = UINT_MAX;
     pso.NumRenderTargets = 1;
     pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
 
     DX_CHECK(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&sceneTrianglePSO)));
@@ -2496,6 +2533,7 @@ void Graphics::EnsureScenePipeline()
     pso.VS = { gridVS->GetBufferPointer(), gridVS->GetBufferSize() };
     pso.PS = { gridPS->GetBufferPointer(), gridPS->GetBufferSize() };
 
+    // Alpha blending for grid
     D3D12_BLEND_DESC bs = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
     bs.RenderTarget[0].BlendEnable = TRUE;
     bs.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
@@ -2704,30 +2742,31 @@ void Graphics::RenderSceneToTarget()
         return;
     }
 
-    // Ensure pipeline/geometry/CB exist before recording draw calls.
-    EnsureScenePipeline();
-    EnsureSceneGeometry();
-
-    if (!sceneCB || !sceneRootSignature)
+    if (!sceneDepth || sceneDsvHandle.ptr == 0)
     {
         if (wantLog)
-            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: scene pipeline not ready (cb/rootSig missing)");
+            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: sceneDepth/DSV not ready");
         return;
     }
 
     // Transition to render target
     if (sceneRTState != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
-        CD3DX12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(
-            sceneRenderTarget.Get(),
-            sceneRTState,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        CD3DX12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(sceneRenderTarget.Get(), sceneRTState, D3D12_RESOURCE_STATE_RENDER_TARGET);
         commandList->ResourceBarrier(1, &toRT);
         sceneRTState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
-    // Bind RTV
-    commandList->OMSetRenderTargets(1, &sceneRtvHandle, FALSE, nullptr);
+    // Ensure depth is writable
+    if (sceneDepthState != D3D12_RESOURCE_STATE_DEPTH_WRITE)
+    {
+        CD3DX12_RESOURCE_BARRIER toDepth = CD3DX12_RESOURCE_BARRIER::Transition(sceneDepth.Get(), sceneDepthState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        commandList->ResourceBarrier(1, &toDepth);
+        sceneDepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    }
+
+    // Bind RTV + DSV
+    commandList->OMSetRenderTargets(1, &sceneRtvHandle, FALSE, &sceneDsvHandle);
 
     // Set viewport/scissor
     D3D12_VIEWPORT vp = {};
@@ -2745,6 +2784,7 @@ void Graphics::RenderSceneToTarget()
     // Clear (locked neutral background)
     const float clearColor[4] = { 0.10f, 0.10f, 0.12f, 1.0f };
     commandList->ClearRenderTargetView(sceneRtvHandle, clearColor, 0, nullptr);
+    commandList->ClearDepthStencilView(sceneDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
     // Update constant buffer (SceneCamera)
     using namespace DirectX;

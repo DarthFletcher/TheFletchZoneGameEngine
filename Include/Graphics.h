@@ -268,6 +268,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> sceneRtvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE sceneRtvHandle = {};
 
+    // Offscreen Scene depth buffer (DSV)
+    Microsoft::WRL::ComPtr<ID3D12Resource> sceneDepth;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> sceneDsvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE sceneDsvHandle = {};
+    D3D12_RESOURCE_STATES sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
+
     // SRV lives in the ImGui shader-visible heap; keep handles + ImTextureID for ImGui::Image
     D3D12_CPU_DESCRIPTOR_HANDLE sceneSrvCpu = {};
     D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu = {};
