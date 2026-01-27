@@ -6,6 +6,8 @@
 #include "HintMacros.h"
 #include "Logger.h"
 #include "CrashDiagnostics.h"
+#include "Entity.h"
+#include "Components.h"
 
 const char* DpiAwarenessToString(DPI_AWARENESS awareness) {
     switch (awareness) {
@@ -57,6 +59,52 @@ static void EnableDPIAwareness() {
 }
 
 Engine* g_engineInstance = nullptr;
+
+// Minimal scene entities (temporary until a real Scene/World exists)
+static std::vector<std::unique_ptr<Entity>> g_SceneEntities;
+static std::vector<Entity*> g_SceneEntityPtrs;
+
+static void EnsureTestSceneEntities()
+{
+    if (!g_SceneEntities.empty())
+        return;
+
+    {
+        auto e = std::make_unique<Entity>();
+        auto& t = e->AddComponent<TransformComponent>();
+        t.position = { 0.0f, 0.0f, 0.0f };
+        t.scale = { 1.0f, 1.0f, 1.0f };
+
+        auto& mr = e->AddComponent<MeshRendererComponent>();
+        mr.primitive = MeshPrimitive::Cube;
+        mr.color = { 0.2f, 0.8f, 1.0f, 1.0f };
+        g_SceneEntities.push_back(std::move(e));
+    }
+
+    {
+        auto e = std::make_unique<Entity>();
+        auto& t = e->AddComponent<TransformComponent>();
+        t.position = { 2.0f, 0.0f, 0.0f };
+        t.scale = { 1.0f, 1.0f, 1.0f };
+
+        auto& mr = e->AddComponent<MeshRendererComponent>();
+        mr.primitive = MeshPrimitive::Triangle;
+        mr.color = { 1.0f, 0.4f, 0.2f, 1.0f };
+        g_SceneEntities.push_back(std::move(e));
+    }
+}
+
+const std::vector<Entity*>& GetSceneEntitiesForRendering()
+{
+    EnsureTestSceneEntities();
+
+    g_SceneEntityPtrs.clear();
+    g_SceneEntityPtrs.reserve(g_SceneEntities.size());
+    for (auto& e : g_SceneEntities)
+        g_SceneEntityPtrs.push_back(e.get());
+
+    return g_SceneEntityPtrs;
+}
 
 int WINAPI WinMain(
     _In_ HINSTANCE hInstance,

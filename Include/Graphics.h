@@ -42,6 +42,12 @@ struct PickRay
     DirectX::XMFLOAT3 dir;
 };
 
+class Entity;
+
+// Temporary bridge until a real Scene/World is wired into rendering.
+// Implemented in `Src/Main.cpp`.
+const std::vector<Entity*>& GetSceneEntitiesForRendering();
+
 class Graphics {
 public:
     void EnsureValidCommandQueue();
