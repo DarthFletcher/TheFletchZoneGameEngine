@@ -620,13 +620,6 @@ void Graphics::ExecuteCommandLists(std::vector<ID3D12CommandList*>& commandLists
 
     Logger::Log(LogLevel::Info, "🚀 Executing " + std::to_string(commandLists.size()) + " Command Lists...");
     commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
-
-    // ✅ Ensure fence is signaled correctly
-    HRESULT hr = commandQueue->Signal(fence.Get(), ++fenceValue);
-    if (FAILED(hr)) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to signal fence after executing command lists! HRESULT: " + std::to_string(hr));
-        return;
-    }
 }
 
 //==============================
@@ -2677,12 +2670,23 @@ void Graphics::EnsureScenePipeline()
 
 void Graphics::EnsureSceneGeometry()
 {
-    // Triangle VB is mode-independent, grid VB depends on view mode.
-    if (sceneTriangleVB && sceneGridVB && sceneAxesVB && g_LastSceneGridBuiltViewMode == GetViewMode())
+    // Triangle VB is mode-independent, grid/axes depend on view mode.
+    // IMPORTANT: If the view mode swapped while we're recording, do NOT rebuild right now.
+    // Releasing/recreating VBs while the GPU may still reference them can lead to DEVICE_HUNG.
+    const ViewMode vm = GetViewMode();
+    const bool viewModeChanged = (g_LastSceneGridBuiltViewMode != vm);
+    if (viewModeChanged && commandListOpen)
+        return;
+
+    if (sceneTriangleVB && sceneGridVB && sceneAxesVB && !viewModeChanged)
         return;
 
     if (!device)
         return;
+
+    // On a view-mode swap, keep it conservative and ensure the GPU is idle before rebuilding.
+    if (viewModeChanged)
+        FlushGPU();
 
     if (!sceneTriangleVB)
     {
@@ -3253,7 +3257,7 @@ void Graphics::CheckFenceState()
     const UINT64 completed = fence->GetCompletedValue();
     if (completed == UINT64_MAX)
     {
-        Logger::Log(LogLevel::Error, "🚨 CheckFenceState: GetCompletedValue == UINT64_MAX (device lost sentinel)");
+        Logger::Log(LogLevel::Error, "🚨 CheckFenceState: GetCompletedValue() == UINT64_MAX (device lost sentinel)");
     }
 }
 
