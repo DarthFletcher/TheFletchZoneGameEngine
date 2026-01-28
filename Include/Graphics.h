@@ -318,6 +318,7 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneCB;
     SceneCBData sceneCBData = {};
+    void* sceneCBPtr = nullptr;
 
     // Scene axes (XYZ) debug lines
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneAxesVB;

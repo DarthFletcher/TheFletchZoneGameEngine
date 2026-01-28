@@ -448,6 +448,16 @@ void Graphics::Shutdown()
     sceneDsvHandle = {};
     sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
 
+    // Release scene pipeline resources
+    sceneCBPtr = nullptr;
+    sceneCB.Reset();
+    sceneTrianglePSO.Reset();
+    sceneGridPSO.Reset();
+    sceneRootSignature.Reset();
+    sceneTriangleVB.Reset();
+    sceneGridVB.Reset();
+    sceneAxesVB.Reset();
+
     for (int i = 0; i < NUM_BACK_BUFFERS; i++)
         SafeReleaseResource(backBuffers[i], true);
 
@@ -2489,8 +2499,54 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
 
 void Graphics::EnsureScenePipeline()
 {
+    // Create root signature if missing
+    if (!sceneRootSignature)
+    {
+        if (!device)
+            return;
+
+        // Root signature: slot 0 = CBV(b0) visible to VS/PS.
+        CD3DX12_ROOT_PARAMETER rp[1];
+        rp[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
+
+        CD3DX12_ROOT_SIGNATURE_DESC rsDesc;
+        rsDesc.Init(_countof(rp), rp, 0, nullptr,
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+        Microsoft::WRL::ComPtr<ID3DBlob> sig;
+        Microsoft::WRL::ComPtr<ID3DBlob> err;
+        HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+            sig.GetAddressOf(), err.GetAddressOf());
+        if (FAILED(hr))
+        {
+            if (err)
+            {
+                const char* msg = (const char*)err->GetBufferPointer();
+                Logger::Log(LogLevel::Error, std::format("❌ Scene root signature serialize failed: {}", msg ? msg : "<no message>"));
+            }
+            else
+            {
+                Logger::Log(LogLevel::Error, std::format("❌ Scene root signature serialize failed. HR=0x{:08X}", (UINT)hr));
+            }
+            return;
+        }
+
+        DX_CHECK(device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&sceneRootSignature)));
+        sceneRootSignature->SetName(L"SceneRootSignature");
+    }
+
     if (sceneTrianglePSO && sceneGridPSO && sceneCB)
+    {
+        // Ensure our CB is mapped even if PSOs already exist.
+        if (sceneCB && sceneCBPtr == nullptr)
+        {
+            CD3DX12_RANGE range(0, 0);
+            void* p = nullptr;
+            if (SUCCEEDED(sceneCB->Map(0, &range, &p)))
+                sceneCBPtr = p;
+        }
         return;
+    }
 
     if (!device)
         return;
@@ -2526,7 +2582,8 @@ void Graphics::EnsureScenePipeline()
     pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     pso.SampleDesc.Count = 1;
 
-    DX_CHECK(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&sceneTrianglePSO)));
+    if (!sceneTrianglePSO)
+        DX_CHECK(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&sceneTrianglePSO)));
 
     // Grid PSO: line list + alpha blending
     pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
@@ -2545,19 +2602,40 @@ void Graphics::EnsureScenePipeline()
     bs.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pso.BlendState = bs;
 
-    DX_CHECK(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&sceneGridPSO)));
+    if (!sceneGridPSO)
+        DX_CHECK(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&sceneGridPSO)));
 
-    // Constant buffer
-    const UINT cbSize = (UINT)((sizeof(SceneCBData) + 255) & ~255u);
-    CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
-    CD3DX12_RESOURCE_DESC buf = CD3DX12_RESOURCE_DESC::Buffer(cbSize);
-    DX_CHECK(device->CreateCommittedResource(
-        &heap,
-        D3D12_HEAP_FLAG_NONE,
-        &buf,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(&sceneCB)));
+    // Constant buffer (persistently mapped)
+    if (!sceneCB)
+    {
+        const UINT cbSize = (UINT)((sizeof(SceneCBData) + 255) & ~255u);
+        CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
+        CD3DX12_RESOURCE_DESC buf = CD3DX12_RESOURCE_DESC::Buffer(cbSize);
+        DX_CHECK(device->CreateCommittedResource(
+            &heap,
+            D3D12_HEAP_FLAG_NONE,
+            &buf,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&sceneCB)));
+        sceneCB->SetName(L"SceneCB");
+    }
+
+    if (sceneCB && sceneCBPtr == nullptr)
+    {
+        CD3DX12_RANGE range(0, 0);
+        void* p = nullptr;
+        HRESULT hr = sceneCB->Map(0, &range, &p);
+        if (SUCCEEDED(hr))
+        {
+            sceneCBPtr = p;
+        }
+        else
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ Failed to map SceneCB. HR=0x{:08X}", (UINT)hr));
+            sceneCBPtr = nullptr;
+        }
+    }
 }
 
 void Graphics::EnsureSceneGeometry()
@@ -2709,43 +2787,25 @@ void Graphics::RenderSceneToTarget()
 {
     ++g_SceneDiag_Frame;
 
+    // Ensure pipeline + geometry exist before any CB update.
+    EnsureScenePipeline();
+    EnsureSceneGeometry();
+
     const bool wantLog = SceneDiag_ShouldLog();
 
-    if (wantLog)
-    {
-        Logger::Log(LogLevel::Debug, std::format(
-            "[SceneDiag] RenderSceneToTarget begin: frame={} cmdOpen={} cmdList={} device={} sceneRT={} state={} cb={} rs={} triPSO={} gridPSO={}",
-            g_SceneDiag_Frame,
-            commandListOpen ? 1 : 0,
-            commandList ? 1 : 0,
-            device ? 1 : 0,
-            sceneRenderTarget ? 1 : 0,
-            D3D12StateToString(sceneRTState),
-            sceneCB ? 1 : 0,
-            sceneRootSignature ? 1 : 0,
-            sceneTrianglePSO ? 1 : 0,
-            sceneGridPSO ? 1 : 0));
-    }
-
-    // Scene RT is optional; only render if it exists.
+    // Skip rendering if command list or device is not ready
     if (!commandListOpen || !commandList || !device)
     {
         if (wantLog)
-            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: command list not ready");
+            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: command list or device not ready");
         return;
     }
 
-    if (!sceneRenderTarget)
+    // Skip rendering if render target or depth stencil view is not ready
+    if (!sceneRenderTarget || !sceneDepth || sceneDsvHandle.ptr == 0)
     {
         if (wantLog)
-            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: sceneRenderTarget is null");
-        return;
-    }
-
-    if (!sceneDepth || sceneDsvHandle.ptr == 0)
-    {
-        if (wantLog)
-            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: sceneDepth/DSV not ready");
+            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: sceneRenderTarget or sceneDepth/DSV not ready");
         return;
     }
 
@@ -2809,11 +2869,14 @@ void Graphics::RenderSceneToTarget()
 
     sceneCBData.gridFadeDist = 30.0f;
 
-    void* cbPtr = nullptr;
-    CD3DX12_RANGE range(0, 0);
-    DX_CHECK(sceneCB->Map(0, &range, &cbPtr));
-    memcpy(cbPtr, &sceneCBData, sizeof(sceneCBData));
-    sceneCB->Unmap(0, nullptr);
+    if (!sceneCB || sceneCBPtr == nullptr)
+    {
+        if (wantLog)
+            Logger::Log(LogLevel::Warning, "[SceneDiag] SceneCB not ready/mapped; skipping scene draw this frame");
+        return;
+    }
+
+    memcpy(sceneCBPtr, &sceneCBData, sizeof(sceneCBData));
 
     // After constant buffer update, log a few viewProj elements.
     if (wantLog)
