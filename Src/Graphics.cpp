@@ -835,18 +835,55 @@ void Graphics::BeginFrame(HWND hWnd)
     }
 
     // ==========================
+    // Guard: core DX12 objects must exist
+    // ==========================
+    if (!device || !commandQueue || !fence || !swapChain)
+    {
+        Logger::Log(LogLevel::Error, "❌ BeginFrame: missing DX12 core objects (device/queue/fence/swapchain). ");
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
+    // ==========================
     // Sync GPU for current backbuffer
     // ==========================
     currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
     UINT64 fenceToWaitFor = fenceValues[currentBackBufferIndex];
     UINT64 completedValue = fence->GetCompletedValue();
 
+    // ==========================
+    // Detect dead device sentinel
+    // ==========================
+    if (completedValue == UINT64_MAX)
+    {
+        Logger::Log(LogLevel::Error, std::format(
+            "🚨 Fence->GetCompletedValue() == UINT64_MAX (device lost sentinel). BackBuffer={} FenceToWaitFor={}",
+            currentBackBufferIndex, fenceToWaitFor));
+
+        if (device)
+        {
+            const HRESULT removed = device->GetDeviceRemovedReason();
+            Logger::Log(LogLevel::Error, std::format(
+                "🚨 DeviceRemovedReason=0x{:08X}", (UINT)removed));
+        }
+
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
     if (completedValue < fenceToWaitFor)
     {
-        fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
-        WaitForSingleObject(fenceEvent, INFINITE);
         Logger::Log(LogLevel::Debug, std::format(
             "⏳ Waiting on GPU | BackBuffer={} Fence={} (Completed={})",
+            currentBackBufferIndex, fenceToWaitFor, completedValue));
+
+        fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+
+        // Refresh for accurate diagnostics
+        completedValue = fence->GetCompletedValue();
+        Logger::Log(LogLevel::Debug, std::format(
+            "✅ GPU wait complete | BackBuffer={} Fence={} (Completed now={})",
             currentBackBufferIndex, fenceToWaitFor, completedValue));
     }
     else
