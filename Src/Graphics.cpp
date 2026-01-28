@@ -2572,7 +2572,8 @@ void Graphics::EnsureScenePipeline()
         {
             CD3DX12_RANGE range(0, 0);
             void* p = nullptr;
-            if (SUCCEEDED(sceneCB->Map(0, &range, &p)))
+            HRESULT hr = sceneCB->Map(0, &range, &p);
+            if (SUCCEEDED(hr))
                 sceneCBPtr = p;
         }
         return;
@@ -2671,12 +2672,29 @@ void Graphics::EnsureScenePipeline()
 void Graphics::EnsureSceneGeometry()
 {
     // Triangle VB is mode-independent, grid/axes depend on view mode.
-    // IMPORTANT: If the view mode swapped while we're recording, do NOT rebuild right now.
+    // IMPORTANT:
+    // ViewMode switches (3D <-> 2D) must NOT rebuild geometry while the main command list is recording.
     // Releasing/recreating VBs while the GPU may still reference them can lead to DEVICE_HUNG.
     const ViewMode vm = GetViewMode();
     const bool viewModeChanged = (g_LastSceneGridBuiltViewMode != vm);
+
     if (viewModeChanged && commandListOpen)
+    {
+        // Defer rebuild to a safe point (next frame, before recording starts).
+        static ViewMode s_lastDeferredLogged = ViewMode::Mode3D;
+        if (s_lastDeferredLogged != vm)
+        {
+            s_lastDeferredLogged = vm;
+            Logger::Log(LogLevel::Info, "🔄 ViewMode changed → deferring scene geometry rebuild until safe point");
+        }
         return;
+    }
+
+#ifndef NDEBUG
+    // If we are about to rebuild (view mode changed), we should never be doing it while recording.
+    if (viewModeChanged)
+        assert(!commandListOpen && "Scene geometry rebuild attempted during active command list");
+#endif
 
     if (sceneTriangleVB && sceneGridVB && sceneAxesVB && !viewModeChanged)
         return;
@@ -2847,6 +2865,15 @@ void Graphics::RenderSceneToTarget()
     {
         if (wantLog)
             Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: sceneRenderTarget or sceneDepth/DSV not ready");
+        return;
+    }
+
+    // Guard against zero/invalid RT sizes (can occur during layout transitions / first frame after docking changes).
+    if (sceneRTWidth < 1 || sceneRTHeight < 1)
+    {
+        if (wantLog)
+            Logger::Log(LogLevel::Warning, std::format(
+                "[SceneDiag] RenderSceneToTarget early-return: invalid RT size {}x{}", sceneRTWidth, sceneRTHeight));
         return;
     }
 
