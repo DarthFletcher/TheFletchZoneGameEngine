@@ -3182,3 +3182,90 @@ bool Graphics::TryPickSceneGridZ0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 scene
     const DirectX::XMFLOAT3 planeNormal{ 0.0f, 0.0f, 1.0f };
     return IntersectRayPlane(ray, planePoint, planeNormal, outHitPos);
 }
+
+// --------------------------------------------------------------
+// Graphics API method definitions to satisfy VCR001 warnings
+// --------------------------------------------------------------
+void Graphics::ResetDevice()
+{
+    // Minimal implementation: current codebase uses HandleDeviceLost() for recovery.
+    // Keep this as a thin wrapper so declarations remain valid.
+    HandleDeviceLost(hWnd);
+}
+
+void Graphics::CheckDeviceStatus(HWND hWnd)
+{
+    if (!device)
+        return;
+
+    const HRESULT reason = device->GetDeviceRemovedReason();
+    if (reason != S_OK)
+    {
+        Logger::Log(LogLevel::Error, std::format(
+            "🚨 CheckDeviceStatus: DeviceRemovedReason=0x{:08X}", (UINT)reason));
+        HandleDeviceLost(hWnd);
+    }
+}
+
+bool Graphics::SafeResetAllocator(ID3D12CommandAllocator* allocator, bool commandListIsOpen)
+{
+    if (!allocator)
+        return false;
+
+    // Allocators can't be reset while their command list is recording.
+    if (commandListIsOpen)
+        return false;
+
+    const HRESULT hr = allocator->Reset();
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error, std::format(
+            "❌ SafeResetAllocator: allocator->Reset failed HR=0x{:08X}", (UINT)hr));
+        return false;
+    }
+
+    return true;
+}
+
+void Graphics::WaitForGPU(HWND hWnd)
+{
+    (void)hWnd;
+    FlushGPU();
+}
+
+void Graphics::ValidateCommandAllocator()
+{
+    if (!commandAllocator)
+        Logger::Log(LogLevel::Error, "❌ ValidateCommandAllocator: commandAllocator is NULL");
+
+    if (commandAllocators.empty() || !commandAllocators[0])
+        Logger::Log(LogLevel::Error, "❌ ValidateCommandAllocator: commandAllocators[0] is NULL");
+}
+
+void Graphics::CheckFenceState()
+{
+    if (!fence)
+    {
+        Logger::Log(LogLevel::Error, "❌ CheckFenceState: fence is NULL");
+        return;
+    }
+
+    const UINT64 completed = fence->GetCompletedValue();
+    if (completed == UINT64_MAX)
+    {
+        Logger::Log(LogLevel::Error, "🚨 CheckFenceState: GetCompletedValue == UINT64_MAX (device lost sentinel)");
+    }
+}
+
+void Graphics::RecoverFromAllocatorError(HWND hWnd)
+{
+    Logger::Log(LogLevel::Warning, "⚠️ RecoverFromAllocatorError: allocator reset failed; treating as device lost.");
+    HandleDeviceLost(hWnd);
+}
+
+bool Graphics::IsUploadReady() const
+{
+    // Used by systems like the splash texture upload to decide if GPU upload can be attempted.
+    // Conservative readiness check: require device + queue + command list + shader-visible SRV heap.
+    return device && commandQueue && commandList && imguiHeap;
+}
