@@ -19,6 +19,9 @@
     <Filter Include="Third Party">
       <UniqueIdentifier>{8814347b-a1a5-4c2b-876b-41d9b6edc07a}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Fonts">
+      <UniqueIdentifier>{540d6248-ef42-4979-8c1c-0dacd852abbf}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3d12.h">
@@ -138,6 +141,9 @@
     <ClInclude Include="Include\EditorIcons.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\Components.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui_demo.cpp">
@@ -153,9 +159,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\Engine.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="src\Entity.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="src\Game.cpp">
@@ -255,6 +258,7 @@
     <None Include="Directory.Build.targets" />
     <None Include="tools\FixSceneShaderBuildStep.ps1" />
     <None Include="tools\FixShaderBuildStep.ps1" />
+    <None Include="TheFletchZoneGameEngine.vcxproj.new" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />
@@ -266,6 +270,19 @@
     <FxCompile Include="shaders\imgui_vs.hlsl">
       <Filter>Shaders</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\scene_triangle_vs.hlsl" />
+    <FxCompile Include="shaders\scene_grid_ps.hlsl" />
+    <FxCompile Include="shaders\scene_grid_vs.hlsl" />
+    <FxCompile Include="shaders\scene_triangle_ps.hlsl" />
+  </ItemGroup>
+  <ItemGroup>
+    <Font Include="Assets\Fonts\DroidSans.ttf">
+      <Filter>Fonts</Filter>
+    </Font>
+    <Font Include="Assets\Fonts\fa-solid-900.ttf">
+      <Filter>Fonts</Filter>
+    </Font>
+    <Font Include="Assets\Fonts\Roboto-Medium.ttf">
+      <Filter>Fonts</Filter>
+    </Font>
   </ItemGroup>
 </Project>

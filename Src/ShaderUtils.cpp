@@ -1,6 +1,10 @@
 #include "ShaderUtils.h"
 #include <stdexcept>
 #include <filesystem>
+#include <algorithm>
+#include <cctype>
+
+#include "ShaderCompiler.h"
 
 Microsoft::WRL::ComPtr<ID3DBlob> CompileShader(const char* source, const char* target) {
     Microsoft::WRL::ComPtr<ID3DBlob> shaderBlob;
@@ -15,8 +19,48 @@ Microsoft::WRL::ComPtr<ID3DBlob> CompileShader(const char* source, const char* t
     return shaderBlob;
 }
 
+static bool IsSM6Profile(const char* target)
+{
+    if (!target) return false;
+    std::string t(target);
+    std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+    // Common SM6 profiles: vs_6_0, ps_6_6, cs_6_0, lib_6_3, etc.
+    return t.find("_6_") != std::string::npos;
+}
+
+static std::wstring WidenAscii(const char* s)
+{
+    if (!s) return {};
+    std::wstring w;
+    while (*s)
+        w.push_back((wchar_t)(unsigned char)*s++);
+    return w;
+}
+
 Microsoft::WRL::ComPtr<ID3DBlob> CompileShaderFromFile(const wchar_t* filename, const char* entryPoint, const char* target)
 {
+    // Prefer DXC automatically for SM6 profiles.
+    if (IsSM6Profile(target))
+    {
+        ShaderCompileOptions opts;
+#if defined(_DEBUG)
+        opts.enableDebugInfo = true;
+        opts.disableOptimizations = true;
+#else
+        opts.enableDebugInfo = false;
+        opts.disableOptimizations = false;
+#endif
+        opts.treatWarningsAsErrors = false;
+        opts.enableCache = true;
+
+        return CompileShaderDXC(
+            filename ? std::wstring(filename) : std::wstring(),
+            entryPoint ? WidenAscii(entryPoint) : std::wstring(L"main"),
+            target ? WidenAscii(target) : std::wstring(L"ps_6_0"),
+            opts);
+    }
+
     Microsoft::WRL::ComPtr<ID3DBlob> shaderBlob;
     Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
 
@@ -150,4 +194,23 @@ Microsoft::WRL::ComPtr<ID3DBlob> CompileShaderFromRelativeFile(const wchar_t* re
     fs::path full = base / fs::path(relativePath);
 
     return CompileShaderFromFile(full.c_str(), entryPoint, target);
+}
+
+Microsoft::WRL::ComPtr<ID3DBlob> CompileShaderDXCFromRelativeFile(
+    const wchar_t* relativePath,
+    const wchar_t* entryPoint,
+    const wchar_t* targetProfile,
+    const ShaderCompileOptions& options)
+{
+    namespace fs = std::filesystem;
+
+    wchar_t exePath[MAX_PATH] = {};
+    const DWORD len = GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    if (len == 0 || len == MAX_PATH)
+        throw std::runtime_error("GetModuleFileNameW failed while resolving shader path");
+
+    fs::path base = fs::path(exePath).parent_path();
+    fs::path full = base / fs::path(relativePath);
+
+    return CompileShaderDXC(full.wstring(), entryPoint ? std::wstring(entryPoint) : std::wstring(L"main"), targetProfile ? std::wstring(targetProfile) : std::wstring(L"vs_6_0"), options);
 }

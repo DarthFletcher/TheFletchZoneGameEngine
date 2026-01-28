@@ -12,4 +12,9 @@
       DestinationFiles="@(_RuntimeShaderFiles->'$(OutDir)shaders\%(RecursiveDir)%(Filename)%(Extension)')"
       SkipUnchangedFiles="true" />
   </Target>
+
+  <!-- Copy DXC runtime DLLs (dxcompiler.dll, dxil.dll) next to the executable for runtime shader compilation -->
+  <Target Name="CopyDXCRuntimeDlls" AfterTargets="Build" Condition="Exists('$(MSBuildProjectDirectory)\tools\CopyDXCDlls.bat')">
+    <Exec Command='"$(MSBuildProjectDirectory)\tools\CopyDXCDlls.bat" "$(OutDir)" "$(MSBuildProjectDirectory)"' />
+  </Target>
 </Project>

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -180,7 +180,6 @@
     <ClInclude Include="include\logger.h" />
     <ClInclude Include="include\resource.h" />
     <ClInclude Include="Include\SceneCamera.h" />
-    <ClInclude Include="Include\ShaderCompiler.h" />
     <ClInclude Include="include\ShaderUtils.h" />
     <ClInclude Include="include\SplashScreen.h" />
     <ClInclude Include="Include\SplashWindow.h" />
@@ -215,7 +214,6 @@
     <ClCompile Include="src\logger.cpp" />
     <ClCompile Include="src\Main.cpp" />
     <ClCompile Include="Src\SceneCamera.cpp" />
-    <ClCompile Include="Src\ShaderCompiler.cpp" />
     <ClCompile Include="src\ShaderUtils.cpp" />
     <ClCompile Include="src\SplashScreen.cpp" />
     <ClCompile Include="Src\SplashWindow.cpp" />
@@ -232,16 +230,10 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
-    <None Include="Directory.Build.props" />
     <None Include="Directory.Build.targets" />
-    <None Include="Docs\ShaderCompilationComplete.md" />
-    <None Include="Docs\ShaderCompilationGuide.md" />
-    <None Include="Docs\ShaderCompilationQuickRef.md" />
-    <None Include="Docs\ShaderCompilationSetup.md" />
     <None Include="include\macros.hints" />
     <None Include="packages.config" />
     <None Include="TheFletchZoneGameEngine.vcxproj.new" />
-    <None Include="tools\CopyDXCDlls.bat" />
     <None Include="tools\FixSceneShaderBuildStep.ps1" />
     <None Include="tools\FixShaderBuildStep.ps1" />
   </ItemGroup>
@@ -249,13 +241,24 @@
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />
   </ItemGroup>
   <ItemGroup>
-    <!-- HLSL shaders - compiled at runtime by engine (not by VS) -->
-    <None Include="shaders\debug_triangle.hlsl" />
-    <None Include="shaders\imgui_vs.hlsl" />
-    <None Include="shaders\imgui_ps.hlsl" />
-    <None Include="shaders\scene_grid_ps.hlsl" />
-    <None Include="shaders\scene_grid_vs.hlsl" />
-    <None Include="shaders\scene_triangle_ps.hlsl" />
+    <!-- Runtime-only shader (do NOT compile with FXC) -->
+    <FxCompile Remove="shaders\debug_triangle.hlsl" />
+    <!-- ImGui shaders -->
+    <FxCompile Include="shaders\imgui_vs.hlsl">
+      <ShaderType>Vertex</ShaderType>
+      <ShaderModel>5.0</ShaderModel>
+      <EntryPoint>VSMain</EntryPoint>
+    </FxCompile>
+    <FxCompile Include="shaders\imgui_ps.hlsl">
+      <ShaderType>Pixel</ShaderType>
+      <ShaderModel>5.0</ShaderModel>
+      <EntryPoint>PSMain</EntryPoint>
+    </FxCompile>
+    <FxCompile Include="shaders\scene_grid_ps.hlsl">
+      <FileType>Document</FileType>
+    </FxCompile>
+    <FxCompile Include="shaders\scene_grid_vs.hlsl" />
+    <FxCompile Include="shaders\scene_triangle_ps.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <Font Include="Assets\Fonts\DroidSans.ttf">

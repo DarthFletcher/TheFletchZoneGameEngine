@@ -159,8 +159,11 @@
     <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3dx12.h" />
     <ClInclude Include="include\BootDiagnostics.h" />
     <ClInclude Include="include\BootProgress.h" />
+    <ClInclude Include="include\Components.h" />
     <ClInclude Include="include\Config.h" />
     <ClInclude Include="include\CrashDiagnostics.h" />
+    <ClInclude Include="Include\EditorCommon.h" />
+    <ClInclude Include="Include\EditorIcons.h" />
     <ClInclude Include="include\EditorPanels.h" />
     <ClInclude Include="include\Engine.h" />
     <ClInclude Include="include\Entity.h" />
@@ -176,6 +179,7 @@
     <ClInclude Include="include\Input.h" />
     <ClInclude Include="include\logger.h" />
     <ClInclude Include="include\resource.h" />
+    <ClInclude Include="Include\SceneCamera.h" />
     <ClInclude Include="include\ShaderUtils.h" />
     <ClInclude Include="include\SplashScreen.h" />
     <ClInclude Include="Include\SplashWindow.h" />
@@ -199,7 +203,6 @@
     <ClCompile Include="src\CrashDiagnostics.cpp" />
     <ClCompile Include="Src\EditorPanels.cpp" />
     <ClCompile Include="src\Engine.cpp" />
-    <ClCompile Include="src\Entity.cpp" />
     <ClCompile Include="src\Game.cpp" />
     <ClCompile Include="Src\Graphics.cpp" />
     <ClCompile Include="src\ImGuiUtils.cpp" />
@@ -210,6 +213,7 @@
     <ClCompile Include="src\Input.cpp" />
     <ClCompile Include="src\logger.cpp" />
     <ClCompile Include="src\Main.cpp" />
+    <ClCompile Include="Src\SceneCamera.cpp" />
     <ClCompile Include="src\ShaderUtils.cpp" />
     <ClCompile Include="src\SplashScreen.cpp" />
     <ClCompile Include="Src\SplashWindow.cpp" />
@@ -226,8 +230,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="cpp.hint" />
+    <None Include="Directory.Build.targets" />
     <None Include="include\macros.hints" />
     <None Include="packages.config" />
+    <None Include="tools\FixSceneShaderBuildStep.ps1" />
+    <None Include="tools\FixShaderBuildStep.ps1" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />
@@ -246,8 +253,22 @@
       <ShaderModel>5.0</ShaderModel>
       <EntryPoint>PSMain</EntryPoint>
     </FxCompile>
-    <FxCompile Include="shaders\scene_grid_ps.hlsl" />
+    <FxCompile Include="shaders\scene_grid_ps.hlsl">
+      <FileType>Document</FileType>
+    </FxCompile>
     <FxCompile Include="shaders\scene_grid_vs.hlsl" />
+    <FxCompile Include="shaders\scene_triangle_ps.hlsl" />
+  </ItemGroup>
+  <ItemGroup>
+    <Font Include="Assets\Fonts\DroidSans.ttf">
+      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</DeploymentContent>
+    </Font>
+    <Font Include="Assets\Fonts\fa-solid-900.ttf">
+      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</DeploymentContent>
+    </Font>
+    <Font Include="Assets\Fonts\Roboto-Medium.ttf">
+      <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</DeploymentContent>
+    </Font>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
