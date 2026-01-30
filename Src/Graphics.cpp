@@ -434,7 +434,7 @@ void Graphics::Shutdown()
 
     // 2. Now free DX12 resources safely
     // Release scene RT resources (must be before device reset)
-    sceneRenderTarget.Reset();
+    EnqueueDeferredRelease(sceneRenderTarget);
     sceneRtvHeap.Reset();
     sceneImGuiTextureID = (ImTextureID)0;
     sceneSrvCpu = {};
@@ -445,23 +445,23 @@ void Graphics::Shutdown()
     sceneRTState = D3D12_RESOURCE_STATE_COMMON;
 
     // Release scene depth resources
-    sceneDepth.Reset();
+    EnqueueDeferredRelease(sceneDepth);
     sceneDsvHeap.Reset();
     sceneDsvHandle = {};
     sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
 
     // Release scene pipeline resources
     sceneCBPtr = nullptr;
-    sceneCB.Reset();
-    sceneTrianglePSO.Reset();
-    sceneGridPSO.Reset();
-    sceneRootSignature.Reset();
-    sceneTriangleVB.Reset();
-    sceneGridVB.Reset();
-    sceneAxesVB.Reset();
+    EnqueueDeferredRelease(sceneCB);
+    EnqueueDeferredRelease(sceneTrianglePSO);
+    EnqueueDeferredRelease(sceneGridPSO);
+    EnqueueDeferredRelease(sceneRootSignature);
+    EnqueueDeferredRelease(sceneTriangleVB);
+    EnqueueDeferredRelease(sceneGridVB);
+    EnqueueDeferredRelease(sceneAxesVB);
 
     for (int i = 0; i < NUM_BACK_BUFFERS; i++)
-        SafeReleaseResource(backBuffers[i], true);
+        EnqueueDeferredRelease(backBuffers[i]);
 
     if (swapChain) swapChain.Reset();
     SafeReleaseComPtr("rtvHeap", rtvHeap, true);
@@ -469,6 +469,11 @@ void Graphics::Shutdown()
     SafeReleaseComPtr("commandQueue", commandQueue, true);
     SafeReleaseComPtr("commandAllocator", commandAllocator, true);
     SafeReleaseComPtr("commandList", commandList, true);
+
+    // Ensure all queued releases get a chance to retire (after FlushGPU, fence is complete).
+    ProcessDeferredReleases();
+    deferredReleases.clear();
+
     SafeReleaseComPtr("fence", fence, true);
     SafeReleaseComPtr("dxgiFactory", dxgiFactory, true);
     device.Reset();
@@ -2162,10 +2167,7 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     // If resizing/recreating, ensure GPU is idle (keeps this simple and safe).
     FlushGPU();
 
-    // IMPORTANT: avoid releasing a previously referenced scene SRV/RT before GPU is done.
-    // At this point commandListOpen==false and we flushed, so it is safe.
-
-    // Phase 1A: still enqueue old resources so future removal of FlushGPU stays safe.
+    // Phase 1A: enqueue old resources so release is safe on future non-flush paths.
     EnqueueDeferredRelease(sceneRenderTarget);
     EnqueueDeferredRelease(sceneDepth);
     EnqueueDeferredRelease(sceneTriangleVB);
@@ -2180,8 +2182,7 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     sceneRtvHandle = {};
     sceneRTState = D3D12_RESOURCE_STATE_COMMON;
 
-    // Release scene depth resources
-    sceneDepth.Reset();
+    // Release scene depth resources (deferred above)
     sceneDsvHeap.Reset();
     sceneDsvHandle = {};
     sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
