@@ -86,15 +86,13 @@ public:
     // Phase 0: single fence source of truth is `fenceValues[backBufferIndex]`.
     // (Removed duplicate `mainFenceValues`.)
 
-    std::vector<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>> commandAllocators;
-
     struct FrameContext
     {
         Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
         UINT64 fenceValue = 0;
     };
 
-    // Keep in sync with the engine's fixed backbuffer count used by `backBuffers[3]` and `fenceValues[3]`.
+    // Keep in sync with the engine's fixed backbuffer count used by `backBuffers[3]`.
     static constexpr UINT kBackBufferCount = 3;
     std::array<FrameContext, kBackBufferCount> frames{};
 
@@ -292,7 +290,6 @@ private:
     UINT currentBackBufferIndex = 0;
     UINT rtvDescriptorSize = 0;
     UINT64 fenceValue = 0;
-    UINT64 fenceValues[3] = {};
     static HANDLE fenceEvent;
 
     static const int FrameRenderBufferCount = 3;

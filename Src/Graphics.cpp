@@ -644,8 +644,6 @@ void Graphics::FlushGPU()
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
     {
         frames[i].fenceValue = signalValue;
-        // Legacy (Phase 0) storage kept during transition.
-        fenceValues[i] = signalValue;
     }
 }
 
@@ -674,8 +672,6 @@ void Graphics::SignalFence()
     if (currentBackBufferIndex < NUM_BACK_BUFFERS)
     {
         frames[currentBackBufferIndex].fenceValue = signalValue;
-        // Legacy (Phase 0) storage kept during transition.
-        fenceValues[currentBackBufferIndex] = signalValue;
     }
 }
 
@@ -777,8 +773,6 @@ void Graphics::CreateSwapChain(HWND hwnd, UINT width, UINT height)
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
     {
         frames[i].fenceValue = completed;
-        // Legacy (Phase 0) storage kept during transition.
-        fenceValues[i] = completed;
     }
 }
 
@@ -814,22 +808,19 @@ void Graphics::CreateCommandInterfaces() {
         return;
     }
 
-    // Resize the vector to match the number of back buffers
-    commandAllocators.resize(NUM_BACK_BUFFERS);
-
+    // Phase 1B: create per-frame allocators directly into `frames[]`.
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i) {
+        frames[i].allocator.Reset();
+        frames[i].fenceValue = 0;
+
         HRESULT hr = device->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT,
-            IID_PPV_ARGS(&commandAllocators[i])
+            IID_PPV_ARGS(&frames[i].allocator)
         );
         if (FAILED(hr)) {
             Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create CommandAllocator for buffer " + std::to_string(i));
             return;
         }
-
-        // Phase 1B: canonical per-frame pairing (allocator + fence value)
-        frames[i].allocator = commandAllocators[i];
-        frames[i].fenceValue = 0;
     }
 
     // Set to false if you want to skip log issues
