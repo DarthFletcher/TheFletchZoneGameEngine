@@ -911,6 +911,9 @@ void Graphics::BeginFrame(HWND hWnd)
     static UINT64 g_FrameCounter = 0;
     Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter));
 
+    // Phase 1A: release GPU resources whose fences have completed.
+    ProcessDeferredReleases();
+
     // Apply pending main window swapchain resize before anything else.
     ApplyPendingResize(hWnd);
 
@@ -2162,16 +2165,28 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     // IMPORTANT: avoid releasing a previously referenced scene SRV/RT before GPU is done.
     // At this point commandListOpen==false and we flushed, so it is safe.
 
-    sceneRenderTarget.Reset();
+    // Phase 1A: still enqueue old resources so future removal of FlushGPU stays safe.
+    EnqueueDeferredRelease(sceneRenderTarget);
+    EnqueueDeferredRelease(sceneDepth);
+    EnqueueDeferredRelease(sceneTriangleVB);
+    EnqueueDeferredRelease(sceneGridVB);
+    EnqueueDeferredRelease(sceneAxesVB);
+    EnqueueDeferredRelease(sceneCB);
+    EnqueueDeferredRelease(sceneTrianglePSO);
+    EnqueueDeferredRelease(sceneGridPSO);
+    EnqueueDeferredRelease(sceneRootSignature);
+
     sceneRtvHeap.Reset();
     sceneRtvHandle = {};
     sceneRTState = D3D12_RESOURCE_STATE_COMMON;
 
-    // Depth resources track the Scene RT size too.
+    // Release scene depth resources
     sceneDepth.Reset();
     sceneDsvHeap.Reset();
     sceneDsvHandle = {};
     sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
+
+    sceneCBPtr = nullptr;
 
     // Create the offscreen texture (render target)
     D3D12_RESOURCE_DESC texDesc = {};
@@ -2839,35 +2854,6 @@ void Graphics::ProcessPendingSceneRenderTargetResize()
     if (commandListOpen)
         return;
 
-    EnsureSceneRenderTarget(pendingSceneRTW, pendingSceneRTH);
-    pendingSceneRTResize = false;
-}
-
-void Graphics::HandleDeviceLost(HWND hWnd)
-{
-    Logger::Log(LogLevel::Error, "❌ Device lost detected. Attempting recovery...");
-    (void)hWnd;
-    // TODO: Implement full device recreation path.
-}
-
-void Graphics::RequestResize(UINT width, UINT height)
-{
-    width = (std::max)(1u, width);
-    height = (std::max)(1u, height);
-
-    pendingWidth = width;
-    pendingHeight = height;
-    pendingResize = true;
-}
-
-void Graphics::ApplyPendingResize(HWND hWnd)
-{
-    if (!pendingResize)
-        return;
-
-    if (commandListOpen)
-        return;
-
     if (!swapChain || !device)
         return;
 
@@ -2879,221 +2865,43 @@ void Graphics::ApplyPendingResize(HWND hWnd)
 
     // Release old backbuffers
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
-        SafeReleaseResource(backBuffers[i], false);
+        EnqueueDeferredRelease(backBuffers[i]);
 
-    DXGI_SWAP_CHAIN_DESC desc = {};
-    HRESULT hrDesc = swapChain->GetDesc(&desc);
-    if (FAILED(hrDesc))
-    {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to retrieve swap chain description in ApplyPendingResize().");
-        HandleDeviceLost(hWnd);
-        return;
-    }
+    // Old RTV heap can also be referenced by debug tools; release it after GPU completion.
+    EnqueueDeferredRelease(rtvHeap);
 
-    const UINT w = (std::max)(pendingWidth, 1u);
-    const UINT h = (std::max)(pendingHeight, 1u);
+    // Keep descriptor size; it will be updated when we recreate RTVs.
 
-    HRESULT hr = swapChain->ResizeBuffers(
-        desc.BufferCount,
-        w,
-        h,
-        desc.BufferDesc.Format,
-        desc.Flags);
-
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error, std::format("❌ ERROR: swapChain->ResizeBuffers failed in ApplyPendingResize(). HR=0x{:08X}", (UINT)hr));
-        HandleDeviceLost(hWnd);
-        return;
-    }
-
-    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
-
-    CreateRenderTargetViews();
-
-    // Keep engine screen size in sync
-    screenWidth = w;
-    screenHeight = h;
-
-    // Ensure ImGui display size matches (keeps docking + calculations stable)
-    if (ImGui::GetCurrentContext())
-        ImGui::GetIO().DisplaySize = ImVec2((float)w, (float)h);
+    // ✅ Recreate swap chain with updated size
+    CreateSwapChain(hWnd, pendingWidth, pendingHeight);
 
     pendingResize = false;
-
-    Logger::Log(LogLevel::Info, std::format("✅ Swapchain resized (deferred): {}x{}", w, h));
+    Logger::Log(LogLevel::Info, std::format("🔄 SwapChain resized: {}x{}", pendingWidth, pendingHeight));
 }
 
-PickRay Graphics::ComputeScenePickRay(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize) const
+void Graphics::ProcessDeferredReleases()
 {
-    PickRay ray{};
-
-    const float w = (sceneSize.x > 1.0f) ? sceneSize.x : 1.0f;
-    const float h = (sceneSize.y > 1.0f) ? sceneSize.y : 1.0f;
-
-    // Mouse position relative to the Scene image rect (ImGui screen-space -> local).
-    const float localX = mousePos.x - sceneMin.x;
-    const float localY = mousePos.y - sceneMin.y;
-
-    // Convert to NDC in [-1,1]. ImGui has +Y down, NDC has +Y up.
-    const float ndcX = (localX / w) * 2.0f - 1.0f;
-    const float ndcY = 1.0f - (localY / h) * 2.0f;
-
-    // Use actual scene RT aspect if available, else fall back to UI size.
-    float aspect = (h > 0.0f) ? (w / h) : 1.0f;
-    if (sceneRTWidth > 0 && sceneRTHeight > 0)
-        aspect = (float)sceneRTWidth / (float)sceneRTHeight;
-
-    const DirectX::XMMATRIX view = sceneCamera.GetView();
-    const DirectX::XMMATRIX proj = (GetViewMode() == ViewMode::Mode2D)
-        ? sceneCamera.GetOrthoProj(aspect)
-        : sceneCamera.GetProj(aspect);
-
-    // Clip -> World via inverse(viewProj)
-    const DirectX::XMMATRIX invViewProj = DirectX::XMMatrixInverse(nullptr, view * proj);
-
-    const DirectX::XMVECTOR nearClip = DirectX::XMVectorSet(ndcX, ndcY, 0.0f, 1.0f);
-    const DirectX::XMVECTOR farClip  = DirectX::XMVectorSet(ndcX, ndcY, 1.0f, 1.0f);
-
-    DirectX::XMVECTOR nearWorld = DirectX::XMVector4Transform(nearClip, invViewProj);
-    DirectX::XMVECTOR farWorld  = DirectX::XMVector4Transform(farClip, invViewProj);
-
-    nearWorld = DirectX::XMVectorScale(nearWorld, 1.0f / DirectX::XMVectorGetW(nearWorld));
-    farWorld  = DirectX::XMVectorScale(farWorld,  1.0f / DirectX::XMVectorGetW(farWorld));
-
-    DirectX::XMVECTOR dir = DirectX::XMVector3Normalize(DirectX::XMVectorSubtract(farWorld, nearWorld));
-
-    DirectX::XMStoreFloat3(&ray.origin, nearWorld);
-    DirectX::XMStoreFloat3(&ray.dir, dir);
-
-    return ray;
-}
-
-static bool IntersectRayPlane(const PickRay& ray, const DirectX::XMFLOAT3& planePoint, const DirectX::XMFLOAT3& planeNormal, DirectX::XMFLOAT3& outHit)
-{
-    using namespace DirectX;
-
-    const XMVECTOR ro = XMLoadFloat3(&ray.origin);
-    const XMVECTOR rd = XMLoadFloat3(&ray.dir);
-    const XMVECTOR p0 = XMLoadFloat3(&planePoint);
-    const XMVECTOR n = XMLoadFloat3(&planeNormal);
-
-    const float denom = XMVectorGetX(XMVector3Dot(rd, n));
-    if (fabsf(denom) < 1e-6f)
-        return false;
-
-    const float t = XMVectorGetX(XMVector3Dot((p0 - ro), n)) / denom;
-    if (t < 0.0f)
-        return false;
-
-    const XMVECTOR hit = ro + rd * t;
-    XMStoreFloat3(&outHit, hit);
-    return true;
-}
-
-bool Graphics::TryPickSceneGridY0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay) const
-{
-    const PickRay ray = ComputeScenePickRay(mousePos, sceneMin, sceneSize);
-    if (outRay) *outRay = ray;
-
-    const DirectX::XMFLOAT3 planePoint{ 0.0f, 0.0f, 0.0f };
-    const DirectX::XMFLOAT3 planeNormal{ 0.0f, 1.0f, 0.0f };
-    return IntersectRayPlane(ray, planePoint, planeNormal, outHitPos);
-}
-
-bool Graphics::TryPickSceneGridZ0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay) const
-{
-    const PickRay ray = ComputeScenePickRay(mousePos, sceneMin, sceneSize);
-    if (outRay) *outRay = ray;
-
-    const DirectX::XMFLOAT3 planePoint{ 0.0f, 0.0f, 0.0f };
-    const DirectX::XMFLOAT3 planeNormal{ 0.0f, 0.0f, 1.0f };
-    return IntersectRayPlane(ray, planePoint, planeNormal, outHitPos);
-}
-
-// --------------------------------------------------------------
-// Graphics API method definitions to satisfy VCR001 warnings
-// --------------------------------------------------------------
-void Graphics::ResetDevice()
-{
-    // Minimal implementation: current codebase uses HandleDeviceLost() for recovery.
-    // Keep this as a thin wrapper so declarations remain valid.
-    HandleDeviceLost(hWnd);
-}
-
-void Graphics::CheckDeviceStatus(HWND hWnd)
-{
-    if (!device)
+    if (deferredReleases.empty() || !fence)
         return;
-
-    const HRESULT reason = device->GetDeviceRemovedReason();
-    if (reason != S_OK)
-    {
-        Logger::Log(LogLevel::Error, std::format(
-            "🚨 CheckDeviceStatus: DeviceRemovedReason=0x{:08X}", (UINT)reason));
-        HandleDeviceLost(hWnd);
-    }
-}
-
-bool Graphics::SafeResetAllocator(ID3D12CommandAllocator* allocator, bool commandListIsOpen)
-{
-    if (!allocator)
-        return false;
-
-    // Allocators can't be reset while their command list is recording.
-    if (commandListIsOpen)
-        return false;
-
-    const HRESULT hr = allocator->Reset();
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error, std::format(
-            "❌ SafeResetAllocator: allocator->Reset failed HR=0x{:08X}", (UINT)hr));
-        return false;
-    }
-
-    return true;
-}
-
-void Graphics::WaitForGPU(HWND hWnd)
-{
-    (void)hWnd;
-    FlushGPU();
-}
-
-void Graphics::ValidateCommandAllocator()
-{
-    if (!commandAllocator)
-        Logger::Log(LogLevel::Error, "❌ ValidateCommandAllocator: commandAllocator is NULL");
-
-    if (commandAllocators.empty() || !commandAllocators[0])
-        Logger::Log(LogLevel::Error, "❌ ValidateCommandAllocator: commandAllocators[0] is NULL");
-}
-
-void Graphics::CheckFenceState()
-{
-    if (!fence)
-    {
-        Logger::Log(LogLevel::Error, "❌ CheckFenceState: fence is NULL");
-        return;
-    }
 
     const UINT64 completed = fence->GetCompletedValue();
-    if (completed == UINT64_MAX)
+
+    size_t write = 0;
+    for (size_t read = 0; read < deferredReleases.size(); ++read)
     {
-        Logger::Log(LogLevel::Error, "🚨 CheckFenceState: GetCompletedValue() == UINT64_MAX (device lost sentinel)");
+        if (deferredReleases[read].fenceValue <= completed)
+        {
+            deferredReleases[read].object.Reset();
+        }
+        else
+        {
+            deferredReleases[write++] = std::move(deferredReleases[read]);
+        }
     }
-}
 
-void Graphics::RecoverFromAllocatorError(HWND hWnd)
-{
-    Logger::Log(LogLevel::Warning, "⚠️ RecoverFromAllocatorError: allocator reset failed; treating as device lost.");
-    HandleDeviceLost(hWnd);
-}
+    deferredReleases.resize(write);
 
-bool Graphics::IsUploadReady() const
-{
-    // Used by systems like the splash texture upload to decide if GPU upload can be attempted.
-    // Conservative readiness check: require device + queue + command list + shader-visible SRV heap.
-    return device && commandQueue && commandList && imguiHeap;
+    // Guard: if this grows unbounded, something is retaining too many transient GPU resources.
+    if (deferredReleases.size() > 5000)
+        Logger::Log(LogLevel::Warning, "⚠️ Deferred release queue is very large; possible lifetime leak.");
 }

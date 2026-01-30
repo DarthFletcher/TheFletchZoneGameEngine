@@ -191,8 +191,24 @@ public:
 
     // Scene picking helpers
     PickRay ComputeScenePickRay(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize) const;
-    bool TryPickSceneGridY0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay = nullptr) const;
-    bool TryPickSceneGridZ0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay = nullptr) const;
+    bool TryPickSceneGridY0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay) const;
+    bool TryPickSceneGridZ0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay) const;
+
+    // Phase 1A: Deferred GPU resource destruction
+    template<typename T>
+    void EnqueueDeferredRelease(Microsoft::WRL::ComPtr<T>& obj)
+    {
+        if (!obj)
+            return;
+
+        DeferredReleaseItem item;
+        item.fenceValue = fenceValue; // last signaled value on the main queue timeline
+        item.object = obj;
+        deferredReleases.push_back(std::move(item));
+        obj.Reset();
+    }
+
+    void ProcessDeferredReleases();
 
 private:
     HRESULT CreateDX12Device();
@@ -326,4 +342,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneAxesVB;
     D3D12_VERTEX_BUFFER_VIEW sceneAxesVBV = {};
     UINT sceneAxesVertexCount = 0;
+
+    struct DeferredReleaseItem
+    {
+        UINT64 fenceValue = 0;
+        Microsoft::WRL::ComPtr<IUnknown> object;
+    };
+
+    std::vector<DeferredReleaseItem> deferredReleases;
 };

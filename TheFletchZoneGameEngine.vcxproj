@@ -206,6 +206,8 @@
     <ClCompile Include="src\Engine.cpp" />
     <ClCompile Include="src\Game.cpp" />
     <ClCompile Include="Src\Graphics.cpp" />
+    <ClCompile Include="Src\Graphics_Contracts_Restore.cpp" />
+    <ClCompile Include="Src\Graphics_Picking.cpp" />
     <ClCompile Include="src\ImGuiUtils.cpp" />
     <ClCompile Include="src\ImGui_ImplDX12_DescriptorHeap.cpp" />
     <ClCompile Include="Src\imgui_impl_dx12_custom.cpp" />
