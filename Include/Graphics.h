@@ -83,8 +83,6 @@ public:
     };
 
     UINT backBufferCount = 0;
-    // Phase 0: single fence source of truth is `fenceValues[backBufferIndex]`.
-    // (Removed duplicate `mainFenceValues`.)
 
     struct FrameContext
     {
@@ -92,7 +90,6 @@ public:
         UINT64 fenceValue = 0;
     };
 
-    // Keep in sync with the engine's fixed backbuffer count used by `backBuffers[3]`.
     static constexpr UINT kBackBufferCount = 3;
     std::array<FrameContext, kBackBufferCount> frames{};
 
@@ -158,6 +155,9 @@ public:
     void CheckFenceState();
     void RecoverFromAllocatorError(HWND hWnd);
 
+    // Phase 1C: single helper for all fence waits
+    void WaitForFenceValue(UINT64 value);
+
     void ListAvailableGPUs();
     ID3D12CommandQueue* GetCommandQueue() const { return commandQueue.Get(); }
     ID3D12CommandAllocator* GetCommandAllocatorRaw() const { return commandAllocator.Get(); }
@@ -203,7 +203,6 @@ public:
     bool TryPickSceneGridY0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay) const;
     bool TryPickSceneGridZ0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay) const;
 
-    // Phase 1A: Deferred GPU resource destruction
 #ifndef NDEBUG
     struct DeferredReleaseDebugStats
     {
@@ -226,11 +225,32 @@ public:
             return;
 
         DeferredReleaseItem item;
-        // Prefer the last signaled fence value on the main queue timeline.
-        // Fallback to the current fenceValue if lastSignaledFenceValue is not populated yet.
         const UINT64 stampedFence = (lastSignaledFenceValue != 0) ? lastSignaledFenceValue : fenceValue;
         item.fenceValue = stampedFence;
         item.object = obj;
+        deferredReleases.push_back(std::move(item));
+
+#ifndef NDEBUG
+        drStats.enqueued++;
+        drStats.peakQueue = (std::max)(drStats.peakQueue, deferredReleases.size());
+        if (drStats.oldestFence == 0 || item.fenceValue < drStats.oldestFence)
+            drStats.oldestFence = item.fenceValue;
+#endif
+
+        obj.Reset();
+    }
+
+    template<typename T>
+    void EnqueueDeferredReleaseTagged(Microsoft::WRL::ComPtr<T>& obj, const char* tag)
+    {
+        if (!obj)
+            return;
+
+        DeferredReleaseItem item;
+        const UINT64 stampedFence = (lastSignaledFenceValue != 0) ? lastSignaledFenceValue : fenceValue;
+        item.fenceValue = stampedFence;
+        item.object = obj;
+        item.tag = tag;
         deferredReleases.push_back(std::move(item));
 
 #ifndef NDEBUG
@@ -283,7 +303,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> strongQueue;
     Microsoft::WRL::ComPtr<IDXGIFactory4> dxgiFactory;
 
-    // Dedicated upload context for one-off uploads (ImGui font texture, splash uploads, etc.)
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> uploadAllocator;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> uploadCommandList;
 
@@ -311,28 +330,23 @@ private:
 
     SceneCamera sceneCamera;
 
-    // Deferred main swapchain resize state
     UINT pendingWidth = 0;
     UINT pendingHeight = 0;
     bool pendingResize = false;
 
-    // Scene RT resize is deferred to a safe point (when command list is not recording).
     UINT pendingSceneRTW = 0;
     UINT pendingSceneRTH = 0;
     bool pendingSceneRTResize = false;
 
-    // Offscreen Scene panel render target (RTV+SRV)
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneRenderTarget;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> sceneRtvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE sceneRtvHandle = {};
 
-    // Offscreen Scene depth buffer (DSV)
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneDepth;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> sceneDsvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE sceneDsvHandle = {};
     D3D12_RESOURCE_STATES sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
 
-    // SRV lives in the ImGui shader-visible heap; keep handles + ImTextureID for ImGui::Image
     D3D12_CPU_DESCRIPTOR_HANDLE sceneSrvCpu = {};
     D3D12_GPU_DESCRIPTOR_HANDLE sceneSrvGpu = {};
     ImTextureID sceneImGuiTextureID = (ImTextureID)0;
@@ -372,7 +386,6 @@ private:
     SceneCBData sceneCBData = {};
     void* sceneCBPtr = nullptr;
 
-    // Scene axes (XYZ) debug lines
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneAxesVB;
     D3D12_VERTEX_BUFFER_VIEW sceneAxesVBV = {};
     UINT sceneAxesVertexCount = 0;
@@ -381,6 +394,7 @@ private:
     {
         UINT64 fenceValue = 0;
         Microsoft::WRL::ComPtr<IUnknown> object;
+        const char* tag = nullptr;
     };
 
     std::vector<DeferredReleaseItem> deferredReleases;

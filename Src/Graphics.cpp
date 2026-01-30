@@ -34,7 +34,7 @@
 
 // Engine Headers
 #include "Graphics.h"
-#include "Logger.h"
+#include "logger.h"
 #include "UI.h"
 #include "ImGuiPlatformIO_Extended.h" // <- Add this below imgui_impl_win32.h and imgui_impl_dx12.h
 #include <Engine.h>
@@ -410,30 +410,27 @@ void Graphics::Shutdown()
         commandListOpen = false;
     }
 
-    FlushGPU();  // ✅ Always flush first
+    FlushGPU();
+
+    // Ensure all queued releases get a chance to retire (after FlushGPU, fence is complete).
+    ProcessDeferredReleases();
+    deferredReleases.clear();
 
     // 1. Shut down ImGui BEFORE freeing ANY DX12 heaps
     if (ImGui::GetCurrentContext())
     {
         Logger::Log(LogLevel::Info, "🧠 Shutting down ImGui safely...");
 
-        // Destroy ImGui DX12 resources
         ImGui_ImplDX12_DestroyFontsTexture();
         ImGui_ImplDX12_Shutdown();
         ImGui_ImplWin32_Shutdown();
 
-        // Destroy platform windows AFTER renderer shutdown
         ImGui::DestroyPlatformWindows();
-
-        // Reset ImGuiPlatformIO AFTER all platform windows are destroyed
         ImGui::GetPlatformIO() = ImGuiPlatformIO();
-
-        // Finally destroy ImGui context
         ImGui::DestroyContext();
     }
 
-    // 2. Now free DX12 resources safely
-    // Release scene RT resources (must be before device reset)
+    // 2. Now free DX12 resources safely (enqueue then reset)
     EnqueueDeferredRelease(sceneRenderTarget);
     sceneRtvHeap.Reset();
     sceneImGuiTextureID = (ImTextureID)0;
@@ -444,13 +441,11 @@ void Graphics::Shutdown()
     sceneRTHeight = 0;
     sceneRTState = D3D12_RESOURCE_STATE_COMMON;
 
-    // Release scene depth resources
     EnqueueDeferredRelease(sceneDepth);
     sceneDsvHeap.Reset();
     sceneDsvHandle = {};
     sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
 
-    // Release scene pipeline resources
     sceneCBPtr = nullptr;
     EnqueueDeferredRelease(sceneCB);
     EnqueueDeferredRelease(sceneTrianglePSO);
@@ -470,10 +465,6 @@ void Graphics::Shutdown()
     SafeReleaseComPtr("commandAllocator", commandAllocator, true);
     SafeReleaseComPtr("commandList", commandList, true);
 
-    // Ensure all queued releases get a chance to retire (after FlushGPU, fence is complete).
-    ProcessDeferredReleases();
-    deferredReleases.clear();
-
     SafeReleaseComPtr("fence", fence, true);
     SafeReleaseComPtr("dxgiFactory", dxgiFactory, true);
     device.Reset();
@@ -484,7 +475,7 @@ void Graphics::Shutdown()
         fenceEvent = nullptr;
     }
 
-    g_SRVHeap = nullptr; // ✅ Clear global pointer
+    g_SRVHeap = nullptr;
     Logger::Log(LogLevel::Info, "✅ Graphics Shutdown Completed.");
 }
 
@@ -635,15 +626,31 @@ void Graphics::FlushGPU()
         return;
     }
 
-    if (fence->GetCompletedValue() < signalValue)
-    {
-        (void)fence->SetEventOnCompletion(signalValue, fenceEvent);
-        WaitForSingleObject(fenceEvent, INFINITE);
-    }
+    WaitForFenceValue(signalValue);
 
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
     {
         frames[i].fenceValue = signalValue;
+    }
+}
+
+// Phase 1C: Centralized fence waiting (used by BeginFrame, FlushGPU, resize paths)
+void Graphics::WaitForFenceValue(UINT64 value)
+{
+    if (!fence || value == 0)
+        return;
+
+    if (!fenceEvent)
+        fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+    const UINT64 completed = fence->GetCompletedValue();
+    if (completed == UINT64_MAX)
+        return; // device lost sentinel handled by callers
+
+    if (completed < value)
+    {
+        (void)fence->SetEventOnCompletion(value, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
     }
 }
 
@@ -1092,8 +1099,7 @@ void Graphics::BeginFrame(HWND hWnd)
             "⏳ Waiting on GPU | BackBuffer={} Fence={} (Completed={})",
             currentBackBufferIndex, fenceToWaitFor, completedValue));
 
-        fence->SetEventOnCompletion(fenceToWaitFor, fenceEvent);
-        WaitForSingleObject(fenceEvent, INFINITE);
+        WaitForFenceValue(fenceToWaitFor);
 
         // Refresh for accurate diagnostics
         completedValue = fence->GetCompletedValue();
@@ -1478,6 +1484,12 @@ void Graphics::EndFrame(HWND hWnd)
 //==================================
 void Graphics::Present(HWND hWnd)
 {
+#ifndef NDEBUG
+    // Guard rails: Present should happen only after EndFrame closed/submitted the list.
+    assert(!commandListOpen && "Present() called while command list is still open (EndFrame not run?)");
+    assert(!frameStarted && "Present() called while frameStarted=true (EndFrame not completed?)");
+#endif
+
     // ENGINE RULE:
     // Present must be called exactly once per frame.
     // Only Engine calls this; Graphics must never auto-present.
@@ -2237,10 +2249,15 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     EnqueueDeferredRelease(sceneRootSignature);
 
     sceneRtvHeap.Reset();
+    sceneImGuiTextureID = (ImTextureID)0;
+    sceneSrvCpu = {};
+    sceneSrvGpu = {};
     sceneRtvHandle = {};
+    sceneRTWidth = 0;
+    sceneRTHeight = 0;
     sceneRTState = D3D12_RESOURCE_STATE_COMMON;
 
-    // Release scene depth resources (deferred above)
+    EnqueueDeferredRelease(sceneDepth);
     sceneDsvHeap.Reset();
     sceneDsvHandle = {};
     sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
