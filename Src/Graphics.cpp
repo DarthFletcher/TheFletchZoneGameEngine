@@ -642,7 +642,11 @@ void Graphics::FlushGPU()
     }
 
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
+    {
+        frames[i].fenceValue = signalValue;
+        // Legacy (Phase 0) storage kept during transition.
         fenceValues[i] = signalValue;
+    }
 }
 
 //==============================================
@@ -771,7 +775,11 @@ void Graphics::CreateSwapChain(HWND hwnd, UINT width, UINT height)
 
     const UINT64 completed = fence ? fence->GetCompletedValue() : 0;
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
+    {
+        frames[i].fenceValue = completed;
+        // Legacy (Phase 0) storage kept during transition.
         fenceValues[i] = completed;
+    }
 }
 
 //==============================
@@ -934,6 +942,22 @@ void Graphics::BeginFrame(HWND hWnd)
     ++frameCounter;
 #endif
 
+#ifndef NDEBUG
+    // Phase 1B drift detector: per-buffer fence stamps must never exceed the last signaled fence.
+    if (currentBackBufferIndex < NUM_BACK_BUFFERS)
+    {
+        const UINT64 fv = frames[currentBackBufferIndex].fenceValue;
+        if (fv > lastSignaledFenceValue)
+        {
+            Logger::Log(LogLevel::Error, std::format(
+                "🚨 Fence state corruption detected | bb={} frameFence={} lastSignaled={} ",
+                currentBackBufferIndex, fv, lastSignaledFenceValue));
+            HandleDeviceLost(hWnd);
+            return;
+        }
+    }
+#endif
+
     // Frame counter
     static UINT64 g_FrameCounter = 0;
     Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter));
@@ -961,7 +985,7 @@ void Graphics::BeginFrame(HWND hWnd)
             const bool hasFence = (fence != nullptr);
             const bool hasSwap = (swapChain != nullptr);
             const bool hasCmdList = (commandList != nullptr);
-            const bool hasAlloc = (!commandAllocators.empty() && commandAllocators[0] != nullptr);
+            const bool hasAlloc = (frames[0].allocator != nullptr);
             const bool hasRtvHeap = (rtvHeap != nullptr);
 
             ImGuiIO* io = ImGui::GetCurrentContext() ? &ImGui::GetIO() : nullptr;
