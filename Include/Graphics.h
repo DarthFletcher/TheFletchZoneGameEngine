@@ -7,6 +7,7 @@
 #include <vector>
 #include <combaseapi.h>
 #include <chrono>
+#include <array>
 
 #include "Utils.h"
 #include "HintMacros.h"
@@ -86,6 +87,16 @@ public:
     // (Removed duplicate `mainFenceValues`.)
 
     std::vector<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>> commandAllocators;
+
+    struct FrameContext
+    {
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+        UINT64 fenceValue = 0;
+    };
+
+    // Keep in sync with the engine's fixed backbuffer count used by `backBuffers[3]` and `fenceValues[3]`.
+    static constexpr UINT kBackBufferCount = 3;
+    std::array<FrameContext, kBackBufferCount> frames{};
 
     void OnResize(HWND hWnd, UINT width, UINT height);
 
@@ -195,6 +206,21 @@ public:
     bool TryPickSceneGridZ0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay) const;
 
     // Phase 1A: Deferred GPU resource destruction
+#ifndef NDEBUG
+    struct DeferredReleaseDebugStats
+    {
+        uint64_t enqueued = 0;
+        uint64_t released = 0;
+        size_t peakQueue = 0;
+
+        UINT64 oldestFence = 0;
+        int stuckFrames = 0;
+    };
+
+    DeferredReleaseDebugStats drStats;
+    uint64_t frameCounter = 0;
+#endif
+
     template<typename T>
     void EnqueueDeferredRelease(Microsoft::WRL::ComPtr<T>& obj)
     {
@@ -202,9 +228,20 @@ public:
             return;
 
         DeferredReleaseItem item;
-        item.fenceValue = fenceValue; // last signaled value on the main queue timeline
+        // Prefer the last signaled fence value on the main queue timeline.
+        // Fallback to the current fenceValue if lastSignaledFenceValue is not populated yet.
+        const UINT64 stampedFence = (lastSignaledFenceValue != 0) ? lastSignaledFenceValue : fenceValue;
+        item.fenceValue = stampedFence;
         item.object = obj;
         deferredReleases.push_back(std::move(item));
+
+#ifndef NDEBUG
+        drStats.enqueued++;
+        drStats.peakQueue = (std::max)(drStats.peakQueue, deferredReleases.size());
+        if (drStats.oldestFence == 0 || item.fenceValue < drStats.oldestFence)
+            drStats.oldestFence = item.fenceValue;
+#endif
+
         obj.Reset();
     }
 

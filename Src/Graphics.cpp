@@ -613,7 +613,9 @@ HRESULT Graphics::CreateDX12Device() {
     return S_OK;
 }
 
-//===============
+//==============================
+// Flush GPU Function
+//==============================
 
 void Graphics::FlushGPU()
 {
@@ -643,6 +645,10 @@ void Graphics::FlushGPU()
         fenceValues[i] = signalValue;
 }
 
+//==============================================
+// Signal Fence Function
+//==============================================
+
 void Graphics::SignalFence()
 {
     if (!commandQueue || !fence)
@@ -662,8 +668,16 @@ void Graphics::SignalFence()
     }
 
     if (currentBackBufferIndex < NUM_BACK_BUFFERS)
+    {
+        frames[currentBackBufferIndex].fenceValue = signalValue;
+        // Legacy (Phase 0) storage kept during transition.
         fenceValues[currentBackBufferIndex] = signalValue;
+    }
 }
+
+//==============================
+// Create Swap Chain Function
+//==============================
 
 void Graphics::CreateSwapChain(HWND hwnd, UINT width, UINT height)
 {
@@ -804,6 +818,10 @@ void Graphics::CreateCommandInterfaces() {
             Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create CommandAllocator for buffer " + std::to_string(i));
             return;
         }
+
+        // Phase 1B: canonical per-frame pairing (allocator + fence value)
+        frames[i].allocator = commandAllocators[i];
+        frames[i].fenceValue = 0;
     }
 
     // Set to false if you want to skip log issues
@@ -912,6 +930,10 @@ void Graphics::BeginDockSpace()
 //=================================
 void Graphics::BeginFrame(HWND hWnd)
 {
+#ifndef NDEBUG
+    ++frameCounter;
+#endif
+
     // Frame counter
     static UINT64 g_FrameCounter = 0;
     Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter));
@@ -1024,7 +1046,9 @@ void Graphics::BeginFrame(HWND hWnd)
     // Sync GPU for current backbuffer
     // ==========================
     currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
-    UINT64 fenceToWaitFor = fenceValues[currentBackBufferIndex];
+    auto& fc = frames[currentBackBufferIndex];
+
+    UINT64 fenceToWaitFor = fc.fenceValue;
     UINT64 completedValue = fence->GetCompletedValue();
 
     // ==========================
@@ -1072,7 +1096,26 @@ void Graphics::BeginFrame(HWND hWnd)
     // ==========================
     // Reset command allocator + list
     // ==========================
-    HRESULT hr = commandAllocators[currentBackBufferIndex]->Reset();
+#ifndef NDEBUG
+    // Guard against future regressions (resetting allocator while still in-flight).
+    if (fence->GetCompletedValue() < fc.fenceValue)
+    {
+        Logger::Log(LogLevel::Error, std::format(
+            "🚨 FrameContext allocator reset while GPU in-flight | bb={} fence={} completed={} ",
+            currentBackBufferIndex, fc.fenceValue, fence->GetCompletedValue()));
+        HandleDeviceLost(hWnd);
+        return;
+    }
+#endif
+
+    if (!fc.allocator)
+    {
+        Logger::Log(LogLevel::Error, std::format("❌ BeginFrame(): frames[{}].allocator is NULL", currentBackBufferIndex));
+        HandleDeviceLost(hWnd);
+        return;
+    }
+
+    HRESULT hr = fc.allocator->Reset();
     if (FAILED(hr))
     {
         Logger::Log(LogLevel::Error,
@@ -1082,7 +1125,7 @@ void Graphics::BeginFrame(HWND hWnd)
         return;
     }
 
-    hr = commandList->Reset(commandAllocators[currentBackBufferIndex].Get(), nullptr);
+    hr = commandList->Reset(fc.allocator.Get(), nullptr);
     if (FAILED(hr))
     {
         Logger::Log(LogLevel::Error,
@@ -1672,7 +1715,7 @@ bool Graphics::InitializeImGui(HWND hWnd)
         DX_CHECK(uploadCommandList->Reset(uploadAllocator.Get(), nullptr));
 
         ImGui_ImplDX12_CreateFontsTexture(device.Get(), uploadCommandList.Get());
-
+        
         DX_CHECK(uploadCommandList->Close());
         ID3D12CommandList* uploadLists[] = { uploadCommandList.Get() };
         commandQueue->ExecuteCommandLists(1, uploadLists);
@@ -2814,95 +2857,4 @@ void Graphics::RenderSceneToTarget()
             (UINT64)sceneSrvCpu.ptr,
             (UINT64)sceneSrvGpu.ptr));
     }
-}
-
-// ==================================
-// Request Scene Render Target Resize
-// ==================================
-void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height)
-{
-    width = (std::max)(1u, width);
-    height = (std::max)(1u, height);
-
-    // If no RT exists yet, create it immediately if we're at a safe point.
-    // Otherwise, defer to ProcessPendingSceneRenderTargetResize().
-    if (!sceneRenderTarget)
-    {
-        if (!commandListOpen)
-        {
-            pendingSceneRTResize = false;
-            EnsureSceneRenderTarget(width, height);
-            return;
-        }
-    }
-
-    if (sceneRenderTarget && sceneRTWidth == width && sceneRTHeight == height)
-        return;
-
-    pendingSceneRTW = width;
-    pendingSceneRTH = height;
-    pendingSceneRTResize = true;
-}
-
-// ==================================
-// Process Pending Scene Render Target Resize
-// ==================================
-void Graphics::ProcessPendingSceneRenderTargetResize()
-{
-    if (!pendingSceneRTResize)
-        return;
-
-    if (commandListOpen)
-        return;
-
-    if (!swapChain || !device)
-        return;
-
-    // If minimized, skip resize until we get a usable client size again.
-    if (pendingWidth == 0 || pendingHeight == 0)
-        return;
-
-    FlushGPU();
-
-    // Release old backbuffers
-    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
-        EnqueueDeferredRelease(backBuffers[i]);
-
-    // Old RTV heap can also be referenced by debug tools; release it after GPU completion.
-    EnqueueDeferredRelease(rtvHeap);
-
-    // Keep descriptor size; it will be updated when we recreate RTVs.
-
-    // ✅ Recreate swap chain with updated size
-    CreateSwapChain(hWnd, pendingWidth, pendingHeight);
-
-    pendingResize = false;
-    Logger::Log(LogLevel::Info, std::format("🔄 SwapChain resized: {}x{}", pendingWidth, pendingHeight));
-}
-
-void Graphics::ProcessDeferredReleases()
-{
-    if (deferredReleases.empty() || !fence)
-        return;
-
-    const UINT64 completed = fence->GetCompletedValue();
-
-    size_t write = 0;
-    for (size_t read = 0; read < deferredReleases.size(); ++read)
-    {
-        if (deferredReleases[read].fenceValue <= completed)
-        {
-            deferredReleases[read].object.Reset();
-        }
-        else
-        {
-            deferredReleases[write++] = std::move(deferredReleases[read]);
-        }
-    }
-
-    deferredReleases.resize(write);
-
-    // Guard: if this grows unbounded, something is retaining too many transient GPU resources.
-    if (deferredReleases.size() > 5000)
-        Logger::Log(LogLevel::Warning, "⚠️ Deferred release queue is very large; possible lifetime leak.");
 }

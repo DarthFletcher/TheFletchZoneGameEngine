@@ -65,3 +65,87 @@ void Graphics::ApplyPendingResize(HWND hWnd)
 
     pendingResize = false;
 }
+
+void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height)
+{
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+
+    pendingSceneRTW = width;
+    pendingSceneRTH = height;
+    pendingSceneRTResize = true;
+}
+
+void Graphics::ProcessPendingSceneRenderTargetResize()
+{
+    if (!pendingSceneRTResize)
+        return;
+
+    if (commandListOpen)
+        return;
+
+    pendingSceneRTResize = false;
+    EnsureSceneRenderTarget(pendingSceneRTW, pendingSceneRTH);
+}
+
+void Graphics::ProcessDeferredReleases()
+{
+    if (deferredReleases.empty() || !fence)
+        return;
+
+    const UINT64 completed = fence->GetCompletedValue();
+
+    size_t releasedThisFrame = 0;
+
+    size_t write = 0;
+    for (size_t read = 0; read < deferredReleases.size(); ++read)
+    {
+        if (deferredReleases[read].fenceValue <= completed)
+        {
+            deferredReleases[read].object.Reset();
+            ++releasedThisFrame;
+        }
+        else
+        {
+            deferredReleases[write++] = std::move(deferredReleases[read]);
+        }
+    }
+
+    deferredReleases.resize(write);
+
+#ifndef NDEBUG
+    drStats.released += releasedThisFrame;
+
+    if (!deferredReleases.empty())
+    {
+        UINT64 minFence = UINT64_MAX;
+        for (const auto& it : deferredReleases)
+            minFence = (std::min)(minFence, it.fenceValue);
+
+        if (minFence > completed)
+        {
+            drStats.stuckFrames++;
+            if (drStats.stuckFrames == 300)
+            {
+                Logger::Log(LogLevel::Warning, std::format(
+                    "?? DeferredRelease appears stuck: completedFence={} minQueuedFence={} queueSize={} (300 frames)",
+                    completed, minFence, deferredReleases.size()));
+            }
+        }
+        else
+        {
+            drStats.stuckFrames = 0;
+        }
+
+        drStats.oldestFence = minFence;
+    }
+    else
+    {
+        drStats.stuckFrames = 0;
+        drStats.oldestFence = 0;
+    }
+#endif
+
+    if (deferredReleases.size() > 5000)
+        Logger::Log(LogLevel::Warning, "?? Deferred release queue is very large; possible lifetime leak.");
+}
