@@ -71,26 +71,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         break;
 
     case WM_SIZING:
-    {
-        RECT* rect = (RECT*)lParam;
-        float aspectRatio = 16.0f / 9.0f;
-        int width = rect->right - rect->left;
-        int height = rect->bottom - rect->top;
-
-        switch (wParam) {
-        case WMSZ_LEFT:
-        case WMSZ_RIGHT:
-            height = static_cast<int>(width / aspectRatio);
-            rect->bottom = rect->top + height;
-            break;
-        case WMSZ_TOP:
-        case WMSZ_BOTTOM:
-            width = static_cast<int>(height * aspectRatio);
-            rect->right = rect->left + width;
-            break;
-        }
+        // Phase 0: disable interactive aspect-ratio enforcement. It causes excessive WM_SIZING churn
+        // and fights the deferred swapchain resize path.
         return TRUE;
-    }
 
     case WM_DPICHANGED:
     {
@@ -520,89 +503,40 @@ void Engine::Update() {
 // ✅ Rendering Frame
 // ==========================================
 void Engine::Render(HWND hWnd) {
+    (void)hWnd;
     Logger::Log(LogLevel::Debug, "🎮 Render()");
-    graphics.Render(hWnd);  // Let Graphics handle ImGui
+    graphics.Render(this->hWnd);
 }
 
-LRESULT Engine::WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+// ==========================================
+// ✅ Message Handling (Unused in current window class)
+// ==========================================
+LRESULT CALLBACK Engine::WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
     return DefWindowProc(hWnd, message, wParam, lParam);
 }
 
-//=============================
-// Resize Handling
-//=============================
-void Graphics::OnResize(UINT, UINT) {
-    if (!swapChain || !hWnd) return;
-
-    FlushGPU(); // ✅ Ensure GPU is idle before resizing
-
-    RECT clientRect = {};
-    if (!GetClientRect(hWnd, &clientRect)) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to GetClientRect during OnResize.");
-        return;
-    }
-
-    UINT newWidth = std::max<UINT>(640, clientRect.right - clientRect.left);
-    UINT newHeight = std::max<UINT>(480, clientRect.bottom - clientRect.top);
-
-
-    DXGI_SWAP_CHAIN_DESC desc = {};
-    swapChain->GetDesc(&desc);
-
-    HRESULT hr = swapChain->ResizeBuffers(desc.BufferCount, newWidth, newHeight, desc.BufferDesc.Format, desc.Flags);
-    if (FAILED(hr)) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: SwapChain ResizeBuffers() failed! Attempting device recovery...");
-        HandleDeviceLost(hWnd);
-        return;
-    }
-
-    Logger::Log(LogLevel::Info, std::format("🔁 Resized SwapChain to {}x{}", newWidth, newHeight));
-
-    CreateRenderTargetViews();
-
-    // ✅ Inform ImGui of new DPI-aware size
-    ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize = ImVec2((float)newWidth, (float)newHeight);
-}
-
-
-//=============================
-// Game Loop
-//=============================
-
+// ==========================================
+// ✅ Engine Game Loop Wrapper
+// ==========================================
 void Engine::GameLoop(HWND hWnd)
 {
-    float dt = timer.GetDeltaTime();
+    timer.Tick();
 
-    // --------------------------------------------------
-    // 1. TRY to upload splash GPU texture once
-    //    SAFE to call every frame
-    // --------------------------------------------------
-    //SplashScreen::EnsureGPUTexture();
+    // Keep splash responsive/animated until it finishes.
+    SplashScreen::Update(timer.GetDeltaTime());
 
-    // 2. Advance splash timer
-    SplashScreen::Update(dt);
-
-    // 3. Draw splash until timer expires
-    if (SplashScreen::IsVisible())
+    if (!SplashScreen::IsVisible())
     {
-        // Render the splash via the normal Graphics/ImGui pass.
-        // (Drawing it here *and* via UI overlays would duplicate progress bars/text.)
-        graphics.Render(hWnd);
-        return; // <--- skip normal UI
+        game.Update(timer.GetDeltaTime());
     }
 
-    // --------------------------------------------------
-    // 4. Normal game flow (fallback after splash ends)
-    // --------------------------------------------------
-    ProcessInput();
-    Update();
     graphics.Render(hWnd);
 }
 
-// =============================
-// Engine State Machine
-// =============================
+// ==========================================
+// ✅ Engine State
+// ==========================================
 namespace
 {
     static Engine::State g_engineState = Engine::State::Editing;
@@ -623,17 +557,6 @@ void Engine::SetState(State s)
         (s == State::Editing) ? "Editing" : (s == State::Playing) ? "Playing" : "Paused"));
 }
 
-void Engine::NewScene()
-{
-    Logger::Log(LogLevel::Info, "NewScene called");
-}
-
-void Engine::SaveScene()
-{
-    Logger::Log(LogLevel::Info, "SaveScene called");
-}
-
-void Engine::LoadScene()
-{
-    Logger::Log(LogLevel::Info, "LoadScene called");
-}
+void Engine::NewScene() { Logger::Log(LogLevel::Info, "NewScene()"); }
+void Engine::SaveScene() { Logger::Log(LogLevel::Info, "SaveScene()"); }
+void Engine::LoadScene() { Logger::Log(LogLevel::Info, "LoadScene()"); }

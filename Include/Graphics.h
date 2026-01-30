@@ -82,7 +82,8 @@ public:
     };
 
     UINT backBufferCount = 0;
-    std::vector<UINT64> mainFenceValues;
+    // Phase 0: single fence source of truth is `fenceValues[backBufferIndex]`.
+    // (Removed duplicate `mainFenceValues`.)
 
     std::vector<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>> commandAllocators;
 
@@ -230,9 +231,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Fence> fence;
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> strongQueue;
     Microsoft::WRL::ComPtr<IDXGIFactory4> dxgiFactory;
-    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> fontAllocator;
-    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> fontCommandList;
-    Microsoft::WRL::ComPtr<ID3D12CommandQueue> imguiCommandQueue;
+
+    // Dedicated upload context for one-off uploads (ImGui font texture, splash uploads, etc.)
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> uploadAllocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> uploadCommandList;
 
     UINT currentBackBufferIndex = 0;
     UINT rtvDescriptorSize = 0;
