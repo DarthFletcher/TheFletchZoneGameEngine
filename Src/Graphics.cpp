@@ -59,6 +59,10 @@ static bool ImGuiFrameStarted = false; // ✅ Track ImGui frame lifecycle
 static bool imguiReadyPublished = false;
 static bool g_ImGuiRenderedThisFrame = false;
 
+// ENGINE RULE:
+// Present() must be called exactly once per frame, and only by Engine.
+static bool g_PresentedThisFrame = false;
+
 // Tracks which view mode the scene grid VB was built for (so we can rebuild on mode swap)
 static ViewMode g_LastSceneGridBuiltViewMode = ViewMode::Mode3D;
 
@@ -1408,6 +1412,15 @@ void Graphics::EndFrame(HWND hWnd)
 //==================================
 void Graphics::Present(HWND hWnd)
 {
+    // ENGINE RULE:
+    // Present must be called exactly once per frame.
+    // Only Engine calls this; Graphics must never auto-present.
+    if (g_PresentedThisFrame)
+    {
+        Logger::Log(LogLevel::Error, "❌ Present() called twice in the same frame — blocked.");
+        return;
+    }
+
     if (!swapChain || !commandQueue || !fence) {
         Logger::Log(LogLevel::Error, "❌ Missing DX12 resources — SwapChain, CommandQueue, or Fence is null.");
         return;
@@ -1444,6 +1457,8 @@ void Graphics::Present(HWND hWnd)
         }
         return;
     }
+
+    g_PresentedThisFrame = true;
 
     Logger::Log(LogLevel::Debug, std::format(
         "🖼️ Present() | SyncInterval={} Flags={} BackBuffer={} ",
@@ -2107,7 +2122,7 @@ void Graphics::CreateRenderTargetViews()
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart());
 
-    for (UINT i = 0; i < 3; i++)
+    for (UINT i = 0; i < NUM_BACK_BUFFERS; i++)
     {
         DX_CHECK(swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i])));
         device->CreateRenderTargetView(backBuffers[i].Get(), nullptr, rtvHandle);
@@ -2863,7 +2878,7 @@ void Graphics::ApplyPendingResize(HWND hWnd)
     FlushGPU();
 
     // Release old backbuffers
-    for (int i = 0; i < 3; ++i)
+    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
         SafeReleaseResource(backBuffers[i], false);
 
     DXGI_SWAP_CHAIN_DESC desc = {};

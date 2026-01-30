@@ -238,6 +238,7 @@
     <None Include="Docs\ShaderCompilationGuide.md" />
     <None Include="Docs\ShaderCompilationQuickRef.md" />
     <None Include="Docs\ShaderCompilationSetup.md" />
+    <None Include="ENGINE_CONTRACT.md" />
     <None Include="include\macros.hints" />
     <None Include="packages.config" />
     <None Include="TheFletchZoneGameEngine.vcxproj.new" />
