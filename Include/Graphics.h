@@ -401,4 +401,10 @@ private:
 
     // Unwind helper: if a frame is in a bad state, never return leaving the command list open.
     void AbortFrame(const char* why);
+
+    // Main swapchain has successfully presented at least once.
+    bool hasPresentedOnce = false;
+
+    // Log once when a resize is requested before the first present (intentional defer).
+    bool loggedDeferredResizeBeforeFirstPresent = false;
 };

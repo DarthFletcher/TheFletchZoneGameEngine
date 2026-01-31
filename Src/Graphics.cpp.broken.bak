@@ -1472,11 +1472,10 @@ void Graphics::Present(HWND hWnd)
         return;
     }
 
-    g_PresentedThisFrame = true;
+    // Mark that the swapchain has successfully presented at least once.
+    hasPresentedOnce = true;
 
-    // Mark that we've successfully presented at least once.
-    if (!hasPresentedOnce)
-        hasPresentedOnce = true;
+    g_PresentedThisFrame = true;
 
     Logger::Log(LogLevel::Debug, std::format(
         "🖼️ Present() | SyncInterval={} Flags={} BackBuffer={} ",
@@ -2647,7 +2646,7 @@ void Graphics::EnsureSceneGeometry()
 
                 // line parallel Y (vary X)
                 v.push_back({ { k, -half * spacing, z }, { col[0], col[1], col[2], col[3] } });
-                v.push_back({ { k,  half * spacing, z }, { col[0], col[1], col[2], col[3] } });
+                v.push_back({ { k,  half * spacing, z }, { col[0], col[1, col[2], col[3] } });
             }
         }
 
