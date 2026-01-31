@@ -398,4 +398,7 @@ private:
     };
 
     std::vector<DeferredReleaseItem> deferredReleases;
+
+    // Unwind helper: if a frame is in a bad state, never return leaving the command list open.
+    void AbortFrame(const char* why);
 };

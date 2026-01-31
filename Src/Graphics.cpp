@@ -238,7 +238,7 @@ void Graphics::CheckDeviceHealth() {
 
 //===============================================
 // Adjusts Resolution Based On FPS Function
-//===============================================
+//===============================================,
 // Dynamically adjusts screen resolution to maintain target FPS
 // Call this function periodically, e.g., once every few seconds
 //===============================================
@@ -940,6 +940,22 @@ void Graphics::BeginFrame(HWND hWnd)
     ++frameCounter;
 #endif
 
+    // New frame: allow exactly one Present() this frame (Engine-owned).
+    g_PresentedThisFrame = false;
+
+    // Frame counter
+    static UINT64 g_FrameCounter = 0;
+    Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter));
+
+    // Phase 1A: release GPU resources whose fences have completed.
+    ProcessDeferredReleases();
+
+    // Apply pending main window swapchain resize before anything else.
+    ApplyPendingResize(hWnd);
+
+    // Process any pending scene RT resize before we open/reset the command list for this frame.
+    ProcessPendingSceneRenderTargetResize();
+
 #ifndef NDEBUG
     // Phase 1B drift detector: per-buffer fence stamps must never exceed the last signaled fence.
     if (currentBackBufferIndex < NUM_BACK_BUFFERS)
@@ -956,104 +972,6 @@ void Graphics::BeginFrame(HWND hWnd)
     }
 #endif
 
-    // Frame counter
-    static UINT64 g_FrameCounter = 0;
-    Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter));
-
-    // Phase 1A: release GPU resources whose fences have completed.
-    ProcessDeferredReleases();
-
-    // Apply pending main window swapchain resize before anything else.
-    ApplyPendingResize(hWnd);
-
-    // Process any pending scene RT resize before we open/reset the command list for this frame.
-    ProcessPendingSceneRenderTargetResize();
-
-    // -----------------------------------------------------------------
-    // Frame health snapshot (throttled)
-    // -----------------------------------------------------------------
-    {
-        static UINT64 s_lastHealthFrame = 0;
-        if (g_FrameCounter == 1 || (g_FrameCounter - s_lastHealthFrame) >= 60)
-        {
-            s_lastHealthFrame = g_FrameCounter;
-
-            const bool hasDevice = (device != nullptr);
-            const bool hasQueue = (commandQueue != nullptr);
-            const bool hasFence = (fence != nullptr);
-            const bool hasSwap = (swapChain != nullptr);
-            const bool hasCmdList = (commandList != nullptr);
-            const bool hasAlloc = (frames[0].allocator != nullptr);
-            const bool hasRtvHeap = (rtvHeap != nullptr);
-
-            ImGuiIO* io = ImGui::GetCurrentContext() ? &ImGui::GetIO() : nullptr;
-            const bool hasImGuiCtx = (ImGui::GetCurrentContext() != nullptr);
-            const bool hasWin32Backend = (io && io->BackendPlatformUserData != nullptr);
-            const bool hasDx12Backend = (io && io->BackendRendererUserData != nullptr);
-
-            ID3D12DescriptorHeap* boundSrvHeap = ImGui_ImplDX12_GetSrvHeap();
-            if (!boundSrvHeap)
-                boundSrvHeap = imguiHeap.Get();
-
-            Logger::Log(LogLevel::Info, std::format(
-                "🩺 FrameHealth | DX12: dev={} queue={} fence={} swap={} cmdList={} alloc0={} rtvHeap={} | ImGui: ctx={} win32={} dx12={} srvHeap={}",
-                hasDevice ? "OK" : "MISS",
-                hasQueue ? "OK" : "MISS",
-                hasFence ? "OK" : "MISS",
-                hasSwap ? "OK" : "MISS",
-                hasCmdList ? "OK" : "MISS",
-                hasAlloc ? "OK" : "MISS",
-                hasRtvHeap ? "OK" : "MISS",
-                hasImGuiCtx ? "OK" : "MISS",
-                hasWin32Backend ? "OK" : "MISS",
-                hasDx12Backend ? "OK" : "MISS",
-                boundSrvHeap ? "OK" : "MISS"));
-
-            if (hasDevice)
-            {
-                const HRESULT removed = device->GetDeviceRemovedReason();
-                if (removed != S_OK)
-                {
-                    Logger::Log(LogLevel::Error, std::format(
-                        "🚨 FrameHealth | DeviceRemovedReason=0x{:08X}", (UINT)removed));
-                }
-            }
-        }
-    }
-
-    Logger::Log(LogLevel::Debug,
-        std::format("🔍 BeginFrame entry | commandListOpen={}", commandListOpen));
-
-    // ==========================
-    // Guard: double BeginFrame
-    // ==========================
-    if (frameStarted)
-    {
-        Logger::Log(LogLevel::Error,
-            "❌ BeginFrame() called twice in the same frame!");
-        return;
-    }
-
-    // ==========================
-    // Window validation
-    // ==========================
-    if (!IsWindow(hWnd))
-    {
-        Logger::Log(LogLevel::Error, "❌ BeginFrame() called with invalid HWND!");
-        return;
-    }
-
-    // ==========================
-    // Guard: command list must be closed
-    // ==========================
-    if (commandListOpen)
-    {
-        Logger::Log(LogLevel::Error,
-            "❌ BeginFrame(): command list still open — previous frame not submitted!");
-        HandleDeviceLost(hWnd);
-        return;
-    }
-
     // ==========================
     // Guard: core DX12 objects must exist
     // ==========================
@@ -1068,6 +986,23 @@ void Graphics::BeginFrame(HWND hWnd)
     // Sync GPU for current backbuffer
     // ==========================
     currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+
+#ifndef NDEBUG
+    // Phase 1B drift detector: per-buffer fence stamps must never exceed the last signaled fence.
+    if (currentBackBufferIndex < NUM_BACK_BUFFERS)
+    {
+        const UINT64 fv = frames[currentBackBufferIndex].fenceValue;
+        if (fv > lastSignaledFenceValue)
+        {
+            Logger::Log(LogLevel::Error, std::format(
+                "🚨 Fence state corruption detected | bb={} frameFence={} lastSignaled={} ",
+                currentBackBufferIndex, fv, lastSignaledFenceValue));
+            HandleDeviceLost(hWnd);
+            return;
+        }
+    }
+#endif
+
     auto& fc = frames[currentBackBufferIndex];
 
     UINT64 fenceToWaitFor = fc.fenceValue;
@@ -1373,23 +1308,22 @@ void Graphics::EndFrame(HWND hWnd)
 {
     if (!ImGuiFrameStarted)
     {
-        Logger::Log(LogLevel::Warning,
-            "⚠️ EndFrame() skipped — ImGui frame not started");
-        frameStarted = false;
+        AbortFrame("EndFrame skipped — ImGui frame not started");
+        (void)hWnd;
         return;
     }
 
     if (!frameStarted)
     {
-        Logger::Log(LogLevel::Warning,
-            "⚠️ EndFrame() called without matching BeginFrame()");
+        AbortFrame("EndFrame called without matching BeginFrame()");
+        (void)hWnd;
         return;
     }
 
     if (!commandListOpen)
     {
-        Logger::Log(LogLevel::Error,
-            "❌ EndFrame() called with closed command list");
+        AbortFrame("EndFrame called with closed command list");
+        (void)hWnd;
         return;
     }
 
@@ -1415,7 +1349,9 @@ void Graphics::EndFrame(HWND hWnd)
     if (FAILED(hr))
     {
         Logger::Log(LogLevel::Error,
-            "❌ Failed to close main command list");
+            std::format("❌ Failed to close main command list HR=0x{:08X}", (UINT)hr));
+        AbortFrame("commandList->Close() failed");
+        HandleDeviceLost(hWnd);
         return;
     }
 
@@ -2889,4 +2825,20 @@ void Graphics::RenderSceneToTarget()
             (UINT64)sceneSrvCpu.ptr,
             (UINT64)sceneSrvGpu.ptr));
     }
+}
+
+// Unwind helper: if a frame is in a bad state, never return leaving the command list open.
+void Graphics::AbortFrame(const char* why)
+{
+    Logger::Log(LogLevel::Error, std::string("🚨 AbortFrame: ") + (why ? why : "<unknown>"));
+
+    if (commandListOpen && commandList)
+    {
+        (void)commandList->Close();
+    }
+
+    commandListOpen = false;
+    frameStarted = false;
+    ImGuiFrameStarted = false;
+    g_ImGuiRenderedThisFrame = false;
 }
