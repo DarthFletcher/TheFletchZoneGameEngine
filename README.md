@@ -45,7 +45,7 @@ ImGui is treated as a UI library only — **not** as a driver of GPU ownership o
 - Phase 4: Basic entity/component system
 - Phase 5: Example game prototype (top-down shooter)
 
-**Current Focus:** Core engine ownership and stability  
+## **Current Focus:** Core engine ownership and stability  
 The engine has recently completed a major internal restructuring to ensure:
 - Explicit ownership of GPU resources and frame flow
 - Deferred and safe ImGui initialization (fonts, PSO, root signature)
