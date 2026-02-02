@@ -97,6 +97,12 @@ constexpr UINT IMGUI_INDEX_BUFFER_SIZE = 1000000;
 #endif
 
 // -----------------------------------------------------------------------------
+// Lazy device-object creation gates (PSO/root signature). Fonts are engine-owned.
+// -----------------------------------------------------------------------------
+static bool g_DeviceObjectsCreated = false;
+static bool g_DeviceObjectsCreateFailed = false;
+
+// -----------------------------------------------------------------------------
 // Internal Backend Data Structures
 // -----------------------------------------------------------------------------
 
@@ -649,7 +655,11 @@ bool ImGui_ImplDX12_Init(ImGui_ImplDX12_InitInfo* info)
 
     // Install platform hooks for multi-viewport
     ImGui_ImplDX12_InstallPlatformHooks();
-    ImGui_ImplDX12_CreateDeviceObjects(); // Font upload, root signature, PSO
+
+    // NOTE: Do NOT call ImGui_ImplDX12_CreateDeviceObjects() here.
+    // It may attempt to create/recreate the font texture, which requires a valid recording command list.
+    // Font upload is deferred to the engine frame lifecycle (first BeginFrame/ImGui_ImplDX12_NewFrame).
+    Logger::Log(LogLevel::Info, "ℹ️ ImGui DX12 Init: deferring CreateDeviceObjects/font upload until first frame.");
 
     Logger::Log(LogLevel::Info, "✅ ImGui DX12 Backend Initialized (TheFletchZone)");
     return true;
@@ -693,6 +703,9 @@ bool ImGui_ImplDX12_CreateDeviceObjects()
         Logger::Log(LogLevel::Error, "❌ Backend data or D3D12 device is missing.");
         return false;
     }
+
+    // NOTE: Device objects here mean pipeline state + root signature only.
+    // Fonts are uploaded by the engine when a valid command list is available.
 
     HRESULT hr = S_OK;
     ComPtr<ID3DBlob> vertexShaderBlob;
@@ -854,21 +867,9 @@ bool ImGui_ImplDX12_CreateDeviceObjects()
     }
 
     // ----------------------------------------------------
-    // 6. Create or Recreate Font Texture
+    // IMPORTANT: Do NOT create/recreate font texture here.
+    // Font upload is owned by the engine frame lifecycle.
     // ----------------------------------------------------
-    if (bd->FontSrvGpuDescHandle.ptr == 0 || !bd->FontTexture)
-    {
-        Logger::Log(LogLevel::Info, "ℹ️ Font SRV missing — recreating ImGui font texture...");
-        if (!ImGui_ImplDX12_CreateFontsTexture(bd->Device.Get(), bd->InitInfo.CommandList))
-        {
-            Logger::Log(LogLevel::Error, "❌ Failed to recreate ImGui font texture SRV.");
-            return false;
-        }
-    }
-    else
-    {
-        Logger::Log(LogLevel::Info, "ℹ️ Font texture already valid, skipping recreation.");
-    }
 
     Logger::Log(LogLevel::Info, "✅ Device objects created successfully.");
     return true;
@@ -883,6 +884,10 @@ void ImGui_ImplDX12_Shutdown()
     ImGui_ImplDX12_Data* bd = ImGui_ImplDX12_GetBackendData();
     if (!bd)
         return;
+
+    // Allow re-init after shutdown.
+    g_DeviceObjectsCreated = false;
+    g_DeviceObjectsCreateFailed = false;
 
     Logger::Log(LogLevel::Info, std::format("ℹ️ Shutting down ImGui DX12 Backend (bd: {})", static_cast<void*>(bd)));
 // Destroy all multi-viewports (platform windows) if used
@@ -1200,12 +1205,31 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data,
     if (!bd || !viewport)
         return;
 
-    const bool isMainViewport =
-        (viewport->ID == ImGui::GetMainViewport()->ID);
+    const bool isMainViewport = (viewport->ID == ImGui::GetMainViewport()->ID);
 
-    Logger::Log(LogLevel::Trace, std::format(
-        "ℹ️ RenderDrawData | ViewportID=0x{:X} | Main={} ",
-        viewport->ID, isMainViewport));
+    // Lazily create pipeline objects exactly once (fonts are NOT touched here).
+    if ((!bd->RootSignature || !bd->PipelineState) && !g_DeviceObjectsCreated && !g_DeviceObjectsCreateFailed)
+    {
+        if (!bd->Device)
+        {
+            Logger::Log(LogLevel::Error, "❌ ImGui device objects: missing D3D12 device");
+            g_DeviceObjectsCreateFailed = true;
+            return;
+        }
+
+        Logger::Log(LogLevel::Info, "[ImGuiDX12] Creating device objects (RootSignature/PSO) lazily...");
+        if (ImGui_ImplDX12_CreateDeviceObjects())
+        {
+            g_DeviceObjectsCreated = true;
+            Logger::Log(LogLevel::Success, "[ImGuiDX12] Device objects created (RootSignature/PSO)");
+        }
+        else
+        {
+            g_DeviceObjectsCreateFailed = true;
+            Logger::Log(LogLevel::Error, "[ImGuiDX12] Failed to create device objects (RootSignature/PSO)");
+            return;
+        }
+    }
 
     // ------------------------------------------------------------
     // Viewport + MVP
@@ -1781,6 +1805,7 @@ void ImGui_ImplDX12_CreateWindow(ImGuiViewport* viewport)
     Logger::Log(LogLevel::Debug, std::format("ℹ️ InitInfo.NumFramesInFlight: {}", bd->InitInfo.NumFramesInFlight));
 
     // Secondary viewport swapchain creation is not supported in this build.
+    bd->InitInfo.SwapChain = nullptr;
     Logger::Log(LogLevel::Warning, "⚠️ ImGui DX12: Secondary viewport swapchain creation is disabled.");
     return;
 
@@ -1856,4 +1881,25 @@ void ImGui_ImplDX12_CreateWindow(ImGuiViewport* viewport)
     // The engine runs with `ImGuiConfigFlags_ViewportsEnable` disabled, so we can safely early-out.
     Logger::Log(LogLevel::Warning, "⚠️ ImGui DX12: Secondary viewport swapchain creation is disabled.");
     return;
+}
+
+// -----------------------------------------------------------------------------
+// Invalidate device objects
+// -----------------------------------------------------------------------------
+void ImGui_ImplDX12_InvalidateDeviceObjects()
+{
+    ImGui_ImplDX12_Data* bd = ImGui_ImplDX12_GetBackendData();
+    if (!bd)
+        return;
+
+    Logger::Log(LogLevel::Info, std::format("ℹ️ Invalidating ImGui DX12 device objects (bd: {})", static_cast<void*>(bd)));
+
+    bd->PipelineState.Reset();
+    bd->RootSignature.Reset();
+
+    Logger::Log(LogLevel::Debug, "✅ PSO and RootSignature released.");
+
+    // Allow lazy PSO/root signature recreation.
+    g_DeviceObjectsCreated = false;
+    g_DeviceObjectsCreateFailed = false;
 }

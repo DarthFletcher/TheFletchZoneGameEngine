@@ -144,7 +144,13 @@ public:
     void CacheImGuiResources(ID3D12Device* inDevice, ID3D12DescriptorHeap* inHeap);
     void OnImGuiReady();
     void SetupImGuiFontsAndScaling(HWND hWnd);
+
+    // Wrapper macro for call-site tracing.
     void ReloadImGuiFont(float fontSize);
+    void ReloadImGuiFontImpl(float fontSize, const char* callerFile, int callerLine);
+
+    void ProcessPendingFontReload();
+
     void PostImGuiInitFixes();
     bool SafeResetAllocator(ID3D12CommandAllocator* allocator, bool commandListIsOpen);
 
@@ -322,8 +328,13 @@ private:
     static constexpr UINT numFramesInFlight = 2;
     void OnResize(UINT, UINT);
 
-    float pendingFontSizeReload = 0.0f;
-    inline static bool lockResolutionOnMaximize = true;
+    // Deferred font reload (until after first Present and before command list recording).
+    bool pendingFontReload = false;
+    float pendingFontPixelSize = 0.0f;
+    bool loggedDeferredFontBeforeFirstPresent = false;
+
+    // Log once when a resize is requested before the first present (intentional defer).
+    bool loggedDeferredResizeBeforeFirstPresent = false;
 
     ID3D12Device* imguiDevice = nullptr;
     ID3D12DescriptorHeap* imguiSrvHeap = nullptr;
@@ -404,7 +415,11 @@ private:
 
     // Main swapchain has successfully presented at least once.
     bool hasPresentedOnce = false;
-
-    // Log once when a resize is requested before the first present (intentional defer).
-    bool loggedDeferredResizeBeforeFirstPresent = false;
 };
+
+
+
+// Call-site tracing helper. Use everywhere instead of direct `ReloadImGuiFont()`.
+#ifndef RELOAD_IMGUI_FONT
+#define RELOAD_IMGUI_FONT(sizePx) Graphics::GetInstance().ReloadImGuiFontImpl((sizePx), __FILE__, __LINE__)
+#endif

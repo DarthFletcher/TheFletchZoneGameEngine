@@ -734,19 +734,19 @@ namespace UI {
             if (ImGui::BeginMenu("Font Size")) {
                 if (ImGui::MenuItem("Small (14px)", nullptr, fontSize == 14.0f)) {
                     fontSize = 14.0f;
-                    Graphics::GetInstance().ReloadImGuiFont(fontSize);
+                    RELOAD_IMGUI_FONT(fontSize);
                 }
                 if (ImGui::MenuItem("Medium (16px)", nullptr, fontSize == 16.0f)) {
                     fontSize = 16.0f;
-                    Graphics::GetInstance().ReloadImGuiFont(fontSize);
+                    RELOAD_IMGUI_FONT(fontSize);
                 }
                 if (ImGui::MenuItem("Large (18px)", nullptr, fontSize == 18.0f)) {
                     fontSize = 18.0f;
-                    Graphics::GetInstance().ReloadImGuiFont(fontSize);
+                    RELOAD_IMGUI_FONT(fontSize);
                 }
                 if (ImGui::MenuItem("Extra Large (20px)", nullptr, fontSize == 20.0f)) {
                     fontSize = 20.0f;
-                    Graphics::GetInstance().ReloadImGuiFont(fontSize);
+                    RELOAD_IMGUI_FONT(fontSize);
                 }
                 ImGui::EndMenu();
             }

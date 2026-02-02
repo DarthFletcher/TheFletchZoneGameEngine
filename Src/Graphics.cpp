@@ -59,6 +59,9 @@ static bool ImGuiFrameStarted = false; // ✅ Track ImGui frame lifecycle
 static bool imguiReadyPublished = false;
 static bool g_ImGuiRenderedThisFrame = false;
 
+// One-shot font upload gate: initialized true, cleared after successful upload.
+static bool g_ImGuiFontsNeedUpload = true;
+
 // ENGINE RULE:
 // Present() must be called exactly once per frame, and only by Engine.
 static bool g_PresentedThisFrame = false;
@@ -943,6 +946,9 @@ void Graphics::BeginFrame(HWND hWnd)
     // New frame: allow exactly one Present() this frame (Engine-owned).
     g_PresentedThisFrame = false;
 
+    // Apply deferred font reload at the very top (before allocator reset / command list open / ImGui NewFrame).
+    ProcessPendingFontReload();
+
     // Frame counter
     static UINT64 g_FrameCounter = 0;
     Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter));
@@ -950,8 +956,23 @@ void Graphics::BeginFrame(HWND hWnd)
     // Phase 1A: release GPU resources whose fences have completed.
     ProcessDeferredReleases();
 
-    // Apply pending main window swapchain resize before anything else.
-    ApplyPendingResize(hWnd);
+    // Enforce single ImGui frame ownership.
+    if (ImGuiFrameStarted)
+    {
+        Logger::Log(LogLevel::Error, "❌ ImGui::NewFrame called twice in one engine frame!");
+        AbortFrame("Double ImGui NewFrame");
+        return;
+    }
+
+    // Apply pending main window swapchain resize.
+    // IMPORTANT: DXGI swapchain resize is illegal before the first successful Present() on some drivers.
+    if (hasPresentedOnce)
+        ApplyPendingResize(hWnd);
+    else if (pendingResize && !loggedDeferredResizeBeforeFirstPresent)
+    {
+        Logger::Log(LogLevel::Info, "⏳ Resize deferred — waiting for first Present()");
+        loggedDeferredResizeBeforeFirstPresent = true;
+    }
 
     // Process any pending scene RT resize before we open/reset the command list for this frame.
     ProcessPendingSceneRenderTargetResize();
@@ -986,6 +1007,21 @@ void Graphics::BeginFrame(HWND hWnd)
     // Sync GPU for current backbuffer
     // ==========================
     currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+
+#ifndef NDEBUG
+    // Throttled frame lifecycle validation log.
+    static std::chrono::steady_clock::time_point s_FrameDiagLast = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - s_FrameDiagLast >= std::chrono::milliseconds(1000))
+    {
+        s_FrameDiagLast = now;
+        const UINT64 wantFence = (currentBackBufferIndex < NUM_BACK_BUFFERS) ? frames[currentBackBufferIndex].fenceValue : 0;
+        const UINT64 completedFence = fence->GetCompletedValue();
+        Logger::Log(LogLevel::Debug, std::format(
+            "[FrameDiag] BeginFrame bb={} waitForFence={} completedFence={} lastSignaled={}",
+            currentBackBufferIndex, wantFence, completedFence, lastSignaledFenceValue));
+    }
+#endif
 
 #ifndef NDEBUG
     // Phase 1B drift detector: per-buffer fence stamps must never exceed the last signaled fence.
@@ -1106,6 +1142,22 @@ void Graphics::BeginFrame(HWND hWnd)
     // ImGui new frame
     // ==========================
     ImGui_ImplDX12_NewFrame();
+
+    // One-time font upload, deferred until a valid command list is recording.
+    // Must happen after allocator+command list reset and SRV heap binding.
+    if (g_ImGuiFontsNeedUpload)
+    {
+        Logger::Log(LogLevel::Info, "[FontDiag] Uploading ImGui font texture on first frame");
+        if (ImGui_ImplDX12_CreateFontsTexture(device.Get(), commandList.Get()))
+        {
+            g_ImGuiFontsNeedUpload = false;
+        }
+        else
+        {
+            Logger::Log(LogLevel::Error, "[FontDiag] Failed to upload ImGui font texture on first frame");
+        }
+    }
+
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     Logger::Log(LogLevel::Debug, "🆕 ImGui New Frame Started");
@@ -1133,11 +1185,798 @@ void Graphics::BeginFrame(HWND hWnd)
     ImGuiFrameStarted = true;
 }
 
+//==============================
+// End Frame Function
+//=================================
+void Graphics::EndFrame(HWND hWnd)
+{
+    (void)hWnd;
+
+    // Always allow ImGui frame to start fresh next tick.
+    ImGuiFrameStarted = false;
+
+    if (!commandListOpen)
+    {
+        Logger::Log(LogLevel::Error, "❌ EndFrame() called with closed command list.");
+        frameStarted = false;
+        return;
+    }
+
+    if (!commandList || !commandQueue || !fence)
+    {
+        Logger::Log(LogLevel::Error, "❌ EndFrame(): missing commandList/commandQueue/fence.");
+        commandListOpen = false;
+        frameStarted = false;
+        return;
+    }
+
+    const HRESULT hrClose = commandList->Close();
+    if (FAILED(hrClose))
+    {
+        Logger::Log(LogLevel::Error, std::format("❌ EndFrame(): commandList->Close failed HR=0x{:08X}", (UINT)hrClose));
+        commandListOpen = false;
+        frameStarted = false;
+        return;
+    }
+
+    ID3D12CommandList* lists[] = { commandList.Get() };
+    commandQueue->ExecuteCommandLists(1, lists);
+
+    // Signal and stamp fence for the current backbuffer.
+    const UINT64 signalValue = ++fenceValue;
+    lastSignaledFenceValue = signalValue;
+
+    const HRESULT hrSignal = commandQueue->Signal(fence.Get(), signalValue);
+    if (FAILED(hrSignal))
+    {
+        Logger::Log(LogLevel::Error, std::format("❌ EndFrame(): commandQueue->Signal failed HR=0x{:08X}", (UINT)hrSignal));
+    }
+    else
+    {
+        if (currentBackBufferIndex < NUM_BACK_BUFFERS)
+            frames[currentBackBufferIndex].fenceValue = signalValue;
+
+#ifndef NDEBUG
+        // Throttled frame lifecycle validation log.
+        static std::chrono::steady_clock::time_point s_EndDiagLast = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s_EndDiagLast >= std::chrono::milliseconds(1000))
+        {
+            s_EndDiagLast = now;
+            Logger::Log(LogLevel::Debug, std::format(
+                "[FrameDiag] EndFrame bb={} signaledFence={} lastSignaled={}",
+                currentBackBufferIndex, signalValue, lastSignaledFenceValue));
+        }
+#endif
+    }
+
+    commandListOpen = false;
+    frameStarted = false;
+}
+
 //===============================================================================//
-// Render Function                                                               //
+// Present Function                                                              //
 //===============================================================================//
+void Graphics::Present(HWND hWnd)
+{
+    (void)hWnd;
+
+    if (commandListOpen)
+    {
+        Logger::Log(LogLevel::Error, "❌ Present() called while command list is still open.");
+        return;
+    }
+
+    if (g_PresentedThisFrame)
+    {
+        Logger::Log(LogLevel::Error, "❌ Present() called more than once in a single frame.");
+        return;
+    }
+
+    if (!swapChain)
+    {
+        Logger::Log(LogLevel::Error, "❌ Present() called with null swapChain.");
+        return;
+    }
+
+#ifndef NDEBUG
+    // Throttled frame lifecycle validation log.
+    static std::chrono::steady_clock::time_point s_PresentDiagLast = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (fence && now - s_PresentDiagLast >= std::chrono::milliseconds(1000))
+    {
+        s_PresentDiagLast = now;
+        const UINT64 completedFence = fence->GetCompletedValue();
+        Logger::Log(LogLevel::Debug, std::format(
+            "[FrameDiag] Present bb={} completedFence={} lastSignaled={}",
+            currentBackBufferIndex, completedFence, lastSignaledFenceValue));
+    }
+#endif
+
+    const UINT syncInterval = vsyncEnabled ? 1u : 0u;
+    const UINT presentFlags = (!vsyncEnabled && allowTearing) ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+
+    const HRESULT hr = swapChain->Present(syncInterval, presentFlags);
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error, std::format("❌ Present failed HR=0x{:08X}", (UINT)hr));
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+            HandleDeviceLost(hWnd);
+        return;
+    }
+
+    hasPresentedOnce = true;
+    g_PresentedThisFrame = true;
+}
+
+//====================================
+// Get Device Function
+//====================================
+ID3D12Device* Graphics::GetDevice() const
+{
+    return device.Get();
+}
+
+//====================================
+// Get ImGui SRV Heap Function
+//====================================
+ID3D12DescriptorHeap* Graphics::GetImGuiSrvHeap() const
+{
+    return imguiHeap.Get();
+}
+
+D3D12_CPU_DESCRIPTOR_HANDLE Graphics::AllocateSRV()
+{
+    D3D12_CPU_DESCRIPTOR_HANDLE handle{};
+
+    auto& gfx = Graphics::GetInstance();
+
+    ID3D12DescriptorHeap* heap = gfx.GetImGuiSrvHeap();
+    ID3D12Device* dev = gfx.GetDevice();
+
+    if (!heap || !dev)
+        return handle;
+
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const D3D12_CPU_DESCRIPTOR_HANDLE start = heap->GetCPUDescriptorHandleForHeapStart();
+
+    // Slot 0 reserved for ImGui font.
+    static UINT s_srvDescriptorIndex = 1;
+
+    handle.ptr = start.ptr + (SIZE_T)s_srvDescriptorIndex * (SIZE_T)inc;
+    s_srvDescriptorIndex++;
+
+    return handle;
+}
+
+// ...existing code...
+
+Graphics& Graphics::GetInstance()
+{
+    static Graphics instance;
+    return instance;
+}
+
+bool Graphics::InitializeImGui(HWND inHwnd)
+{
+    if (!inHwnd)
+    {
+        Logger::Log(LogLevel::Error, "❌ InitializeImGui: HWND is null.");
+        return false;
+    }
+
+    hWnd = inHwnd;
+
+    // ----------------------------------------------
+    // 1) If already fully initialized, only publish
+    // ----------------------------------------------
+    if (ImGui::GetCurrentContext() && imguiPlatformInitialized && imguiInitialized)
+    {
+        if (!imguiDevice || !imguiSrvHeap)
+        {
+            if (!device || !imguiHeap)
+            {
+                Logger::Log(LogLevel::Error, "❌ InitializeImGui: cannot publish resources (device or ImGui heap is null).");
+                return false;
+            }
+
+            CacheImGuiResources(device.Get(), imguiHeap.Get());
+            OnImGuiReady();
+        }
+
+        return true;
+    }
+
+    // ----------------------------------------------
+    // 2) Create context if needed
+    // ----------------------------------------------
+    if (!ImGui::GetCurrentContext())
+    {
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+        // Keep multi-viewport off for now (engine currently runs single swapchain path).
+        io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+        io.ConfigViewportsNoAutoMerge = true;
+        io.ConfigViewportsNoTaskBarIcon = false;
+    }
+
+    // ----------------------------------------------
+    // 3) Init Win32 backend once
+    // ----------------------------------------------
+    if (!imguiPlatformInitialized)
+    {
+        if (!ImGui_ImplWin32_Init(inHwnd))
+        {
+            Logger::Log(LogLevel::Error, "❌ InitializeImGui: ImGui_ImplWin32_Init failed.");
+            return false;
+        }
+        imguiPlatformInitialized = true;
+    }
+
+    // ----------------------------------------------
+    // 4) Ensure engine-owned SRV heap exists BEFORE DX12 init
+    // ----------------------------------------------
+    if (!imguiHeap)
+    {
+        if (!device)
+        {
+            Logger::Log(LogLevel::Error, "❌ InitializeImGui: cannot create SRV heap (device is null).");
+            return false;
+        }
+
+        D3D12_DESCRIPTOR_HEAP_DESC desc{};
+        desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        desc.NumDescriptors = 2048;
+        desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+
+        const HRESULT hr = device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&imguiHeap));
+        if (FAILED(hr) || !imguiHeap)
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ InitializeImGui: CreateDescriptorHeap(SRV) failed HR=0x{:08X}", (UINT)hr));
+            return false;
+        }
+
+        Logger::Log(LogLevel::Info, std::format(
+            "✅ ImGui SRV heap created | Heap=0x{:X} CPUStart=0x{:X} GPUStart=0x{:X} Count={} ShaderVisible=true",
+            (uintptr_t)imguiHeap.Get(),
+            (uintptr_t)imguiHeap->GetCPUDescriptorHandleForHeapStart().ptr,
+            (uintptr_t)imguiHeap->GetGPUDescriptorHandleForHeapStart().ptr,
+            desc.NumDescriptors));
+    }
+
+    // Assert heap is valid before init.
+    IM_ASSERT(imguiHeap.Get() != nullptr);
+
+    // Allow other systems to locate the SRV heap.
+    g_SRVHeap = imguiHeap.Get();
+
+    // ----------------------------------------------
+    // 5) Init DX12 backend once
+    // ----------------------------------------------
+    if (!imguiInitialized)
+    {
+        if (!device || !commandQueue)
+        {
+            Logger::Log(LogLevel::Error, "❌ InitializeImGui: cannot init DX12 backend (device or commandQueue is null).");
+            return false;
+        }
+
+        // Pre-allocate a deterministic font SRV handle pair (slot 0) so the backend never starts with 0/0.
+        const D3D12_CPU_DESCRIPTOR_HANDLE fontCpu = imguiHeap->GetCPUDescriptorHandleForHeapStart();
+        const D3D12_GPU_DESCRIPTOR_HANDLE fontGpu = imguiHeap->GetGPUDescriptorHandleForHeapStart();
+
+        Logger::Log(LogLevel::Info, std::format(
+            "[FontDiag] Init font SRV reserved | CPU=0x{:X} GPU=0x{:X} (heapStart slot 0)",
+            (uintptr_t)fontCpu.ptr, (uintptr_t)fontGpu.ptr));
+
+        ImGui_ImplDX12_InitInfo info{};
+        info.Device = device.Get();
+        info.CommandQueue = commandQueue.Get();
+        info.DxgiFactory = dxgiFactory.Get();
+        info.SwapChain = swapChain.Get();
+        info.NumFramesInFlight = IMGUI_NUM_FRAMES_IN_FLIGHT;
+        info.RenderTargetFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+        // Provide engine-owned heaps.
+        info.SrvDescriptorHeap = imguiHeap.Get();
+        info.RTVDescriptorHeap = rtvHeap.Get();
+        info.RTVDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+        // Wire allocator callbacks BEFORE init.
+        info.SrvDescriptorAllocFn = ImGui_SrvDescriptorAlloc;
+        info.SrvDescriptorFreeFn = ImGui_SrvDescriptorFree;
+
+        // Provide deterministic font descriptors at init time.
+        info.FontSrvCpuDescHandle = fontCpu;
+        info.FontSrvGpuDescHandle = fontGpu;
+
+        Logger::Log(LogLevel::Info, std::format(
+            "ℹ️ ImGui_ImplDX12_InitInfo | SrvHeap=0x{:X} RTVHeap=0x{:X} FontCPU=0x{:X} FontGPU=0x{:X} AllocFn=0x{:X} FreeFn=0x{:X}",
+            (uintptr_t)info.SrvDescriptorHeap,
+            (uintptr_t)info.RTVDescriptorHeap,
+            (uintptr_t)info.FontSrvCpuDescHandle.ptr,
+            (uintptr_t)info.FontSrvGpuDescHandle.ptr,
+            (uintptr_t)info.SrvDescriptorAllocFn,
+            (uintptr_t)info.SrvDescriptorFreeFn));
+
+        if (!ImGui_ImplDX12_Init(&info))
+        {
+            Logger::Log(LogLevel::Error, "❌ InitializeImGui: ImGui_ImplDX12_Init failed.");
+            return false;
+        }
+
+        imguiInitialized = true;
+    }
+
+    // ----------------------------------------------
+    // 6) Publish cached pointers only when valid
+    // ----------------------------------------------
+    if (!imguiReadyPublished || !imguiDevice || !imguiSrvHeap)
+    {
+        if (!device || !imguiHeap)
+        {
+            Logger::Log(LogLevel::Error, "❌ InitializeImGui: publishing blocked (device or heap is null).");
+            return false;
+        }
+
+        CacheImGuiResources(device.Get(), imguiHeap.Get());
+        OnImGuiReady();
+        imguiReadyPublished = true;
+    }
+
+    // NOTE:
+    // Do NOT upload fonts here. Font upload is owned by the normal frame lifecycle (BeginFrame -> backend NewFrame).
+
+    return true;
+}
+
+// SRV allocator callbacks (custom ImGui DX12 backend signatures)
+static void ImGui_SrvDescriptorAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu_handle)
+{
+    if (!out_cpu_handle || !out_gpu_handle)
+        return;
+
+    *out_cpu_handle = {};
+    *out_gpu_handle = {};
+
+    ID3D12DescriptorHeap* heap = info ? info->SrvDescriptorHeap : nullptr;
+    if (!heap)
+        heap = Graphics::GetInstance().GetImGuiSrvHeap();
+
+    ID3D12Device* dev = info ? info->Device : nullptr;
+    if (!dev)
+        dev = Graphics::GetInstance().GetDevice();
+
+    if (!heap || !dev)
+        return;
+
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    // Slot 0 reserved for the font.
+    const UINT index = g_SRVDescriptorIndex++;
+
+    const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = heap->GetCPUDescriptorHandleForHeapStart();
+    const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = heap->GetGPUDescriptorHandleForHeapStart();
+
+    out_cpu_handle->ptr = cpuStart.ptr + (SIZE_T)index * (SIZE_T)inc;
+    out_gpu_handle->ptr = gpuStart.ptr + (UINT64)index * (UINT64)inc;
+}
+
+static void ImGui_SrvDescriptorFree(ImGui_ImplDX12_InitInfo* /*info*/, D3D12_CPU_DESCRIPTOR_HANDLE /*cpu_handle*/, D3D12_GPU_DESCRIPTOR_HANDLE /*gpu_handle*/)
+{
+    // No-op: descriptor slots are currently monotonically allocated.
+}
+
+void Graphics::CacheImGuiResources(ID3D12Device* inDevice, ID3D12DescriptorHeap* inHeap)
+{
+    if (!inDevice || !inHeap)
+    {
+        Logger::Log(LogLevel::Error, "❌ CacheImGuiResources called with null ImGui device or heap!");
+        return;
+    }
+
+    imguiDevice = inDevice;
+    imguiSrvHeap = inHeap;
+}
+
+void Graphics::OnImGuiReady()
+{
+    // Mark readiness for any systems that poll the backend.
+    // This function intentionally does not call ImGui::NewFrame or backend NewFrame.
+    imguiReadyPublished = true;
+}
+
+// ========================================
+// Setup ImGui Fonts and Scaling
+// ========================================
+void Graphics::SetupImGuiFontsAndScaling(HWND inHwnd)
+{
+    if (!inHwnd)
+        return;
+
+    if (!ImGui::GetCurrentContext())
+        return;
+
+    const UINT dpi = GetDpiForWindow(inHwnd);
+    const float scale = (dpi > 0) ? (float)dpi / 96.0f : 1.0f;
+
+    static float s_lastScale = -1.0f;
+    if (fabsf(s_lastScale - scale) < 1e-6f)
+        return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.FontGlobalScale = scale;
+
+    s_lastScale = scale;
+}
+
+// Reload ImGui font texture atlas (safe version)
+void Graphics::ReloadImGuiFont(float dpiScale)
+{
+    ReloadImGuiFontImpl(dpiScale, "<unknown>", 0);
+}
+
+void Graphics::ReloadImGuiFontImpl(float dpiScale, const char* callerFile, int callerLine)
+{
+    Logger::Log(LogLevel::Info, std::format(
+        "[FontDiag] ReloadImGuiFont requested size={:.3f} frame={} hasPresentedOnce={} commandListOpen={} frameStarted={} ImGuiFrameStarted={} caller={}:{}",
+        dpiScale,
+        (unsigned)ImGui::GetFrameCount(),
+        hasPresentedOnce ? "true" : "false",
+        commandListOpen ? "true" : "false",
+        frameStarted ? "true" : "false",
+        ImGuiFrameStarted ? "true" : "false",
+        callerFile ? callerFile : "<null>",
+        callerLine));
+
+    // Hard gate: never mutate fonts before first Present.
+    if (!hasPresentedOnce)
+    {
+        pendingFontReload = true;
+        pendingFontPixelSize = dpiScale;
+
+        if (!loggedDeferredFontBeforeFirstPresent)
+        {
+            loggedDeferredFontBeforeFirstPresent = true;
+            Logger::Log(LogLevel::Info, "[FontDiag] ReloadImGuiFont deferred — waiting for first Present");
+        }
+        return;
+    }
+
+    if (commandListOpen || frameStarted || ImGuiFrameStarted)
+    {
+        Logger::Log(LogLevel::Error, "❌ ReloadImGuiFont() called mid-frame. Ignoring.");
+        return;
+    }
+
+    if (!device || !imguiHeap)
+    {
+        Logger::Log(LogLevel::Error, "❌ ReloadImGuiFont() missing device or imguiHeap.");
+        return;
+    }
+
+    dpiScale = (std::max)(0.5f, dpiScale);
+
+    ImGuiIO& io = ImGui::GetIO();
+    if (!io.Fonts)
+        return;
+
+    // Clear then rebuild deterministically.
+    io.Fonts->Clear();
+
+    // Treat param as a pixel size (UI calls pass 14/16/18/20).
+    const float sizePx = dpiScale;
+    ImFontConfig cfg{};
+    cfg.SizePixels = sizePx;
+    io.Fonts->AddFontDefault(&cfg);
+
+    // Build atlas on CPU.
+    io.Fonts->Build();
+
+#ifndef NDEBUG
+    if (!io.Fonts->IsBuilt() || io.Fonts->TexID == 0)
+    {
+        Logger::Log(LogLevel::Error,
+            "🚨 ReloadImGuiFont() failed: Fonts atlas not built after Build().");
+        return;
+    }
+#endif
+
+    // Upload to GPU using the backend helper.
+    // Use the engine's dedicated upload command list if available and idle.
+    ID3D12GraphicsCommandList* uploadCL = nullptr;
+    if (uploadCommandList)
+        uploadCL = uploadCommandList.Get();
+    else if (commandList)
+        uploadCL = commandList.Get();
+
+    if (!uploadCL)
+    {
+        Logger::Log(LogLevel::Error, "❌ ReloadImGuiFont() no command list available for font upload.");
+        return;
+    }
+
+    // Ensure SRV heap is bound for the upload operations.
+    {
+        ID3D12DescriptorHeap* heaps[] = { imguiHeap.Get() };
+        uploadCL->SetDescriptorHeaps(1, heaps);
+    }
+
+    if (!ImGui_ImplDX12_CreateFontsTexture(device.Get(), uploadCL))
+    {
+        Logger::Log(LogLevel::Error, "❌ ReloadImGuiFont() failed to upload font texture.");
+        return;
+    }
+
+#ifndef NDEBUG
+    if (!io.Fonts->IsBuilt() || io.Fonts->TexID == 0)
+    {
+        Logger::Log(LogLevel::Error,
+            "🚨 [FontDiag] Font upload completed but TexID is null or atlas not built");
+    }
+#endif
+
+    CacheImGuiResources(device.Get(), imguiHeap.Get());
+    OnImGuiReady();
+
+    fontUploaded = true;
+
+    Logger::Log(LogLevel::Info, std::format("✅ ReloadImGuiFont() completed (sizePx={:.1f})", sizePx));
+}
+
+void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
+{
+    if (!device)
+        return;
+
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+
+    if (sceneRenderTarget && sceneRtvHeap && sceneSrvCpu.ptr != 0 && sceneSrvGpu.ptr != 0 &&
+        sceneRTWidth == width && sceneRTHeight == height)
+        return;
+
+    // Release old resources safely.
+    EnqueueDeferredRelease(sceneRenderTarget);
+    EnqueueDeferredRelease(sceneDepth);
+    sceneRtvHeap.Reset();
+    sceneDsvHeap.Reset();
+
+    sceneRTWidth = width;
+    sceneRTHeight = height;
+
+    // ---------------------------------------------------------------------------------
+    // Create scene color target
+    // ---------------------------------------------------------------------------------
+    {
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = width;
+        desc.Height = height;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+        D3D12_CLEAR_VALUE clear{};
+        clear.Format = desc.Format;
+        clear.Color[0] = 0.10f;
+        clear.Color[1] = 0.10f;
+        clear.Color[2] = 0.20f;
+        clear.Color[3] = 1.0f;
+
+        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+        const HRESULT hr = device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clear,
+            IID_PPV_ARGS(&sceneRenderTarget));
+
+        if (FAILED(hr) || !sceneRenderTarget)
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ EnsureSceneRenderTarget: failed to create scene RT HR=0x{:08X}", (UINT)hr));
+            sceneRTWidth = sceneRTHeight = 0;
+            return;
+        }
+
+        sceneRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Create RTV heap + RTV
+    // ---------------------------------------------------------------------------------
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC rtvDesc{};
+        rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        rtvDesc.NumDescriptors = 1;
+        rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+        const HRESULT hr = device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&sceneRtvHeap));
+        if (FAILED(hr) || !sceneRtvHeap)
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ EnsureSceneRenderTarget: failed to create scene RTV heap HR=0x{:08X}", (UINT)hr));
+            sceneRTWidth = sceneRTHeight = 0;
+            sceneRenderTarget.Reset();
+            return;
+        }
+
+        sceneRtvHandle = sceneRtvHeap->GetCPUDescriptorHandleForHeapStart();
+        device->CreateRenderTargetView(sceneRenderTarget.Get(), nullptr, sceneRtvHandle);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Create depth buffer + DSV
+    // ---------------------------------------------------------------------------------
+    {
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = width;
+        desc.Height = height;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_D32_FLOAT;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+        D3D12_CLEAR_VALUE clear{};
+        clear.Format = DXGI_FORMAT_D32_FLOAT;
+        clear.DepthStencil.Depth = 1.0f;
+        clear.DepthStencil.Stencil = 0;
+
+        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+        const HRESULT hr = device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            &clear,
+            IID_PPV_ARGS(&sceneDepth));
+
+        if (FAILED(hr) || !sceneDepth)
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ EnsureSceneRenderTarget: failed to create scene depth HR=0x{:08X}", (UINT)hr));
+            // Depth is optional for the placeholder pass; keep color RT alive.
+            sceneDsvHeap.Reset();
+            sceneDsvHandle = {};
+            sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
+        }
+        else
+        {
+            sceneDepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+
+            D3D12_DESCRIPTOR_HEAP_DESC dsvDesc{};
+            dsvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+            dsvDesc.NumDescriptors = 1;
+            dsvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+            const HRESULT hrH = device->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(&sceneDsvHeap));
+            if (FAILED(hrH) || !sceneDsvHeap)
+            {
+                Logger::Log(LogLevel::Error, std::format("❌ EnsureSceneRenderTarget: failed to create scene DSV heap HR=0x{:08X}", (UINT)hrH));
+                EnqueueDeferredRelease(sceneDepth);
+                sceneDsvHandle = {};
+                sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
+            }
+            else
+            {
+                sceneDsvHandle = sceneDsvHeap->GetCPUDescriptorHandleForHeapStart();
+                D3D12_DEPTH_STENCIL_VIEW_DESC view{};
+                view.Format = DXGI_FORMAT_D32_FLOAT;
+                view.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+                view.Flags = D3D12_DSV_FLAG_NONE;
+                device->CreateDepthStencilView(sceneDepth.Get(), &view, sceneDsvHandle);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Create SRV in the engine ImGui heap for ImGui::Image
+    // ---------------------------------------------------------------------------------
+    {
+        sceneSrvCpu = {};
+        sceneSrvGpu = {};
+        sceneImGuiTextureID = (ImTextureID)0;
+
+        if (imguiHeap)
+        {
+            // Allocate a CPU descriptor from the same heap.
+            sceneSrvCpu = AllocateSRV();
+
+            if (sceneSrvCpu.ptr != 0)
+            {
+                const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = imguiHeap->GetCPUDescriptorHandleForHeapStart();
+                const UINT index = (UINT)((sceneSrvCpu.ptr - cpuStart.ptr) / (SIZE_T)inc);
+                const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = imguiHeap->GetGPUDescriptorHandleForHeapStart();
+                sceneSrvGpu = { gpuStart.ptr + (UINT64)index * (UINT64)inc };
+                sceneImGuiTextureID = (ImTextureID)sceneSrvGpu.ptr;
+
+                D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+                srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                srv.Texture2D.MipLevels = 1;
+                device->CreateShaderResourceView(sceneRenderTarget.Get(), &srv, sceneSrvCpu);
+            }
+        }
+    }
+}
+
+void Graphics::RenderSceneToTarget()
+{
+    if (!commandListOpen)
+        return;
+
+    if (!commandList || !sceneRenderTarget || sceneRtvHandle.ptr == 0 || sceneRTWidth == 0 || sceneRTHeight == 0)
+        return;
+
+    // Transition RT to render target
+    if (sceneRTState != D3D12_RESOURCE_STATE_RENDER_TARGET)
+    {
+        CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
+            sceneRenderTarget.Get(),
+            sceneRTState,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        commandList->ResourceBarrier(1, &b);
+        sceneRTState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    }
+
+    const float clearColor[4] = { 0.25f, 0.05f, 0.35f, 1.0f };
+
+    D3D12_VIEWPORT vp{};
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = 0.0f;
+    vp.Width = (float)sceneRTWidth;
+    vp.Height = (float)sceneRTHeight;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+
+    D3D12_RECT sc{};
+    sc.left = 0;
+    sc.top = 0;
+    sc.right = (LONG)sceneRTWidth;
+    sc.bottom = (LONG)sceneRTHeight;
+
+    commandList->RSSetViewports(1, &vp);
+    commandList->RSSetScissorRects(1, &sc);
+
+    if (sceneDsvHandle.ptr != 0)
+        commandList->OMSetRenderTargets(1, &sceneRtvHandle, FALSE, &sceneDsvHandle);
+    else
+        commandList->OMSetRenderTargets(1, &sceneRtvHandle, FALSE, nullptr);
+
+    commandList->ClearRenderTargetView(sceneRtvHandle, clearColor, 0, nullptr);
+
+    if (sceneDsvHandle.ptr != 0)
+        commandList->ClearDepthStencilView(sceneDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    // Phase 0: placeholder pass only. Real scene drawing will be restored later.
+
+    // Transition RT back to shader resource
+    if (sceneRTState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+    {
+        CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
+            sceneRenderTarget.Get(),
+            sceneRTState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        commandList->ResourceBarrier(1, &b);
+        sceneRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+}
+
 void Graphics::Render(HWND hWnd)
 {
+    (void)hWnd;
+
     if (!commandListOpen)
     {
         Logger::Log(LogLevel::Error,
@@ -1151,40 +1990,24 @@ void Graphics::Render(HWND hWnd)
     // Render the Scene viewport target first (so UI can display it via ImGui::Image)
     RenderSceneToTarget();
 
-    // -----------------------------------------------------------------
-    // Render health snapshot (throttled)
-    // -----------------------------------------------------------------
-    {
-        static UINT s_renderHealthCounter = 0;
-        if ((++s_renderHealthCounter % 60) == 0)
-        {
-            ImDrawData* dd = ImGui::GetDrawData();
-            Logger::Log(LogLevel::Info, std::format(
-                "🩺 RenderHealth | cmdListOpen={} cmdList={} ddValid={} cmdLists={} displaySize=({:.1f},{:.1f})",
-                commandListOpen ? 1 : 0,
-                commandList ? "OK" : "MISS",
-                (dd && dd->Valid) ? "true" : "false",
-                dd ? dd->CmdListsCount : -1,
-                dd ? dd->DisplaySize.x : -1.0f,
-                dd ? dd->DisplaySize.y : -1.0f));
-        }
-    }
-
-    if (!ImGui::GetCurrentContext())
-    {
-        Logger::Log(LogLevel::Warning,
-            "⚠️ Render() skipped — ImGui context missing");
-        return;
-    }
-
     // ==========================
     // Main ImGui render pass
     // ==========================
+#ifndef NDEBUG
+    if (!ImGui::GetIO().Fonts->IsBuilt())
+    {
+        Logger::Log(LogLevel::Error,
+            "🚨 ImGui Fonts not built before ImGui::Render()");
+    }
+#endif
+
     ImGui::Render();
     g_ImGuiRenderedThisFrame = true;
     ImDrawData* drawData = ImGui::GetDrawData();
+    if (!drawData)
+        return;
 
-    // --- Always transition to RT ---
+    // Transition backbuffer to RT
     CD3DX12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(
         backBuffers[currentBackBufferIndex].Get(),
         D3D12_RESOURCE_STATE_PRESENT,
@@ -1198,1651 +2021,110 @@ void Graphics::Render(HWND hWnd)
 
     commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
-    // Ensure rasterizer state is valid for ImGui (viewport/scissor can otherwise clip everything).
-    // IMPORTANT: derive viewport/scissor from the actual backbuffer size to avoid artifacts after resize/maximize.
-    {
-        UINT bbW = 1;
-        UINT bbH = 1;
-        if (backBuffers[currentBackBufferIndex])
-        {
-            const D3D12_RESOURCE_DESC desc = backBuffers[currentBackBufferIndex]->GetDesc();
-            bbW = (UINT)(std::max)(1ull, desc.Width);
-            bbH = (UINT)(std::max)(1ull, (UINT64)desc.Height);
-        }
-
-        D3D12_VIEWPORT vp = {};
-        vp.TopLeftX = 0.0f;
-        vp.TopLeftY = 0.0f;
-        vp.Width = (float)bbW;
-        vp.Height = (float)bbH;
-        vp.MinDepth = 0.0f;
-        vp.MaxDepth = 1.0f;
-
-        D3D12_RECT scissor = {};
-        scissor.left = 0;
-        scissor.top = 0;
-        scissor.right = (LONG)bbW;
-        scissor.bottom = (LONG)bbH;
-
-        commandList->RSSetViewports(1, &vp);
-        commandList->RSSetScissorRects(1, &scissor);
-
-        // Size mismatch diagnostics (throttled)
-        static UINT s_sizeDiagCounter = 0;
-        if ((++s_sizeDiagCounter % 120) == 0)
-        {
-            RECT rc{};
-            int cw = -1, ch = -1;
-            if (hWnd && GetClientRect(hWnd, &rc))
-            {
-                cw = rc.right - rc.left;
-                ch = rc.bottom - rc.top;
-            }
-
-            const float ddW = (drawData && drawData->DisplaySize.x > 0.0f) ? drawData->DisplaySize.x : -1.0f;
-            const float ddH = (drawData && drawData->DisplaySize.y > 0.0f) ? drawData->DisplaySize.y : -1.0f;
-
-            Logger::Log(LogLevel::Info, std::format(
-                "📐 RT Sizes | BackBuffer={}x{} | Client={}x{} | DrawData={:.1f}x{:.1f} | screen={}x{}",
-                bbW, bbH,
-                cw, ch,
-                ddW, ddH,
-                screenWidth, screenHeight));
-        }
-    }
-
-    // --- Always clear ---
-    ImVec4 clear = UI::GetClearColor();
-    FLOAT clearColor[4] = { clear.x, clear.y, clear.z, 1.0f };
+    // Clear
+    const ImVec4 clear = UI::GetClearColor();
+    const float clearColor[4] = { clear.x, clear.y, clear.z, clear.w };
     commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
-    if (!drawData || drawData->DisplaySize.x <= 0.0f || drawData->DisplaySize.y <= 0.0f)
-    {
-        Logger::Log(LogLevel::Trace, "ℹ️ Invalid ImGui draw data — skip render");
-    }
+    // Draw ImGui
+    ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
 
-    // --- Only draw ImGui if it exists ---
-    if (drawData && drawData->CmdListsCount > 0)
-    {
-        Logger::Log(LogLevel::Debug,
-            "🎮 Rendering main ImGui draw data to main swap chain");
-
-        // Ensure ImGui's SRV heap is bound for font/texture sampling.
-        ID3D12DescriptorHeap* srvHeap = ImGui_ImplDX12_GetSrvHeap();
-        if (!srvHeap)
-            srvHeap = imguiHeap.Get();
-        if (srvHeap)
-        {
-            ID3D12DescriptorHeap* heaps[] = { srvHeap };
-            commandList->SetDescriptorHeaps(_countof(heaps), heaps);
-        }
-
-        ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
-    }
-    else
-    {
-        Logger::Log(LogLevel::Trace,
-            "ℹ️ Main viewport has no ImGui draw data — clear-only frame");
-    }
-
-    // --- Always transition back to PRESENT ---
+    // Transition backbuffer back to present
     CD3DX12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(
         backBuffers[currentBackBufferIndex].Get(),
         D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATE_PRESENT);
     commandList->ResourceBarrier(1, &toPresent);
-
-    Logger::Log(LogLevel::Info,
-        "✅ Main viewport render submitted");
-
-    Logger::Log(LogLevel::Info,
-        "📝 Main viewport render recorded");
-
-    // NOTE: Platform windows are updated/rendered in EndFrame() via ImGui::RenderPlatformWindowsDefault().
 }
 
-//===============================================================================//
-// End Frame Function                                                            //
-//===============================================================================//
-void Graphics::EndFrame(HWND hWnd)
+//===============================================
+// Request Resize Function
+//===============================================
+// Call this to request a swap chain resize
+// Width and height of 0 will be ignored
+// Requested resizes are applied at the top of the next BeginFrame()
+// Example: Graphics::GetInstance().RequestResize(1920, 1080);
+//===============================================
+void Graphics::RequestResize(UINT width, UINT height)
 {
-    if (!ImGuiFrameStarted)
-    {
-        AbortFrame("EndFrame skipped — ImGui frame not started");
-        (void)hWnd;
+    if (width == 0 || height == 0)
         return;
-    }
 
-    if (!frameStarted)
-    {
-        AbortFrame("EndFrame called without matching BeginFrame()");
-        (void)hWnd;
-        return;
-    }
-
-    if (!commandListOpen)
-    {
-        AbortFrame("EndFrame called with closed command list");
-        (void)hWnd;
-        return;
-    }
-
-    // EndFrame health (throttled)
-    {
-        static UINT64 s_endHealthCounter = 0;
-        if ((++s_endHealthCounter % 60) == 0)
-        {
-            Logger::Log(LogLevel::Info, std::format(
-                "🩺 EndFrameHealth | frameStarted={} imguiFrameStarted={} renderedThisFrame={} backBufferIndex={} fenceValue={}",
-                frameStarted ? 1 : 0,
-                ImGuiFrameStarted ? 1 : 0,
-                g_ImGuiRenderedThisFrame ? 1 : 0,
-                currentBackBufferIndex,
-                fenceValue));
-        }
-    }
-
-    // =========================================================================
-    // 1️⃣ CLOSE & EXECUTE MAIN COMMAND LIST
-    // =========================================================================
-    HRESULT hr = commandList->Close();
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error,
-            std::format("❌ Failed to close main command list HR=0x{:08X}", (UINT)hr));
-        AbortFrame("commandList->Close() failed");
-        HandleDeviceLost(hWnd);
-        return;
-    }
-
-    commandListOpen = false;
-
-    ID3D12CommandList* lists[] = { commandList.Get() };
-    commandQueue->ExecuteCommandLists(1, lists);
-
-    // Single authoritative fence signal for this frame.
-    SignalFence();
-
-    Logger::Log(LogLevel::Info,
-        "🧠 Main command list executed and fenced");
-
-    // =========================================================================
-    // 2️⃣ UPDATE + RENDER PLATFORM WINDOWS
-    // =========================================================================
-    // Viewports are disabled in Phase 0; keep code path but gated.
-    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-    {
-        if (g_ImGuiRenderedThisFrame)
-        {
-            ImGui::UpdatePlatformWindows();
-            ImGui::RenderPlatformWindowsDefault();
-
-            ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-            Logger::Log(LogLevel::Info, std::format(
-                "📐 Total ImGui Viewports: {}",
-                platform_io.Viewports.Size));
-        }
-        else
-        {
-            Logger::Log(LogLevel::Warning, "⚠️ Skipping platform windows: ImGui::Render() was not called this frame.");
-        }
-    }
-
-    // =========================================================================
-    // 3️⃣ FINAL FRAME STATE RESET (Present is owned by Engine)
-    // =========================================================================
-    (void)hWnd;
-    frameStarted = false;
-    ImGuiFrameStarted = false;
-    g_ImGuiRenderedThisFrame = false;
-
-    Logger::Log(LogLevel::Info,
-        "✅ EndFrame completed (no Present)");
+    pendingWidth = width;
+    pendingHeight = height;
+    pendingResize = true;
 }
 
-//==============================
-// Check Frame Health Function  
-//==============================
- void Graphics::CheckFrameHealth() // Checks if core DX12 objects are valid
- {
-     if (!commandList || !commandQueue)
-         Logger::Log(LogLevel::Error, "❌ Core DX12 objects are invalid!");
-
-     if (!ImGui::GetDrawData() || !ImGui::GetDrawData()->Valid)
-         Logger::Log(LogLevel::Warning, "⚠️ ImGui DrawData is invalid or missing.");
-
-     if (!imguiHeap)
-         Logger::Log(LogLevel::Error, "❌ ImGui descriptor heap is NULL!");
- }
-
-//==================================
-// Rendering Present Frame Function 
-//==================================
-void Graphics::Present(HWND hWnd)
+//===============================================
+// Apply Pending Resize Function
+//===============================================
+// Call this to apply a pending resize request
+// Resizes the swap chain and updates the RTVs
+//===============================================
+void Graphics::ApplyPendingResize(HWND hWnd)
 {
-#ifndef NDEBUG
-    // Guard rails: Present should happen only after EndFrame closed/submitted the list.
-    assert(!commandListOpen && "Present() called while command list is still open (EndFrame not run?)");
-    assert(!frameStarted && "Present() called while frameStarted=true (EndFrame not completed?)");
-#endif
-
-    // ENGINE RULE:
-    // Present must be called exactly once per frame.
-    // Only Engine calls this; Graphics must never auto-present.
-    if (g_PresentedThisFrame)
-    {
-        Logger::Log(LogLevel::Error, "❌ Present() called twice in the same frame — blocked.");
+    if (!pendingResize)
         return;
-    }
 
-    if (!swapChain || !commandQueue || !fence) {
-        Logger::Log(LogLevel::Error, "❌ Missing DX12 resources — SwapChain, CommandQueue, or Fence is null.");
-        return;
-    }
-
-    ImGuiIO& io = ImGui::GetIO();
-
-    // Viewports are disabled in Phase 0, but keep this guard for future re-enable.
-    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-        ImGuiViewport* mainViewport = ImGui::GetMainViewport();
-        if (!mainViewport || mainViewport->PlatformHandleRaw != hWnd) {
-            Logger::Log(LogLevel::Debug, "⏭️ Skipping Present — not the main viewport HWND.");
-            return;
-        }
-    }
-
-    ImDrawData* drawData = ImGui::GetDrawData();
-    if (!drawData || !drawData->Valid) {
-        Logger::Log(LogLevel::Warning, "⚠️ Skipping Present — ImGui draw data is invalid.");
-        return;
-    }
-
-    // ✅ Do Present
-    UINT syncInterval = vsyncEnabled ? 1 : 0;
-    UINT presentFlags = (!vsyncEnabled && allowTearing) ? DXGI_PRESENT_ALLOW_TEARING : 0;
-    HRESULT hr = swapChain->Present(syncInterval, presentFlags);
-
-    if (FAILED(hr)) {
-        Logger::Log(LogLevel::Error, std::format("❌ Present FAILED: HRESULT=0x{:08X}", (UINT)hr));
-        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-            Logger::Log(LogLevel::Warning, "⚠️ Device Lost during Present. Attempting recovery.");
-            HandleDredDump(device.Get(), "MainWindow_Present");
-            HandleDeviceLost(hWnd);
-        }
-        return;
-    }
-
-    g_PresentedThisFrame = true;
-
-    // Mark that we've successfully presented at least once.
+    // Never resize before first present; just keep the request pending.
     if (!hasPresentedOnce)
-        hasPresentedOnce = true;
-
-    Logger::Log(LogLevel::Debug, std::format(
-        "🖼️ Present() | SyncInterval={} Flags={} BackBuffer={} ",
-        syncInterval, presentFlags, currentBackBufferIndex));
-
-    // Update back buffer index (DXGI may advance it on present)
-    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
-
-    // Fence signaling is handled in EndFrame() via SignalFence();
-
-    // Frame pacing log
-    static double lastTime = ImGui::GetTime();
-    double now = ImGui::GetTime();
-    double delta = now - lastTime;
-    lastTime = now;
-
-    Logger::Log(LogLevel::Info,
-        std::format("✅ Frame Presented. BackBuffer={} | FrameTime={:.2f}ms ({:.1f} FPS)",
-            currentBackBufferIndex, delta * 1000.0, (delta > 0.0 ? 1.0 / delta : 0.0)));
-}
-
-//==================================================
-// Initialize ImGui Function
-//==================================================
-bool Graphics::InitializeImGui(HWND hWnd)
-{
-    fontUploaded = false;
-
-    if (imguiInitialized && imguiPlatformInitialized)
     {
-        Logger::Log(LogLevel::Info,
-            "ℹ️ ImGui already initialized — publishing GPU resources");
-
-        CacheImGuiResources(
-            ImGui_ImplDX12_GetDevice(),
-            ImGui_ImplDX12_GetSrvHeap()
-        );
-
-        OnImGuiReady();
-        return true;
-    }
-
-    if (!hWnd || !IsWindow(hWnd))
-        throw std::runtime_error("❌ Invalid HWND passed to InitializeImGui.");
-
-    if (!device || !commandQueue)
-        throw std::runtime_error("❌ Device or CommandQueue is NULL before initializing ImGui.");
-
-    // 🔄 Force shutdown of old ImGui context if active
-    if (ImGui::GetCurrentContext())
-    {
-        ImGuiIO& io = ImGui::GetIO();
-
-        // ✅ Ensure platform windows are destroyed first
-        ImGui::DestroyPlatformWindows();
-
-        if (io.BackendRendererUserData)
+        if (!loggedDeferredResizeBeforeFirstPresent)
         {
-            Logger::Log(LogLevel::Warning, "⚠️ Renderer backend still active. Forcing ImGui_ImplDX12_Shutdown...");
-            ImGui_ImplDX12_Shutdown();
-            io.BackendRendererUserData = nullptr;
-        }
-
-        if (io.BackendPlatformUserData)
-        {
-            Logger::Log(LogLevel::Warning, "⚠️ Platform backend still active. Forcing ImGui_ImplWin32_Shutdown...");
-            ImGui_ImplWin32_Shutdown();
-            io.BackendPlatformUserData = nullptr;
-        }
-
-        Logger::Log(LogLevel::Info, "🧠 Destroying previous ImGui context.");
-        ImGui::DestroyContext();
-    }
-
-    // 🔧 Create new ImGui context
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGui::StyleColorsDark();
-    ImGui::GetStyle().Alpha = 1.0f;
-
-    PostImGuiInitFixes();
-    SanitizeImGuiStyleAlpha();
-
-    Logger::Log(LogLevel::Info, "✅ ImGui context created.");
-
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-
-    // Phase 0 stability: disable viewports (single swapchain/present/fence path)
-    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
-
-    io.ConfigViewportsNoAutoMerge = true;
-    io.ConfigViewportsNoTaskBarIcon = false; // Optional: Keep window icon in taskbar
-
-    Logger::Log(LogLevel::Info, std::format("📌 Win32 Backend Init HWND = 0x{:X}", reinterpret_cast<uintptr_t>(hWnd)));
-
-    // 🧱 Initialize Win32 Platform Backend
-    if (!imguiPlatformInitialized)
-    {
-        if (!ImGui_ImplWin32_Init(hWnd))
-            throw std::runtime_error("❌ ImGui_ImplWin32_Init failed.");
-
-        Logger::Log(LogLevel::Info, std::format("📌 Win32 Backend Init HWND = 0x{:X}", reinterpret_cast<uintptr_t>(hWnd)));
-        Logger::Log(LogLevel::Info, std::format("🔍 BackendPlatformUserData: {}", ImGui::GetIO().BackendPlatformUserData ? "VALID" : "NULL"));
-
-        ImGuiPlatformIO& base_io = ImGui::GetPlatformIO();
-        ImGuiPlatformIO_Extended& platform_io = *(ImGuiPlatformIO_Extended*)&base_io;
-
-        platform_io.Platform_CreateWindow = ImGui_ImplWin32_CreateWindow;
-        platform_io.Platform_DestroyWindow = ImGui_ImplWin32_DestroyWindow;
-        platform_io.Platform_ShowWindow = ImGui_ImplWin32_ShowWindow;
-        platform_io.Platform_SetWindowPos = ImGui_ImplWin32_SetWindowPos;
-        platform_io.Platform_GetWindowPos = ImGui_ImplWin32_GetWindowPos;
-        platform_io.Platform_SetWindowSize = ImGui_ImplWin32_SetWindowSize;
-        platform_io.Platform_GetWindowSize = ImGui_ImplWin32_GetWindowSize;
-        platform_io.Platform_SetWindowFocus = ImGui_ImplWin32_SetWindowFocus;
-        platform_io.Platform_GetWindowFocus = ImGui_ImplWin32_GetWindowFocus;
-        platform_io.Platform_GetWindowMinimized = ImGui_ImplWin32_GetWindowMinimized;
-        platform_io.Platform_SetWindowTitle = ImGui_ImplWin32_SetWindowTitle;
-        platform_io.Platform_SetWindowAlpha = ImGui_ImplWin32_SetWindowAlpha;
-        platform_io.Platform_UpdateWindow = ImGui_ImplWin32_UpdateWindow;
-        platform_io.Platform_GetWindowDpiScale = ImGui_ImplWin32_GetWindowDpiScale;
-        platform_io.Platform_OnChangedViewport = ImGui_ImplWin32_OnChangedViewport;
-        platform_io.Platform_RenderWindow = ImGui_ImplWin32_RenderWindow;
-
-        imguiPlatformInitialized = true;
-        Logger::Log(LogLevel::Info, "✅ ImGui Win32 platform backend initialized.");
-    }
-
-    // 🧱 Initialize DX12 Renderer Backend
-    if (!imguiInitialized)
-    {
-        // ✅ Create GPU descriptor heap for ImGui
-        if (!imguiHeap)
-        {
-            D3D12_DESCRIPTOR_HEAP_DESC desc = {};
-            desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-            desc.NumDescriptors = 64; // Allocate more descriptors for safety
-            desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-            DX_CHECK(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&imguiHeap)));
-
-            if (rtvHeap)
-            {
-                Logger::Log(LogLevel::Debug, std::format(
-                    "[Engine RTV Heap] StartCPU=0x{:X} | Count={}",
-                    static_cast<uintptr_t>(rtvHeap->GetCPUDescriptorHandleForHeapStart().ptr),
-                    Graphics::frameCount // Use the static frameCount variable from Graphics class
-                ));
-            }
-
-            // ✅ Publish SRV heap for texture allocations
-            g_SRVHeap = imguiHeap.Get();
-
-            Logger::Log(LogLevel::Info, "✅ ImGui GPU descriptor heap created.");
-        }
-
-        // ✅ FIX: Assign CPU + GPU handles for the font SRV
-        imguiFontCPU = imguiHeap->GetCPUDescriptorHandleForHeapStart();
-        imguiFontGPU = imguiHeap->GetGPUDescriptorHandleForHeapStart();
-
-        Logger::Log(LogLevel::Debug, std::format("🔗 Font SRV CPU handle = 0x{:X}", imguiFontCPU.ptr));
-        Logger::Log(LogLevel::Debug, std::format("🔗 Font SRV GPU handle = 0x{:X}", imguiFontGPU.ptr));
-
-        // ✅ Set up ImGui DX12 Init Info
-        ImGui_ImplDX12_InitInfo initInfo = {};
-        initInfo.Device = device.Get();
-        initInfo.CommandQueue = commandQueue.Get();
-        initInfo.NumFramesInFlight = IMGUI_NUM_FRAMES_IN_FLIGHT;
-
-        // Formats / heaps expected by this repo's custom backend
-        initInfo.RenderTargetFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-        initInfo.SrvDescriptorHeap = imguiHeap.Get();
-        initInfo.RTVDescriptorHeap = rtvHeap.Get();
-        initInfo.RTVDescriptorSize = rtvDescriptorSize;
-
-        // Optional but used by the custom backend for main viewport correctness
-        initInfo.DxgiFactory = dxgiFactory.Get();
-        initInfo.SwapChain = swapChain.Get();
-
-        // If we already allocated the font SRV, pass it through so the backend doesn't guess.
-        initInfo.FontSrvCpuDescHandle = imguiFontCPU;
-        initInfo.FontSrvGpuDescHandle = imguiFontGPU;
-
-        // Phase 0: keep viewport rendering disabled; tearing/vsync still applies to main present.
-        initInfo.VsyncEnabled = vsyncEnabled;
-        initInfo.AllowTearing = allowTearing;
-
-        if (!ImGui_ImplDX12_Init(&initInfo))
-        {
-            Logger::Log(LogLevel::Error, "❌ ImGui_ImplDX12_Init failed.");
-            return false;
-        }
-
-        // Upload the font texture now that we have valid SRV handles (use dedicated upload list)
-        if (!uploadAllocator || !uploadCommandList)
-        {
-            Logger::Log(LogLevel::Error, "❌ Upload context missing (uploadAllocator/uploadCommandList).");
-            return false;
-        }
-
-        DX_CHECK(uploadAllocator->Reset());
-        DX_CHECK(uploadCommandList->Reset(uploadAllocator.Get(), nullptr));
-
-        ImGui_ImplDX12_CreateFontsTexture(device.Get(), uploadCommandList.Get());
-        
-        DX_CHECK(uploadCommandList->Close());
-        ID3D12CommandList* uploadLists[] = { uploadCommandList.Get() };
-        commandQueue->ExecuteCommandLists(1, uploadLists);
-
-        FlushGPU(); // Ensure font is uploaded successfully
-        Logger::Log(LogLevel::Info, "📦 ImGui font texture uploaded successfully.");
-
-        ImGuiPlatformIO& base_io = ImGui::GetPlatformIO();
-        ImGuiPlatformIO_Extended& platform_io = *(ImGuiPlatformIO_Extended*)&base_io;
-
-        platform_io.Renderer_CreateWindow = ImGui_ImplDX12_CreateWindow;
-        platform_io.Renderer_DestroyWindow = ImGui_ImplDX12_DestroyWindow;
-        platform_io.Renderer_SetWindowSize = ImGui_ImplDX12_SetWindowSize;
-        platform_io.Renderer_RenderWindow = ImGui_ImplDX12_RenderWindow;
-        platform_io.Renderer_SwapBuffers = ImGui_ImplDX12_SwapBuffers;
-        platform_io.Renderer_GetWindowFocus = ImGui_ImplDX12_GetWindowFocus;
-        platform_io.Renderer_GetWindowMinimized = ImGui_ImplDX12_GetWindowMinimized;
-        platform_io.Renderer_UpdateWindow = ImGui_ImplDX12_UpdateWindow;
-
-        ImGuiStyle& style = ImGui::GetStyle();
-        style.Alpha = 1.0f;
-        IM_ASSERT(style.Alpha >= 0.0f && style.Alpha <= 1.0f);
-
-        imguiInitialized = true;
-
-        CacheImGuiResources(
-            ImGui_ImplDX12_GetDevice(),
-            ImGui_ImplDX12_GetSrvHeap()
-        );
-
-        OnImGuiReady();
-
-        Logger::Log(LogLevel::Info, "✅ ImGui DX12 Backend Initialized (Published)");
-        return true;
-    }
-
-    // -----------------------------------------------------------
-    // STEP 3 — Hook ImGui PlatformIO Callbacks for Diagnostics
-    // -----------------------------------------------------------
-    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-
-    // Handle viewport creation
-    platform_io.Renderer_CreateWindow = [](ImGuiViewport* vp)
-        {
-            ImGui_ImplDX12_CreateWindow(vp);
-            Logger::Log(LogLevel::Info, std::format(
-                "🪟 Viewport CREATED | ID=0x{:X} HWND=0x{:X}",
-                vp->ID,
-                reinterpret_cast<uintptr_t>(vp->PlatformHandle)));
-        };
-
-    // Handle per-viewport rendering
-    platform_io.Renderer_RenderWindow = [](ImGuiViewport* vp, void*)
-        {
-            auto* vd = static_cast<ImGui_ImplDX12_ViewportData*>(vp->RendererUserData);
-            if (!vd)
-            {
-                Logger::Log(LogLevel::Error, std::format(
-                    "❌ Renderer_RenderWindow called with NULL RendererUserData! ViewportID=0x{:X}", vp->ID));
-                return;
-            }
-
-            auto start = std::chrono::high_resolution_clock::now();
-            ImGui_ImplDX12_RenderWindow(vp, nullptr);
-            auto end = std::chrono::high_resolution_clock::now();
-
-            vd->LastRenderDurationNs =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-            vd->FrameCounter++;
-
-            Logger::Log(LogLevel::Debug, std::format(
-                "🖼️ Viewport RENDERED | ID=0x{:X} | Frame={} | Duration={}ns",
-                vp->ID, vd->FrameCounter, vd->LastRenderDurationNs));
-        };
-
-    // Handle viewport destruction
-    platform_io.Renderer_DestroyWindow = [](ImGuiViewport* vp)
-        {
-            Logger::Log(LogLevel::Info, std::format(
-                "🗑️ Destroying viewport | ID=0x{:X} HWND=0x{:X}",
-                vp->ID,
-                reinterpret_cast<uintptr_t>(vp->PlatformHandle)));
-
-            ImGui_ImplDX12_DestroyWindow(vp);
-
-            Logger::Log(LogLevel::Info, std::format(
-                "✅ Viewport DESTROYED | ID=0x{:X}", vp->ID));
-        };
-
-    Logger::Log(LogLevel::Info, "✅ ImGui initialization complete.");
-
-    PostImGuiInitFixes();
-
-    // FIX: Ensure all control paths return a value
-    return imguiInitialized && imguiPlatformInitialized;
-}
-
-// ------------------------------------------------------------------
-// Static helpers for descriptor allocation (used in InitInfo struct)
-// ------------------------------------------------------------------
-static void ImGui_SrvDescriptorAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu_handle)
-{
-    if (!info || !info->SrvDescriptorHeap || !out_cpu_handle || !out_gpu_handle)
-    {
-        Logger::Log(LogLevel::Error, "❌ SrvDescriptorHeap is NULL in descriptor alloc callback.");
-        return;
-    }
-
-    ID3D12Device* dev = info->Device;
-    if (!dev)
-    {
-        Logger::Log(LogLevel::Error, "❌ Device is NULL in descriptor alloc callback.");
-        return;
-    }
-
-    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    // Slot 0 is reserved for the ImGui font SRV.
-    if (g_SRVDescriptorIndex == 0)
-        g_SRVDescriptorIndex = 1;
-
-    const D3D12_DESCRIPTOR_HEAP_DESC heapDesc = info->SrvDescriptorHeap->GetDesc();
-    if (heapDesc.NumDescriptors == 0)
-    {
-        Logger::Log(LogLevel::Error, "❌ SRV heap has 0 descriptors in descriptor alloc callback.");
-        *out_cpu_handle = {};
-        *out_gpu_handle = {};
-        return;
-    }
-
-    // Prevent overflow. If we hand out an out-of-range descriptor, ImGui may sample garbage (e.g. font atlas)
-    // or hit DEVICE_HUNG. Keep it strict.
-    if (g_SRVDescriptorIndex >= heapDesc.NumDescriptors)
-    {
-        Logger::Log(LogLevel::Error, std::format(
-            "❌ SRV heap exhausted: requested index {} but heap has {} descriptors. Increase imgui heap size.",
-            g_SRVDescriptorIndex, heapDesc.NumDescriptors));
-        *out_cpu_handle = {};
-        *out_gpu_handle = {};
-        return;
-    }
-
-    const UINT index = g_SRVDescriptorIndex++;
-
-    D3D12_CPU_DESCRIPTOR_HANDLE cpu = info->SrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
-    D3D12_GPU_DESCRIPTOR_HANDLE gpu = info->SrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
-    cpu.ptr += (SIZE_T)index * (SIZE_T)inc;
-    gpu.ptr += (UINT64)index * (UINT64)inc;
-
-    *out_cpu_handle = cpu;
-    *out_gpu_handle = gpu;
-}
-
-static void ImGui_SrvDescriptorFree(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle)
-{
-    // 🔄 Add pooling or reuse logic here later if needed
-}
-
-//==================================================
-// Cache ImGui Resources Function
-//==================================================
-void Graphics::CacheImGuiResources(ID3D12Device* inDevice, ID3D12DescriptorHeap* inHeap)
-{
-    if (!inDevice || !inHeap)
-    {
-        Logger::Log(LogLevel::Error,
-            "❌ CacheImGuiResources called with null ImGui device or heap!");
-        return;
-    }
-
-    this->imguiDevice = inDevice;   // non-owning
-    this->imguiSrvHeap = inHeap;    // non-owning
-
-    // Keep the SRV allocator targeting ImGui's heap.
-    g_SRVHeap = inHeap;
-
-    Logger::Log(LogLevel::Info, "✅ Cached ImGui GPU resources (non-owning)");
-    Logger::Log(LogLevel::Info,
-        std::string("🧪 Cached ImGui refs | imguiDevice=") + std::to_string((uintptr_t)this->imguiDevice) +
-        std::string(" imguiSrvHeap=") + std::to_string((uintptr_t)this->imguiSrvHeap));
-}
-
-//==================================================
-// On ImGui Ready Event Function
-//==================================================
-void Graphics::OnImGuiReady()
-{
-    if (imguiReadyPublished)
-        return;
-
-    imguiReadyPublished = true;
-    Logger::Log(LogLevel::Info, "✅ Graphics::OnImGuiReady — GPU resources published");
-}
-
-// ===========================================================
-// Safe Release Resource Function
-// ===========================================================
-void Graphics::SafeReleaseResource(Microsoft::WRL::ComPtr<ID3D12Resource>& resource, bool logNullRelease)
-{
-    if (resource)
-    {
-        uintptr_t address = reinterpret_cast<uintptr_t>(resource.Get());
-        Logger::Log(LogLevel::Info, std::format("🔄 [Resource] Releasing GPU Resource at 0x{:X}", address));
-        resource.Reset();
-        Logger::Log(LogLevel::Info, "✅ [Resource] GPU Resource Released Successfully.");
-    }
-    else if (logNullRelease)
-    {
-        Logger::Log(LogLevel::Debug, "ℹ️ [Resource] SafeReleaseResource: NULL pointer detected (already released or never created).");
-    }
-}
-
-// ===========================================================
-// Recover From Fence Error Function
-// ===========================================================
-void Graphics::RecoverFromFenceError()
-{
-    Logger::Log(LogLevel::Warning, "⚠️ WARNING: Fence error detected. Recreating fence...");
-
-    if (!device)
-        throw std::runtime_error("Device is null in RecoverFromFenceError");
-
-    fence.Reset();
-
-    HRESULT hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to recreate Fence! HRESULT: " + std::to_string(hr));
-        throw std::runtime_error("Fence recreation failed!");
-    }
-
-    fenceValue = 1;
-    if (commandQueue)
-        commandQueue->Signal(fence.Get(), fenceValue);
-
-    Logger::Log(LogLevel::Info, "✅ Fence reinitialized successfully. Resetting GPU sync...");
-}
-
-//==================================================
-// Get Instance Function (Singleton Pattern)
-//==================================================
-Graphics& Graphics::GetInstance()
-{
-    static Graphics instance;
-
-    static bool logged = false;
-    if (!logged)
-    {
-        Logger::Log(LogLevel::Info,
-            std::format("🧠 Graphics singleton instance @ {}", (void*)&instance));
-        logged = true;
-    }
-
-    return instance;
-}
-
-void Graphics::OnResize(HWND hWnd, UINT width, UINT height)
-{
-    (void)hWnd;
-    screenWidth = width;
-    screenHeight = height;
-    Logger::Log(LogLevel::Info, std::format(
-        "📐 Graphics OnResize called: New Size = {}x{}",
-		screenWidth, screenHeight));
-}
-
-//==================================================
-// Get Device Function
-//==================================================
-ID3D12Device* Graphics::GetDevice() const
-{
-    return device.Get();
-}
-
-//==================================================
-// Get ImGui Device Function
-//==================================================
-ID3D12Device* Graphics::GetImGuiDevice() const
-{
-    return this->imguiDevice;
-}
-
-//==================================================
-// Get ImGui SRV Heap Function
-//==================================================
-ID3D12DescriptorHeap* Graphics::GetImGuiSrvHeap() const
-{
-    return this->imguiSrvHeap;
-}
-
-//==================================================
-// Allocate SRV Function
-//==================================================
-D3D12_CPU_DESCRIPTOR_HANDLE Graphics::AllocateSRV()
-{
-    if (!g_SRVHeap)
-    {
-        Logger::Log(LogLevel::Error, "❌ g_SRVHeap is NULL in AllocateSRV.");
-        return {};
-    }
-
-    // Prefer cached ImGui device pointer (set in CacheImGuiResources)
-    ID3D12Device* dev = Graphics::GetInstance().GetImGuiDevice();
-    if (!dev)
-        dev = Graphics::GetInstance().GetDevice();
-
-    if (!dev)
-    {
-        Logger::Log(LogLevel::Error, "❌ Device is NULL in AllocateSRV.");
-        return {};
-    }
-
-    const UINT descriptorSize = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    // Slot 0 is reserved for the ImGui font SRV.
-    if (g_SRVDescriptorIndex == 0)
-        g_SRVDescriptorIndex = 1;
-
-    D3D12_CPU_DESCRIPTOR_HANDLE handle = g_SRVHeap->GetCPUDescriptorHandleForHeapStart();
-    handle.ptr += static_cast<SIZE_T>(g_SRVDescriptorIndex) * static_cast<SIZE_T>(descriptorSize);
-    ++g_SRVDescriptorIndex;
-    return handle;
-}
-
-//==================================================
-// Post ImGui Init Fixes Function
-//==================================================
-void Graphics::PostImGuiInitFixes()
-{
-    ImGuiIO& io = ImGui::GetIO();
-    if (ImGui::GetMainViewport())
-        ImGui::GetMainViewport()->DpiScale = 1.0f;
-
-    if (!(io.FontGlobalScale > 0.0f && io.FontGlobalScale < 99.0f))
-    {
-        Logger::Log(LogLevel::Warning, "⚠️ ImGui FontGlobalScale out of bounds, resetting to 1.0f");
-        io.FontGlobalScale = 1.0f;
-    }
-    Logger::Log(LogLevel::Info, "✅ ImGui DPI scale and font scale verified.");
-}
-
-//==================================================
-// Setup ImGui Fonts and Scaling Function
-//==================================================
-void Graphics::SetupImGuiFontsAndScaling(HWND hWnd)
-{
-    if (!ImGui::GetCurrentContext())
-    {
-        Logger::Log(LogLevel::Error, "❌ Cannot scale ImGui: no active context.");
-        return;
-    }
-
-    ImGuiIO& io = ImGui::GetIO();
-
-    HMONITOR monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
-    UINT dpiX = 96, dpiY = 96;
-    float scale = 1.0f;
-
-    if (SUCCEEDED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) && dpiX > 0)
-        scale = std::clamp(static_cast<float>(dpiX) / 96.0f, 0.5f, 2.0f);
-
-    // Rounding might be needed if the monitor DPI is exotic (not a whole multiple of 96).
-    scale = std::round(scale * 10.0f) / 10.0f;
-
-    // IMPORTANT: avoid accumulating scaling. This function can be called multiple times.
-    // Reset style to a known baseline before applying scaled sizes.
-    ImGui::StyleColorsDark();
-
-    io.Fonts->Clear();
-    ImFontConfig fontCfg;
-    fontCfg.SizePixels = 16.0f * scale;
-    io.Fonts->AddFontDefault(&fontCfg);
-
-    // Merge Font Awesome (optional). If missing, we keep running and fall back to text labels.
-    {
-        ImGuiIO& io = ImGui::GetIO();
-        ImFontConfig config;
-        config.MergeMode = true;
-        config.PixelSnapH = true;
-        static const ImWchar ranges[] = { 0xf000, 0xf8ff, 0 };
-        const float iconSize = fontCfg.SizePixels;
-        io.Fonts->AddFontFromFileTTF("Assets/Fonts/fa-solid-900.ttf", iconSize, &config, ranges);
-    }
-
-    // Render in pixel coords; keep framebuffer scale at 1 to avoid "zoom/crop".
-    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
-
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.ScaleAllSizes(scale);
-    style.Alpha = std::clamp(style.Alpha, 0.0f, 1.0f);
-
-    io.FontGlobalScale = 1.0f;
-
-    io.Fonts->Build();
-
-    Logger::Log(LogLevel::Info, std::format("🖋️ ImGui scale set to {:.2f}, font size {:.1f}px", scale, fontCfg.SizePixels));
-    Logger::Log(LogLevel::Debug, "🔍 ImGui DisplayFramebufferScale.x: " + std::to_string(io.DisplayFramebufferScale.x));
-}
-
-//==================================================
-// Reload ImGui Font
-//==================================================
-void Graphics::ReloadImGuiFont(float fontSize)
-{
-    ImGuiIO& io = ImGui::GetIO();
-    if (io.Fonts->Locked)
-    {
-        Logger::Log(LogLevel::Warning, std::format("⚠️ Font atlas is locked. Deferring reload to next frame (size: {:.1f})", fontSize));
-        pendingFontSizeReload = fontSize;
-        return;
-    }
-
-    io.Fonts->Clear();
-
-    ImFontConfig config;
-    config.SizePixels = fontSize;
-
-    io.Fonts->AddFontDefault(&config);
-    io.Fonts->Build();
-
-    // Merge Font Awesome (optional). If missing, we keep running and fall back to text labels.
-    {
-        ImGuiIO& io = ImGui::GetIO();
-        ImFontConfig config;
-        config.MergeMode = true;
-        config.PixelSnapH = true;
-        static const ImWchar ranges[] = { 0xf000, 0xf8ff, 0 };
-        const float iconSize = fontSize;
-        io.Fonts->AddFontFromFileTTF("Assets/Fonts/fa-solid-900.ttf", iconSize, &config, ranges);
-    }
-
-    Logger::Log(LogLevel::Info, std::format("🔁 Font reloaded immediately (size: {:.1f}px)", fontSize));
-
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.Alpha = std::clamp(style.Alpha, 0.0f, 1.0f);
-}
-
-//==================================================
-// Create Render Target Views Function
-//==================================================
-void Graphics::CreateRenderTargetViews()
-{
-    Logger::Log(LogLevel::Info, "Creating Render Target Views...");
-
-    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = 64;
-    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-
-    DX_CHECK(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtvHeap)));
-    rtvHeap->SetName(L"MainRTVHeap");
-
-    rtvDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    Logger::Log(LogLevel::Info, std::format("📏 RTV Descriptor Size: {}", rtvDescriptorSize));
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart());
-
-    for (UINT i = 0; i < NUM_BACK_BUFFERS; i++)
-    {
-        DX_CHECK(swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i])));
-        device->CreateRenderTargetView(backBuffers[i].Get(), nullptr, rtvHandle);
-        rtvHandle.Offset(1, rtvDescriptorSize);
-    }
-
-    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
-
-    Logger::Log(LogLevel::Info, std::format("🔗 Stored RTV Descriptor Heap: 0x{:X}", reinterpret_cast<size_t>(rtvHeap.Get())));
-}
-
-//==================================================
-// Offscreen Scene Panel Render Target
-//==================================================
-void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
-{
-    if (!device || !imguiHeap)
-        return;
-
-    // If we need to resize while recording, defer (don't Flush/Reset mid-list).
-    if (commandListOpen)
-    {
-        width = (std::max)(1u, width);
-        height = (std::max)(1u, height);
-        pendingSceneRTW = width;
-        pendingSceneRTH = height;
-        pendingSceneRTResize = true;
-        return;
-    }
-
-    if (sceneRenderTarget && sceneRTWidth == width && sceneRTHeight == height)
-        return;
-
-    // If resizing/recreating, ensure GPU is idle (keeps this simple and safe).
-    FlushGPU();
-
-    // Phase 1A: enqueue old resources so release is safe on future non-flush paths.
-    EnqueueDeferredRelease(sceneRenderTarget);
-    EnqueueDeferredRelease(sceneDepth);
-    EnqueueDeferredRelease(sceneTriangleVB);
-    EnqueueDeferredRelease(sceneGridVB);
-    EnqueueDeferredRelease(sceneAxesVB);
-    EnqueueDeferredRelease(sceneCB);
-    EnqueueDeferredRelease(sceneTrianglePSO);
-    EnqueueDeferredRelease(sceneGridPSO);
-    EnqueueDeferredRelease(sceneRootSignature);
-
-    sceneRtvHeap.Reset();
-    sceneImGuiTextureID = (ImTextureID)0;
-    sceneSrvCpu = {};
-    sceneSrvGpu = {};
-    sceneRtvHandle = {};
-    sceneRTWidth = 0;
-    sceneRTHeight = 0;
-    sceneRTState = D3D12_RESOURCE_STATE_COMMON;
-
-    EnqueueDeferredRelease(sceneDepth);
-    sceneDsvHeap.Reset();
-    sceneDsvHandle = {};
-    sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
-
-    sceneCBPtr = nullptr;
-
-    // Create the offscreen texture (render target)
-    D3D12_RESOURCE_DESC texDesc = {};
-    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Alignment = 0;
-    texDesc.Width = width;
-    texDesc.Height = height;
-    texDesc.DepthOrArraySize = 1;
-    texDesc.MipLevels = 1;
-    texDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.SampleDesc.Quality = 0;
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-
-    D3D12_CLEAR_VALUE clearValue = {};
-    clearValue.Format = texDesc.Format;
-    clearValue.Color[0] = 0.10f;
-    clearValue.Color[1] = 0.10f;
-    clearValue.Color[2] = 0.12f;
-    clearValue.Color[3] = 1.0f;
-
-    CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
-    HRESULT hr = device->CreateCommittedResource(
-        &heapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &texDesc,
-        D3D12_RESOURCE_STATE_COMMON,
-        &clearValue,
-        IID_PPV_ARGS(&sceneRenderTarget));
-
-    if (FAILED(hr) || !sceneRenderTarget)
-    {
-        Logger::Log(LogLevel::Error, std::format("❌ Failed to create Scene render target. HR=0x{:08X}", (UINT)hr));
-        return;
-    }
-
-    sceneRenderTarget->SetName(L"SceneRenderTarget");
-
-    // RTV heap for the scene render target (CPU-only)
-    D3D12_DESCRIPTOR_HEAP_DESC rtvDesc = {};
-    rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    rtvDesc.NumDescriptors = 1;
-    rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-
-    hr = device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&sceneRtvHeap));
-    if (FAILED(hr) || !sceneRtvHeap)
-    {
-        Logger::Log(LogLevel::Error, std::format("❌ Failed to create Scene RTV heap. HR=0x{:08X}", (UINT)hr));
-        sceneRenderTarget.Reset();
-        return;
-    }
-    sceneRtvHeap->SetName(L"SceneRTVHeap");
-
-    sceneRtvHandle = sceneRtvHeap->GetCPUDescriptorHandleForHeapStart();
-    device->CreateRenderTargetView(sceneRenderTarget.Get(), nullptr, sceneRtvHandle);
-
-    // SRV descriptor in ImGui heap (shader-visible)
-    // NOTE: Allocate the SRV slot once and reuse it across resizes to avoid descriptor exhaustion.
-    ID3D12Device* dev = GetImGuiDevice();
-    if (!dev)
-        dev = device.Get();
-
-    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    if (sceneSrvCpu.ptr == 0)
-    {
-        sceneSrvCpu = Graphics::AllocateSRV();
-        if (sceneSrvCpu.ptr == 0)
-        {
-            Logger::Log(LogLevel::Error, "❌ Failed to allocate SRV for Scene render target (sceneSrvCpu=0)");
-            return;
-        }
-
-        // Compute GPU handle for the same slot used by AllocateSRV().
-        // AllocateSRV increments g_SRVDescriptorIndex after assigning; so current slot is (g_SRVDescriptorIndex - 1).
-        sceneSrvGpu = imguiHeap->GetGPUDescriptorHandleForHeapStart();
-        sceneSrvGpu.ptr += (UINT64)(g_SRVDescriptorIndex - 1) * (UINT64)inc;
-
-        // ImGui expects ImTextureID to reference a GPU descriptor handle (DX12 backend convention).
-        sceneImGuiTextureID = (ImTextureID)sceneSrvGpu.ptr;
-    }
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = texDesc.Format;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Texture2D.MipLevels = 1;
-
-    device->CreateShaderResourceView(sceneRenderTarget.Get(), &srvDesc, sceneSrvCpu);
-
-    // ---- Scene depth buffer (D32_FLOAT) ----
-    {
-        D3D12_RESOURCE_DESC depthDesc = {};
-        depthDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        depthDesc.Alignment = 0;
-        depthDesc.Width = width;
-        depthDesc.Height = height;
-        depthDesc.DepthOrArraySize = 1;
-        depthDesc.MipLevels = 1;
-        depthDesc.Format = DXGI_FORMAT_D32_FLOAT;
-        depthDesc.SampleDesc.Count = 1;
-        depthDesc.SampleDesc.Quality = 0;
-        depthDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        depthDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-
-        D3D12_CLEAR_VALUE depthClear = {};
-        depthClear.Format = DXGI_FORMAT_D32_FLOAT;
-        depthClear.DepthStencil.Depth = 1.0f;
-        depthClear.DepthStencil.Stencil = 0;
-
-        CD3DX12_HEAP_PROPERTIES depthHeap(D3D12_HEAP_TYPE_DEFAULT);
-        DX_CHECK(device->CreateCommittedResource(
-            &depthHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &depthDesc,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            &depthClear,
-            IID_PPV_ARGS(&sceneDepth)));
-
-        sceneDepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-
-        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
-        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-        dsvHeapDesc.NumDescriptors = 1;
-        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        DX_CHECK(device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&sceneDsvHeap)));
-
-        sceneDsvHandle = sceneDsvHeap->GetCPUDescriptorHandleForHeapStart();
-
-        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
-        dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
-        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-        dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
-        dsvDesc.Texture2D.MipSlice = 0;
-
-        device->CreateDepthStencilView(sceneDepth.Get(), &dsvDesc, sceneDsvHandle);
-    }
-
-    sceneRTWidth = width;
-    sceneRTHeight = height;
-
-    // When recreating or creating the scene SRV, log the CPU/GPU descriptor handles.
-    // (This verifies the descriptor slot ImGui will sample from.)
-    if (SceneDiag_ShouldLog())
-    {
-        Logger::Log(LogLevel::Debug, std::format(
-            "[SceneDiag] EnsureSceneRenderTarget: Scene SRV handles cpu=0x{:X} gpu=0x{:X} rt={}x{}",
-            (UINT64)sceneSrvCpu.ptr, (UINT64)sceneSrvGpu.ptr, sceneRTWidth, sceneRTHeight));
-    }
-}
-
-void Graphics::EnsureScenePipeline()
-{
-    // Create root signature if missing
-    if (!sceneRootSignature)
-    {
-        if (!device)
-            return;
-
-        // Root signature: slot 0 = CBV(b0) visible to VS/PS.
-        CD3DX12_ROOT_PARAMETER rp[1]{};
-        rp[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
-
-        CD3DX12_ROOT_SIGNATURE_DESC rsDesc{};
-        rsDesc.Init(_countof(rp), rp, 0, nullptr,
-            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-
-        Microsoft::WRL::ComPtr<ID3DBlob> sig;
-        Microsoft::WRL::ComPtr<ID3DBlob> err;
-        HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1,
-            sig.GetAddressOf(), err.GetAddressOf());
-        if (FAILED(hr))
-        {
-            if (err)
-            {
-                const char* msg = (const char*)err->GetBufferPointer();
-                Logger::Log(LogLevel::Error, std::format("❌ Scene root signature serialize failed: {}", msg ? msg : "<no message>"));
-            }
-            else
-            {
-                Logger::Log(LogLevel::Error, std::format("❌ Scene root signature serialize failed. HR=0x{:08X}", (UINT)hr));
-            }
-            return;
-        }
-
-        DX_CHECK(device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&sceneRootSignature)));
-        sceneRootSignature->SetName(L"SceneRootSignature");
-    }
-
-    if (sceneTrianglePSO && sceneGridPSO && sceneCB)
-    {
-        // Ensure our CB is mapped even if PSOs already exist.
-        if (sceneCB && sceneCBPtr == nullptr)
-        {
-            CD3DX12_RANGE range(0, 0);
-            void* p = nullptr;
-            HRESULT hr = sceneCB->Map(0, &range, &p);
-            if (SUCCEEDED(hr))
-                sceneCBPtr = p;
+            loggedDeferredResizeBeforeFirstPresent = true;
+            Logger::Log(LogLevel::Info, "ℹ️ Resize deferred — waiting for first Present");
         }
         return;
     }
 
-    if (!device)
-        return;
+    const UINT w = pendingWidth;
+    const UINT h = pendingHeight;
+    pendingResize = false;
 
-    // Compile shaders at runtime (so we don't depend on vcxproj FxCompile)
-    // Use SM5.0 for widest compatibility with FXC/D3DCompile toolchains.
-    auto triVS = CompileShaderFromRelativeFile(L"shaders\\scene_triangle_vs.hlsl", "main", "vs_5_0");
-    auto triPS = CompileShaderFromRelativeFile(L"shaders\\scene_triangle_ps.hlsl", "main", "ps_5_0");
-    auto gridVS = CompileShaderFromRelativeFile(L"shaders\\scene_grid_vs.hlsl", "main", "vs_5_0");
-    auto gridPS = CompileShaderFromRelativeFile(L"shaders\\scene_grid_ps.hlsl", "main", "ps_5_0");
+    HandleResize(hWnd);
 
-    D3D12_INPUT_ELEMENT_DESC layout[] = {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
-    pso.pRootSignature = sceneRootSignature.Get();
-    pso.InputLayout = { layout, _countof(layout) };
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso.VS = { triVS->GetBufferPointer(), triVS->GetBufferSize() };
-    pso.PS = { triPS->GetBufferPointer(), triPS->GetBufferSize() };
-    pso.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    pso.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    pso.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    pso.DepthStencilState.DepthEnable = TRUE;
-    pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    pso.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    pso.DepthStencilState.StencilEnable = FALSE;
-    pso.SampleMask = UINT_MAX;
-    pso.NumRenderTargets = 1;
-    pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    pso.SampleDesc.Count = 1;
-
-    if (!sceneTrianglePSO)
-        DX_CHECK(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&sceneTrianglePSO)));
-
-    // Grid PSO: line list + alpha blending
-    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
-    pso.VS = { gridVS->GetBufferPointer(), gridVS->GetBufferSize() };
-    pso.PS = { gridPS->GetBufferPointer(), gridPS->GetBufferSize() };
-
-    // Alpha blending for grid
-    D3D12_BLEND_DESC bs = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    bs.RenderTarget[0].BlendEnable = TRUE;
-    bs.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
-    bs.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-    bs.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-    bs.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-    bs.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-    bs.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    bs.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    pso.BlendState = bs;
-
-    if (!sceneGridPSO)
-        DX_CHECK(device->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&sceneGridPSO)));
-
-    // Constant buffer (persistently mapped)
-    if (!sceneCB)
-    {
-        const UINT cbSize = (UINT)((sizeof(SceneCBData) + 255) & ~255u);
-        CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC buf = CD3DX12_RESOURCE_DESC::Buffer(cbSize);
-        DX_CHECK(device->CreateCommittedResource(
-            &heap,
-            D3D12_HEAP_FLAG_NONE,
-            &buf,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(&sceneCB)));
-        sceneCB->SetName(L"SceneCB");
-    }
-
-    if (sceneCB && sceneCBPtr == nullptr)
-    {
-        CD3DX12_RANGE range(0, 0);
-        void* p = nullptr;
-        HRESULT hr = sceneCB->Map(0, &range, &p);
-        if (SUCCEEDED(hr))
-        {
-            sceneCBPtr = p;
-        }
-        else
-        {
-            Logger::Log(LogLevel::Error, std::format("❌ Failed to map SceneCB. HR=0x{:08X}", (UINT)hr));
-            sceneCBPtr = nullptr;
-        }
-    }
+    Logger::Log(LogLevel::Info, std::format("✅ Swapchain resize applied: {}x{}", w, h));
 }
 
-void Graphics::EnsureSceneGeometry()
+//===============================================
+// Process Pending Scene Render Target Resize Function
+//===============================================
+// Checks and applies any pending resize for the scene render target
+// This is separate from the swap chain resize
+// Ensures the scene render target matches the current window size
+//===============================================
+void Graphics::ProcessPendingSceneRenderTargetResize()
 {
-    // Triangle VB is mode-independent, grid/axes depend on view mode.
-    // IMPORTANT:
-    // ViewMode switches (3D <-> 2D) must NOT rebuild geometry while the main command list is recording.
-    // Releasing/recreating VBs while the GPU may still reference them can lead to DEVICE_HUNG.
-    const ViewMode vm = GetViewMode();
-    const bool viewModeChanged = (g_LastSceneGridBuiltViewMode != vm);
-
-    if (viewModeChanged && commandListOpen)
-    {
-        // Defer rebuild to a safe point (next frame, before recording starts).
-        static ViewMode s_lastDeferredLogged = ViewMode::Mode3D;
-        if (s_lastDeferredLogged != vm)
-        {
-            s_lastDeferredLogged = vm;
-            Logger::Log(LogLevel::Info, "🔄 ViewMode changed → deferring scene geometry rebuild until safe point");
-        }
-        return;
-    }
-
-#ifndef NDEBUG
-    // If we are about to rebuild (view mode changed), we should never be doing it while recording.
-    if (viewModeChanged)
-        assert(!commandListOpen && "Scene geometry rebuild attempted during active command list");
-#endif
-
-    if (sceneTriangleVB && sceneGridVB && sceneAxesVB && !viewModeChanged)
+    if (!pendingSceneRTResize)
         return;
 
-    if (!device)
-        return;
+    const UINT w = pendingSceneRTW;
+    const UINT h = pendingSceneRTH;
 
-    // On a view-mode swap, keep it conservative and ensure the GPU is idle before rebuilding.
-    if (viewModeChanged)
-        FlushGPU();
-
-    if (!sceneTriangleVB)
-    {
-        SceneVertex tri[3] = {
-            { { 0.0f,  0.25f, 0.0f }, { 1.0f, 0.25f, 0.25f, 1.0f } },
-            { { 0.25f, -0.25f, 0.0f }, { 0.25f, 1.0f, 0.25f, 1.0f } },
-            { { -0.25f, -0.25f, 0.0f }, { 0.25f, 0.25f, 1.0f, 1.0f } },
-        };
-
-        const UINT size = (UINT)sizeof(tri);
-        CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC buf = CD3DX12_RESOURCE_DESC::Buffer(size);
-        DX_CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&sceneTriangleVB)));
-
-        void* p = nullptr;
-        CD3DX12_RANGE r(0, 0);
-        DX_CHECK(sceneTriangleVB->Map(0, &r, &p));
-        memcpy(p, tri, size);
-        sceneTriangleVB->Unmap(0, nullptr);
-
-        sceneTriangleVBV.BufferLocation = sceneTriangleVB->GetGPUVirtualAddress();
-        sceneTriangleVBV.SizeInBytes = size;
-        sceneTriangleVBV.StrideInBytes = sizeof(SceneVertex);
-    }
-
-    // Axes VB: rebuild if missing OR if view mode changed (2D uses XY axes, 3D uses XYZ)
-    if (!sceneAxesVB || g_LastSceneGridBuiltViewMode != GetViewMode())
-    {
-        sceneAxesVB.Reset();
-
-        const bool mode3D = (GetViewMode() == ViewMode::Mode3D);
-
-        std::vector<SceneVertex> a;
-        a.reserve(mode3D ? 6 : 4);
-
-        // X axis (red)
-        a.push_back({ { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.15f, 0.15f, 1.0f } });
-        a.push_back({ { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.15f, 0.15f, 1.0f } });
-
-        // Y axis (green)
-        a.push_back({ { 0.0f, 0.0f, 0.0f }, { 0.15f, 1.0f, 0.15f, 1.0f } });
-        a.push_back({ { 0.0f, 1.0f, 0.0f }, { 0.15f, 1.0f, 0.15f, 1.0f } });
-
-        if (mode3D)
-        {
-            // Z axis (blue)
-            a.push_back({ { 0.0f, 0.0f, 0.0f }, { 0.25f, 0.35f, 1.0f, 1.0f } });
-            a.push_back({ { 0.0f, 0.0f, 1.0f }, { 0.25f, 0.35f, 1.0f, 1.0f } });
-        }
-
-        sceneAxesVertexCount = (UINT)a.size();
-        const UINT size = (UINT)(a.size() * sizeof(SceneVertex));
-
-        CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC buf = CD3DX12_RESOURCE_DESC::Buffer(size);
-        DX_CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&sceneAxesVB)));
-
-        void* p = nullptr;
-        CD3DX12_RANGE r(0, 0);
-        DX_CHECK(sceneAxesVB->Map(0, &r, &p));
-        memcpy(p, a.data(), size);
-        sceneAxesVB->Unmap(0, nullptr);
-
-        sceneAxesVBV.BufferLocation = sceneAxesVB->GetGPUVirtualAddress();
-        sceneAxesVBV.SizeInBytes = size;
-        sceneAxesVBV.StrideInBytes = sizeof(SceneVertex);
-    }
-
-    // Rebuild grid VB if not created yet OR if view mode changed (orientation swap)
-    if (!sceneGridVB || g_LastSceneGridBuiltViewMode != GetViewMode())
-    {
-        sceneGridVB.Reset();
-
-        const int half = 50;
-        const float spacing = 1.0f;
-
-        std::vector<SceneVertex> v;
-        v.reserve(static_cast<size_t>((half * 2 + 1) * 4));
-
-        const bool mode3D = (GetViewMode() == ViewMode::Mode3D);
-        g_LastSceneGridBuiltViewMode = GetViewMode();
-
-        for (int i = -half; i <= half; ++i)
-        {
-            const float k = (float)i * spacing;
-            const bool major = (i % 10) == 0;
-            const float a = major ? 0.55f : 0.25f;
-            const float c = major ? 0.55f : 0.35f;
-            const float col[4] = { c, c, c, a };
-
-            if (mode3D)
-            {
-                // XZ grid at Y=0
-                const float y = 0.0f;
-
-                // line parallel X (vary Z)
-                v.push_back({ { -half * spacing, y, k }, { col[0], col[1], col[2], col[3] } });
-                v.push_back({ {  half * spacing, y, k }, { col[0], col[1], col[2], col[3] } });
-
-                // line parallel Z (vary X)
-                v.push_back({ { k, y, -half * spacing }, { col[0], col[1], col[2], col[3] } });
-                v.push_back({ { k, y,  half * spacing }, { col[0], col[1], col[2], col[3] } });
-            }
-            else
-            {
-                // XY grid at Z=0
-                const float z = 0.0f;
-
-                // line parallel X (vary Y)
-                v.push_back({ { -half * spacing, k, z }, { col[0], col[1], col[2], col[3] } });
-                v.push_back({ {  half * spacing, k, z }, { col[0], col[1], col[2], col[3] } });
-
-                // line parallel Y (vary X)
-                v.push_back({ { k, -half * spacing, z }, { col[0], col[1], col[2], col[3] } });
-                v.push_back({ { k,  half * spacing, z }, { col[0], col[1], col[2], col[3] } });
-            }
-        }
-
-        sceneGridVertexCount = (UINT)v.size();
-        const UINT size = (UINT)(v.size() * sizeof(SceneVertex));
-
-        CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC buf = CD3DX12_RESOURCE_DESC::Buffer(size);
-        DX_CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buf, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&sceneGridVB)));
-
-        void* p = nullptr;
-        CD3DX12_RANGE r(0, 0);
-        DX_CHECK(sceneGridVB->Map(0, &r, &p));
-        memcpy(p, v.data(), size);
-        sceneGridVB->Unmap(0, nullptr);
-
-        sceneGridVBV.BufferLocation = sceneGridVB->GetGPUVirtualAddress();
-        sceneGridVBV.SizeInBytes = size;
-        sceneGridVBV.StrideInBytes = sizeof(SceneVertex);
-    }
+    pendingSceneRTResize = false;
+    EnsureSceneRenderTarget(w, h);
 }
 
-void Graphics::RenderSceneToTarget()
+void Graphics::HandleResize(HWND hWnd)
 {
-    ++g_SceneDiag_Frame;
-
-    // Ensure pipeline + geometry exist before any CB update.
-    EnsureScenePipeline();
-    EnsureSceneGeometry();
-
-    const bool wantLog = SceneDiag_ShouldLog();
-
-    // Skip rendering if command list or device is not ready
-    if (!commandListOpen || !commandList || !device)
-    {
-        if (wantLog)
-            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: command list or device not ready");
-        return;
-    }
-
-    // Skip rendering if render target or depth stencil view is not ready
-    if (!sceneRenderTarget || !sceneDepth || sceneDsvHandle.ptr == 0)
-    {
-        if (wantLog)
-            Logger::Log(LogLevel::Warning, "[SceneDiag] RenderSceneToTarget early-return: sceneRenderTarget or sceneDepth/DSV not ready");
-        return;
-    }
-
-    // Guard against zero/invalid RT sizes (can occur during layout transitions / first frame after docking changes).
-    if (sceneRTWidth < 1 || sceneRTHeight < 1)
-    {
-        if (wantLog)
-            Logger::Log(LogLevel::Warning, std::format(
-                "[SceneDiag] RenderSceneToTarget early-return: invalid RT size {}x{}", sceneRTWidth, sceneRTHeight));
-        return;
-    }
-
-    // Transition to render target
-    if (sceneRTState != D3D12_RESOURCE_STATE_RENDER_TARGET)
-    {
-        CD3DX12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(sceneRenderTarget.Get(), sceneRTState, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        commandList->ResourceBarrier(1, &toRT);
-        sceneRTState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    }
-
-    // Ensure depth is writable
-    if (sceneDepthState != D3D12_RESOURCE_STATE_DEPTH_WRITE)
-    {
-        CD3DX12_RESOURCE_BARRIER toDepth = CD3DX12_RESOURCE_BARRIER::Transition(sceneDepth.Get(), sceneDepthState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        commandList->ResourceBarrier(1, &toDepth);
-        sceneDepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    }
-
-    // Bind RTV + DSV
-    commandList->OMSetRenderTargets(1, &sceneRtvHandle, FALSE, &sceneDsvHandle);
-
-    // Set viewport/scissor
-    D3D12_VIEWPORT vp = {};
-    vp.TopLeftX = 0.0f;
-    vp.TopLeftY = 0.0f;
-    vp.Width = (float)sceneRTWidth;
-    vp.Height = (float)sceneRTHeight;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-
-    D3D12_RECT sc = { 0, 0, (LONG)sceneRTWidth, (LONG)sceneRTHeight };
-    commandList->RSSetViewports(1, &vp);
-    commandList->RSSetScissorRects(1, &sc);
-
-    // Clear (locked neutral background)
-    const float clearColor[4] = { 0.10f, 0.10f, 0.12f, 1.0f };
-    commandList->ClearRenderTargetView(sceneRtvHandle, clearColor, 0, nullptr);
-    commandList->ClearDepthStencilView(sceneDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
-    // Update constant buffer (SceneCamera)
-    using namespace DirectX;
-
-    const float aspect = (sceneRTHeight > 0) ? (static_cast<float>(sceneRTWidth) / static_cast<float>(sceneRTHeight)) : 1.0f;
-
-    const XMMATRIX view = sceneCamera.GetView();
-    const XMMATRIX proj = (GetViewMode() == ViewMode::Mode2D)
-        ? sceneCamera.GetOrthoProj(aspect)
-        : sceneCamera.GetProj(aspect);
-
-    const XMMATRIX vpM = XMMatrixTranspose(view * proj);
-    XMStoreFloat4x4(reinterpret_cast<XMFLOAT4X4*>(sceneCBData.viewProj), vpM);
-
-    // Camera position from inverse view matrix translation
-    const XMMATRIX invView = XMMatrixInverse(nullptr, view);
-    XMFLOAT4X4 invViewF;
-    XMStoreFloat4x4(&invViewF, invView);
-    sceneCBData.cameraPos[0] = invViewF._41;
-    sceneCBData.cameraPos[1] = invViewF._42;
-    sceneCBData.cameraPos[2] = invViewF._43;
-
-    sceneCBData.gridFadeDist = 30.0f;
-
-    if (!sceneCB || sceneCBPtr == nullptr)
-    {
-        if (wantLog)
-            Logger::Log(LogLevel::Warning, "[SceneDiag] SceneCB not ready/mapped; skipping scene draw this frame");
-        return;
-    }
-
-    memcpy(sceneCBPtr, &sceneCBData, sizeof(sceneCBData));
-
-    // After constant buffer update, log a few viewProj elements.
-    if (wantLog)
-    {
-        const float* m = sceneCBData.viewProj;
-        Logger::Log(LogLevel::Debug, std::format(
-            "[SceneDiag] CB viewProj sample: m00={:.4f} m01={:.4f} m10={:.4f} m11={:.4f} m22={:.4f} m33={:.4f}",
-            m[0], m[1], m[4], m[5], m[10], m[15]));
-    }
-
-    commandList->SetGraphicsRootSignature(sceneRootSignature.Get());
-    commandList->SetGraphicsRootConstantBufferView(0, sceneCB->GetGPUVirtualAddress());
-
-    // Draw grid
-    if (sceneGridPSO && sceneGridVB && sceneGridVertexCount > 0)
-    {
-        commandList->SetPipelineState(sceneGridPSO.Get());
-        commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-        commandList->IASetVertexBuffers(0, 1, &sceneGridVBV);
-        commandList->DrawInstanced(sceneGridVertexCount, 1, 0, 0);
-    }
-
-    // Draw axes (on top of grid)
-    if (sceneGridPSO && sceneAxesVB && sceneAxesVertexCount > 0)
-    {
-        commandList->SetPipelineState(sceneGridPSO.Get());
-        commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-        commandList->IASetVertexBuffers(0, 1, &sceneAxesVBV);
-        commandList->DrawInstanced(sceneAxesVertexCount, 1, 0, 0);
-    }
-
-    // Draw triangle
-    if (sceneTrianglePSO && sceneTriangleVB)
-    {
-        commandList->SetPipelineState(sceneTrianglePSO.Get());
-        commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        commandList->IASetVertexBuffers(0, 1, &sceneTriangleVBV);
-        commandList->DrawInstanced(3, 1, 0, 0);
-    }
-
-    // Transition to shader resource for ImGui sampling
-    CD3DX12_RESOURCE_BARRIER toSRV = CD3DX12_RESOURCE_BARRIER::Transition(
-        sceneRenderTarget.Get(),
-        sceneRTState,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    commandList->ResourceBarrier(1, &toSRV);
-    sceneRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-
-    if (wantLog)
-    {
-        Logger::Log(LogLevel::Debug, std::format(
-            "[SceneDiag] RenderSceneToTarget end: state={} (expected PIXEL_SHADER_RESOURCE); SceneSRV cpu=0x{:X} gpu=0x{:X}",
-            D3D12StateToString(sceneRTState),
-            (UINT64)sceneSrvCpu.ptr,
-            (UINT64)sceneSrvGpu.ptr));
-    }
+    // Existing engine uses deferred resize requests and applies them at the top of BeginFrame.
+    // `ApplyPendingResize()` contains the hasPresentedOnce gating.
+    ApplyPendingResize(hWnd);
 }
 
-// Unwind helper: if a frame is in a bad state, never return leaving the command list open.
-void Graphics::AbortFrame(const char* why)
+void Graphics::ProcessPendingFontReload()
 {
-    Logger::Log(LogLevel::Error, std::string("🚨 AbortFrame: ") + (why ? why : "<unknown>"));
+    if (!pendingFontReload)
+        return;
 
-    if (commandListOpen && commandList)
-    {
-        (void)commandList->Close();
-    }
+    if (!hasPresentedOnce)
+        return;
 
-    commandListOpen = false;
-    frameStarted = false;
-    ImGuiFrameStarted = false;
-    g_ImGuiRenderedThisFrame = false;
+    if (commandListOpen || frameStarted || ImGuiFrameStarted)
+        return;
+
+    const float sizePx = pendingFontPixelSize;
+    pendingFontReload = false;
+
+    ReloadImGuiFontImpl(sizePx, "<deferred>", 0);
 }

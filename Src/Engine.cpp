@@ -246,11 +246,9 @@ bool Engine::Initialize(HINSTANCE hInstance, int nCmdShow)
     Boot::SetStageProgress(1.0f, "Graphics ready");
 
     // 3. Initialize ImGui
+    // NOTE: ImGui is initialized inside `Graphics::Initialize()` once the swapchain/RTV heap is valid.
+    // Calling it again here can re-initialize backends and break frame ownership.
     Boot::SetStage("ImGui", 2);
-    Boot::SetStageProgress(0.2f, "Initializing UI...");
-    Boot::PushLine("🧠 Calibrating viewport anchors...", GetBootNowSeconds());
-    if (!graphics.InitializeImGui(hWnd))
-        return false;
     Boot::SetStageProgress(1.0f, "ImGui ready");
 
     // Load persisted docking/layout (no-op if missing)

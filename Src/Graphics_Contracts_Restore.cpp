@@ -6,64 +6,11 @@
 // (for example, after large refactors/experiments). Keeping these definitions
 // centralized prevents linker breakage.
 
-void Graphics::RequestResize(UINT width, UINT height)
-{
-    pendingWidth = width;
-    pendingHeight = height;
-    pendingResize = true;
-}
-
 void Graphics::HandleDeviceLost(HWND hWnd)
 {
     Logger::Log(LogLevel::Error, "? HandleDeviceLost called. Attempting full Graphics reset.");
     Shutdown();
     (void)Initialize(hWnd);
-}
-
-void Graphics::ApplyPendingResize(HWND hWnd)
-{
-    if (!pendingResize)
-        return;
-
-    if (commandListOpen)
-        return;
-
-    if (!swapChain || !device)
-        return;
-
-    if (pendingWidth == 0 || pendingHeight == 0)
-        return;
-
-    FlushGPU();
-
-    // Phase 1A: defer release of old backbuffers (future-proof even with FlushGPU).
-    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
-        EnqueueDeferredRelease(backBuffers[i]);
-
-    DXGI_SWAP_CHAIN_DESC desc{};
-    const HRESULT hrDesc = swapChain->GetDesc(&desc);
-    if (FAILED(hrDesc))
-    {
-        Logger::Log(LogLevel::Error, std::format("? ApplyPendingResize: swapChain->GetDesc failed HR=0x{:08X}", (UINT)hrDesc));
-        return;
-    }
-
-    const HRESULT hr = swapChain->ResizeBuffers(NUM_BACK_BUFFERS, pendingWidth, pendingHeight, desc.BufferDesc.Format, desc.Flags);
-    if (FAILED(hr))
-    {
-        Logger::Log(LogLevel::Error, std::format("? ApplyPendingResize: ResizeBuffers failed HR=0x{:08X}", (UINT)hr));
-        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
-            HandleDeviceLost(hWnd);
-        return;
-    }
-
-    screenWidth = (int)pendingWidth;
-    screenHeight = (int)pendingHeight;
-    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
-
-    CreateRenderTargetViews();
-
-    pendingResize = false;
 }
 
 void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height)
@@ -74,18 +21,6 @@ void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height)
     pendingSceneRTW = width;
     pendingSceneRTH = height;
     pendingSceneRTResize = true;
-}
-
-void Graphics::ProcessPendingSceneRenderTargetResize()
-{
-    if (!pendingSceneRTResize)
-        return;
-
-    if (commandListOpen)
-        return;
-
-    pendingSceneRTResize = false;
-    EnsureSceneRenderTarget(pendingSceneRTW, pendingSceneRTH);
 }
 
 void Graphics::ProcessDeferredReleases()
@@ -149,3 +84,61 @@ void Graphics::ProcessDeferredReleases()
     if (deferredReleases.size() > 5000)
         Logger::Log(LogLevel::Warning, "?? Deferred release queue is very large; possible lifetime leak.");
 }
+
+void Graphics::AbortFrame(const char* why)
+{
+    Logger::Log(LogLevel::Error, std::format("?? AbortFrame: {}", why ? why : "(unknown)"));
+
+    if (commandListOpen && commandList)
+        (void)commandList->Close();
+
+    commandListOpen = false;
+    frameStarted = false;
+    ImGuiFrameStarted = false;
+}
+
+void Graphics::CreateRenderTargetViews()
+{
+    if (!device || !swapChain)
+        return;
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.NumDescriptors = NUM_BACK_BUFFERS;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    rtvHeap.Reset();
+    HRESULT hr = device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtvHeap));
+    if (FAILED(hr) || !rtvHeap)
+    {
+        Logger::Log(LogLevel::Error, std::format("? CreateRenderTargetViews: CreateDescriptorHeap failed HR=0x{:08X}", (UINT)hr));
+        return;
+    }
+
+    const UINT rtvDescriptorSizeLocal = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    rtvDescriptorSize = rtvDescriptorSizeLocal;
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
+    {
+        backBuffers[i].Reset();
+        hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i]));
+        if (FAILED(hr) || !backBuffers[i])
+        {
+            Logger::Log(LogLevel::Error, std::format("? CreateRenderTargetViews: GetBuffer({}) failed HR=0x{:08X}", i, (UINT)hr));
+            return;
+        }
+
+        device->CreateRenderTargetView(backBuffers[i].Get(), nullptr, rtvHandle);
+        rtvHandle.Offset(1, rtvDescriptorSizeLocal);
+    }
+}
+
+// (removed) Graphics::Present(HWND) implementation now lives in `Src/Graphics.cpp`.
+
+// (removed) Graphics::SetupImGuiFontsAndScaling(HWND) implementation now lives in `Src/Graphics.cpp`.
+
+// (removed) Graphics::ReloadImGuiFont(float) implementation now lives in `Src/Graphics.cpp`.
+
+// (removed) Graphics::EnsureSceneRenderTarget(UINT, UINT) implementation now lives in `Src/Graphics.cpp`.
