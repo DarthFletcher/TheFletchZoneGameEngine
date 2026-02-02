@@ -1,6 +1,6 @@
 # TheFletchZoneGameEngine
 
-A custom DirectX 12 game engine written in C++.
+A Custom DirectX12 Game Engine Written In C++.
 
 ## Features
 - DirectX 12 rendering pipeline
