@@ -19,6 +19,8 @@ A custom DirectX 12 game engine written in C++.
 
 ## Status
 🚧 **Active Development**
+✅ Engine core stabilized (frame lifecycle, ImGui, logging)  
+🧱 Scene + shader system scaffolding in progress (Phase 3A)
 
 **Current Focus:** Core engine ownership and stability  
 The engine has recently completed a major internal restructuring to ensure:
