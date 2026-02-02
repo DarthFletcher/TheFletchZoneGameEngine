@@ -144,6 +144,12 @@
     <ClInclude Include="include\Components.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Include\ShaderCompiler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Include\Scene.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui_demo.cpp">
@@ -233,6 +239,18 @@
     <ClCompile Include="Src\SceneCamera.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Src\Graphics_Contracts_Restore.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Src\Graphics_Picking.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Src\ShaderCompiler.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Src\Scene.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="TheFletchZoneGameEngine.rc">
@@ -259,20 +277,22 @@
     <None Include="tools\FixSceneShaderBuildStep.ps1" />
     <None Include="tools\FixShaderBuildStep.ps1" />
     <None Include="TheFletchZoneGameEngine.vcxproj.new" />
+    <None Include="Directory.Build.props" />
+    <None Include="Docs\ShaderCompilationComplete.md" />
+    <None Include="Docs\ShaderCompilationQuickRef.md" />
+    <None Include="ENGINE_CONTRACT.md" />
+    <None Include="tools\CopyDXCDlls.bat">
+      <Filter>Source Files</Filter>
+    </None>
+    <None Include="shaders\debug_triangle.hlsl" />
+    <None Include="shaders\imgui_vs.hlsl" />
+    <None Include="shaders\imgui_ps.hlsl" />
+    <None Include="shaders\scene_grid_ps.hlsl" />
+    <None Include="shaders\scene_grid_vs.hlsl" />
+    <None Include="shaders\scene_triangle_ps.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />
-  </ItemGroup>
-  <ItemGroup>
-    <FxCompile Include="shaders\imgui_ps.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="shaders\imgui_vs.hlsl">
-      <Filter>Shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="shaders\scene_grid_ps.hlsl" />
-    <FxCompile Include="shaders\scene_grid_vs.hlsl" />
-    <FxCompile Include="shaders\scene_triangle_ps.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <Font Include="Assets\Fonts\DroidSans.ttf">

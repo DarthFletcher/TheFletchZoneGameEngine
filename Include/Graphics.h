@@ -26,6 +26,9 @@
 #include "SceneCamera.h"
 #include "EditorCommon.h"
 
+// Phase 3A: scene render scaffolding (logs only).
+#include "Scene.h"
+
 extern HWND mainHwnd;
 extern ID3D12DescriptorHeap* g_SRVHeap;
 
@@ -416,8 +419,6 @@ private:
     // Main swapchain has successfully presented at least once.
     bool hasPresentedOnce = false;
 };
-
-
 
 // Call-site tracing helper. Use everywhere instead of direct `ReloadImGuiFont()`.
 #ifndef RELOAD_IMGUI_FONT

@@ -31,30 +31,30 @@ IMGUI_IMPL_API void ImGui_ImplDX12_DestroyWindow(ImGuiViewport* viewport)
 
 IMGUI_IMPL_API void ImGui_ImplDX12_BeginRecovery()
 {
-    Logger::Log(LogLevel::Info, "?? ImGui DX12 Recovery Begin");
+    Logger::Log(LogLevel::Info, "ImGui DX12 Recovery Begin", "ImGuiDX12");
 }
 
 IMGUI_IMPL_API bool ImGui_ImplDX12_RecreatePipelineObjects()
 {
-    Logger::Log(LogLevel::Info, "?? ImGui DX12 RecreatePipelineObjects: not implemented");
+    Logger::Log(LogLevel::Info, "ImGui DX12 RecreatePipelineObjects: not implemented", "ImGuiDX12");
     return false;
 }
 
 IMGUI_IMPL_API bool ImGui_ImplDX12_RecreateFontTextures()
 {
-    Logger::Log(LogLevel::Info, "?? ImGui DX12 RecreateFontTextures: not implemented");
+    Logger::Log(LogLevel::Info, "ImGui DX12 RecreateFontTextures: not implemented", "ImGuiDX12");
     return false;
 }
 
 IMGUI_IMPL_API bool ImGui_ImplDX12_RecreateSwapChains()
 {
-    Logger::Log(LogLevel::Info, "?? ImGui DX12 RecreateSwapChains: not implemented");
+    Logger::Log(LogLevel::Info, "ImGui DX12 RecreateSwapChains: not implemented", "ImGuiDX12");
     return false;
 }
 
 IMGUI_IMPL_API void ImGui_ImplDX12_EndRecovery()
 {
-    Logger::Log(LogLevel::Info, "? ImGui DX12 Recovery Complete");
+    Logger::Log(LogLevel::Info, "ImGui DX12 Recovery Complete", "ImGuiDX12");
 }
 
 IMGUI_IMPL_API void ImGui_ImplDX12_UpdateWindow(ImGuiViewport* viewport)

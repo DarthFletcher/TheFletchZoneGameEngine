@@ -122,7 +122,7 @@ static std::string WStringToUTF8(const std::wstring& wstr)
 // ✅ Validate command queue globally when needed
 void Graphics::EnsureValidCommandQueue() {
     if (!commandQueue) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: commandQueue is NULL!");
+        Logger::Log(LogLevel::Error, "❌ ERROR: commandQueue is NULL!", "[DX12]");
         throw std::runtime_error("CommandQueue is NULL.");
     }
 }
@@ -152,7 +152,7 @@ Graphics::~Graphics() {
 
 void Graphics::ToggleVSync(bool enable) {
     Graphics::vsyncEnabled = enable;
-    Logger::Log(LogLevel::Info, "✅ VSync " + std::string(enable ? "Enabled" : "Disabled"));
+    Logger::Log(LogLevel::Info, "✅ VSync " + std::string(enable ? "Enabled" : "Disabled"), "[Core]");
 
     // Optional: recreate swap chain to ensure tearing settings apply properly
     // CreateSwapChain(hWnd, screenWidth, screenHeight);
@@ -168,9 +168,9 @@ void Graphics::ToggleVSync(bool enable) {
 
 std::future<void> Graphics::LoadTextureAsync(std::string filePath) {
     return std::async(std::launch::async, [filePath]() {
-        Logger::Log(LogLevel::Info, "🔄 Loading Texture: " + std::string(filePath.begin(), filePath.end()));
+        Logger::Log(LogLevel::Info, "🔄 Loading Texture: " + std::string(filePath.begin(), filePath.end()), "[Core]");
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        Logger::Log(LogLevel::Info, "✅ Texture Loaded: " + std::string(filePath.begin(), filePath.end()));
+        Logger::Log(LogLevel::Info, "✅ Texture Loaded: " + std::string(filePath.begin(), filePath.end()), "[Core]");
         });
 }
 
@@ -187,12 +187,12 @@ void Graphics::CheckMSAAQuality() {
     msaaQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
 
     if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &msaaQualityLevels, sizeof(msaaQualityLevels)))) {
-        Logger::Log(LogLevel::Error, "❌ Failed to check MSAA Quality Levels.");
+        Logger::Log(LogLevel::Error, "❌ Failed to check MSAA Quality Levels.", "[DX12]");
         return;
     }
 
     UINT msaaQuality = msaaQualityLevels.NumQualityLevels > 0 ? msaaQualityLevels.NumQualityLevels - 1 : 0;
-    Logger::Log(LogLevel::Info, "📌 MSAA Quality Levels: " + std::to_string(msaaQuality));
+    Logger::Log(LogLevel::Info, "📌 MSAA Quality Levels: " + std::to_string(msaaQuality), "[DX12]");
 }
 
 //===============================================
@@ -216,10 +216,10 @@ void Graphics::InitializeMSAA()
     );
 
     UINT msaaQuality = msaaQualityLevels.NumQualityLevels > 0 ? msaaQualityLevels.NumQualityLevels - 1 : 0;
-    Logger::Log(LogLevel::Info, "📌 MSAA Quality Levels: " + std::to_string(msaaQuality));
+    Logger::Log(LogLevel::Info, "📌 MSAA Quality Levels: " + std::to_string(msaaQuality), "[DX12]");
 
     if (FAILED(hr)) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to check MSAA quality levels! HRESULT: " + std::to_string(hr));
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to check MSAA quality levels! HRESULT: " + std::to_string(hr), "[DX12]");
     }
 }
 
@@ -235,7 +235,7 @@ void Graphics::CheckDeviceHealth() {
     if (!device) return;
     HRESULT reason = device->GetDeviceRemovedReason();
     if (reason != S_OK) {
-        Logger::Log(LogLevel::Error, "❌ GPU Crashed! Reason Code: " + std::to_string(reason));
+        Logger::Log(LogLevel::Error, "❌ GPU Crashed! Reason Code: " + std::to_string(reason), "[DX12]");
     }
 }
 
@@ -270,7 +270,7 @@ void Graphics::AdjustResolutionBasedOnFPS(float currentFPS) {
 
     if (resolutionChanged) {
         lastAdjustmentTime = now; // ✅ Update last adjustment time
-        Logger::Log(LogLevel::Info, "🔄 Adjusting Resolution (deferred): " + std::to_string(screenWidth) + "x" + std::to_string(screenHeight));
+        Logger::Log(LogLevel::Info, "🔄 Adjusting Resolution (deferred): " + std::to_string(screenWidth) + "x" + std::to_string(screenHeight), "[Core]");
 
         // Phase 0: resizing is deferred and applied at the top of BeginFrame().
         RequestResize((UINT)screenWidth, (UINT)screenHeight);
@@ -290,7 +290,7 @@ void Graphics::LogFPS() {
     elapsedTime += deltaTime;
 
     if (elapsedTime >= 1.0) {
-        Logger::Log(LogLevel::Info, "🎮 FPS: " + std::to_string(frameCounter));
+        Logger::Log(LogLevel::Info, "🎮 FPS: " + std::to_string(frameCounter), "[Core]");
         frameCounter = 0;
         elapsedTime = 0.0;
     }
@@ -305,7 +305,7 @@ void Graphics::LogFPS() {
 //==============================================================
 void Graphics::UploadImGuiFontTexture() {
     if (!imguiInitialized || !imguiHeap) return;
-    Logger::Log(LogLevel::Info, "✅ ImGui font texture uploaded.");
+    Logger::Log(LogLevel::Info, "✅ ImGui font texture uploaded.", "[ImGui]");
 }
 
 //====================================
@@ -315,11 +315,11 @@ bool Graphics::Initialize(HWND hWnd)
 {
     if (!hWnd)
     {
-        Logger::Log(LogLevel::Error, "❌ ERROR: hWnd is NULL in Initialize()");
+        Logger::Log(LogLevel::Error, "❌ ERROR: hWnd is NULL in Initialize()", "[Core]");
         return false;
     }
 
-    Logger::Log(LogLevel::Info, std::format("✅ hWnd is valid: {}", reinterpret_cast<uintptr_t>(hWnd)));
+    Logger::Log(LogLevel::Info, std::format("✅ hWnd is valid: {}", reinterpret_cast<uintptr_t>(hWnd)), "[Core]");
 
     commandListOpen = false;
     totalTime = 0.0;
@@ -339,7 +339,7 @@ bool Graphics::Initialize(HWND hWnd)
             {
                 Logger::Log(LogLevel::Info, std::format("🖥️ Selected GPU: {} | VRAM: {:.2f} GB",
                     WStringToUTF8(desc.Description),
-                    desc.DedicatedVideoMemory / (1024.0f * 1024.0f * 1024.0f)));
+                    desc.DedicatedVideoMemory / (1024.0f * 1024.0f * 1024.0f)), "[DX12]");
             }
         }
     }
@@ -347,26 +347,26 @@ bool Graphics::Initialize(HWND hWnd)
     CreateCommandInterfaces();
 
     GPUSelection::ListAvailableGPUs();
-    Logger::Log(LogLevel::Info, "✅ GPU list populated");
+    Logger::Log(LogLevel::Info, "✅ GPU list populated", "[DX12]");
 
     if (!commandQueue)
     {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Command Queue is NULL after CreateCommandInterfaces!");
+        Logger::Log(LogLevel::Error, "❌ ERROR: Command Queue is NULL after CreateCommandInterfaces!", "[DX12]");
         return false;
     }
 
-    Logger::Log(LogLevel::Info, std::format("📌 commandQueue BEFORE SwapChain: {}", reinterpret_cast<uintptr_t>(commandQueue.Get())));
+    Logger::Log(LogLevel::Info, std::format("📌 commandQueue BEFORE SwapChain: {}", reinterpret_cast<uintptr_t>(commandQueue.Get())), "[DX12]");
 
     // ✅ 1. Create swap chain
     CreateSwapChain(hWnd, 0, 0);
 
     if (!swapChain)
     {
-        Logger::Log(LogLevel::Error, "❌ ERROR: SwapChain is NULL after creation!");
+        Logger::Log(LogLevel::Error, "❌ ERROR: SwapChain is NULL after creation!", "[DX12]");
         return false;
     }
 
-    Logger::Log(LogLevel::Info, std::format("✅ SwapChain Created. BackBufferIndex: {}", swapChain->GetCurrentBackBufferIndex()));
+    Logger::Log(LogLevel::Info, std::format("✅ SwapChain Created. BackBufferIndex: {}", swapChain->GetCurrentBackBufferIndex()), "[DX12]");
 
     // ✅ 2. Create RTV heap and views (sets `rtvHeap`)
     CreateRenderTargetViews();
@@ -380,7 +380,7 @@ bool Graphics::Initialize(HWND hWnd)
     if (main_viewport && main_viewport->RendererUserData == nullptr)
     {
         ImGui_ImplDX12_CreateWindow(main_viewport);
-        Logger::Log(LogLevel::Info, "✅ Main viewport RendererUserData initialized via ImGui_ImplDX12_CreateWindow().");
+        Logger::Log(LogLevel::Info, "✅ Main viewport RendererUserData initialized via ImGui_ImplDX12_CreateWindow().", "[ImGui]");
     }
 
     ImGuiIO& io = ImGui::GetIO();
@@ -390,7 +390,7 @@ bool Graphics::Initialize(HWND hWnd)
     io.ConfigViewportsNoAutoMerge = true;
     io.ConfigViewportsNoTaskBarIcon = false;
 
-    Logger::Log(LogLevel::Info, std::format("📌 commandQueue AFTER ImGui Init: {}", reinterpret_cast<uintptr_t>(commandQueue.Get())));
+    Logger::Log(LogLevel::Info, std::format("📌 commandQueue AFTER ImGui Init: {}", reinterpret_cast<uintptr_t>(commandQueue.Get())), "[ImGui]");
 
     return true;
 }
@@ -400,12 +400,12 @@ bool Graphics::Initialize(HWND hWnd)
 //==============================
 void Graphics::Shutdown()
 {
-    Logger::Log(LogLevel::Info, "🔻 Shutting down graphics...");
+    Logger::Log(LogLevel::Info, "🔻 Shutting down graphics...", "[Core]");
 
     // Ensure we are not mid-recording when releasing GPU resources.
     if (commandListOpen)
     {
-        Logger::Log(LogLevel::Warning, "⚠️ Shutdown called while command list is open; attempting to close it before releasing resources.");
+        Logger::Log(LogLevel::Warning, "⚠️ Shutdown called while command list is open; attempting to close it before releasing resources.", "[Core]");
         if (commandList)
         {
             (void)commandList->Close();
@@ -422,7 +422,7 @@ void Graphics::Shutdown()
     // 1. Shut down ImGui BEFORE freeing ANY DX12 heaps
     if (ImGui::GetCurrentContext())
     {
-        Logger::Log(LogLevel::Info, "🧠 Shutting down ImGui safely...");
+        Logger::Log(LogLevel::Info, "🧠 Shutting down ImGui safely...", "[ImGui]");
 
         ImGui_ImplDX12_DestroyFontsTexture();
         ImGui_ImplDX12_Shutdown();
@@ -479,14 +479,14 @@ void Graphics::Shutdown()
     }
 
     g_SRVHeap = nullptr;
-    Logger::Log(LogLevel::Info, "✅ Graphics Shutdown Completed.");
+    Logger::Log(LogLevel::Info, "✅ Graphics Shutdown Completed.", "[Core]");
 }
 
 //=================================
 // List Available GPUs
 //=================================
 void Graphics::ListAvailableGPUs() {
-    Logger::Log(LogLevel::Info, "Listing Available GPUs...");
+    Logger::Log(LogLevel::Info, "Listing Available GPUs...", "[DX12]");
     gpuList.clear();
 
     Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
@@ -515,7 +515,7 @@ void Graphics::ListAvailableGPUs() {
             WideCharToMultiByte(CP_UTF8, 0, gpuNameW.c_str(), -1, gpuName.data(), sizeNeeded, nullptr, nullptr);
 
             // ✅ Use std::format() properly
-            Logger::Log(LogLevel::Info, std::format("✅ GPU Found: {}", gpuName));
+            Logger::Log(LogLevel::Info, std::format("✅ GPU Found: {}", gpuName), "[DX12]");
         }
 
         adapter.Reset();  // ✅ Safe release
@@ -527,11 +527,11 @@ void Graphics::ListAvailableGPUs() {
 // Create DirectX 12 Device
 //====================================
 HRESULT Graphics::CreateDX12Device() {
-    Logger::Log(LogLevel::Info, "🔄 Creating DirectX 12 Device...");
+    Logger::Log(LogLevel::Info, "🔄 Creating DirectX 12 Device...", "[DX12]");
 
     // ✅ Only reset device if it was previously initialized
     if (device) {
-        Logger::Log(LogLevel::Warning, "⚠️ Releasing existing device before recreation.");
+        Logger::Log(LogLevel::Warning, "⚠️ Releasing existing device before recreation.", "[DX12]");
         device.Reset();
     }
 
@@ -541,17 +541,17 @@ HRESULT Graphics::CreateDX12Device() {
     if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
         debugController->EnableDebugLayer();
         dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-        Logger::Log(LogLevel::Info, "✅ DirectX12 Debug Layer Enabled.");
+        Logger::Log(LogLevel::Info, "✅ DirectX12 Debug Layer Enabled.", "[DX12]");
     }
 #endif
 
     Microsoft::WRL::ComPtr<IDXGIFactory6> dxgiFactory;
     HRESULT hr = CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&dxgiFactory));
     if (FAILED(hr)) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create DXGI Factory! HRESULT: " + std::to_string(hr));
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create DXGI Factory! HRESULT: " + std::to_string(hr), "[DX12]");
         return hr;
     }
-    Logger::Log(LogLevel::Info, "✅ DXGI Factory Created Successfully!");
+    Logger::Log(LogLevel::Info, "✅ DXGI Factory Created Successfully!", "[DX12]");
 
     // ✅ Ensure selectedGPU is valid before resetting
     if (selectedGPU) {
@@ -573,7 +573,7 @@ HRESULT Graphics::CreateDX12Device() {
     }
 
     if (!gpuFound) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: No valid GPU adapter found!");
+        Logger::Log(LogLevel::Error, "❌ ERROR: No valid GPU adapter found!", "[DX12]");
         return DXGI_ERROR_NOT_FOUND;
     }
 
@@ -582,7 +582,7 @@ HRESULT Graphics::CreateDX12Device() {
     // =========================================================
     hr = D3D12CreateDevice(selectedGPU.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device));
     if (FAILED(hr)) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create DirectX 12 Device! HRESULT: " + std::to_string(hr));
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create DirectX 12 Device! HRESULT: " + std::to_string(hr), "[DX12]");
         return hr;
     }
 
@@ -596,14 +596,14 @@ HRESULT Graphics::CreateDX12Device() {
             dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
             dredSettings->SetWatsonDumpEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
 
-            Logger::Log(LogLevel::Info, "🩸 DRED diagnostics enabled (Breadcrumbs + Page Fault + Watson Dumps)");
+            Logger::Log(LogLevel::Info, "🩸 DRED diagnostics enabled (Breadcrumbs + Page Fault + Watson Dumps)", "[DX12]");
         }
         else {
-            Logger::Log(LogLevel::Warning, "⚠️ DRED interface not available — limited GPU crash detail.");
+            Logger::Log(LogLevel::Warning, "⚠️ DRED interface not available — limited GPU crash detail.", "[DX12]");
         }
     }
 
-    Logger::Log(LogLevel::Info, "✅ DirectX 12 Device Created Successfully!");
+    Logger::Log(LogLevel::Info, "✅ DirectX 12 Device Created Successfully!", "[DX12]");
     return S_OK;
 }
 
@@ -625,7 +625,7 @@ void Graphics::FlushGPU()
     const HRESULT hr = commandQueue->Signal(fence.Get(), signalValue);
     if (FAILED(hr))
     {
-        Logger::Log(LogLevel::Error, std::format("❌ FlushGPU: commandQueue->Signal failed HR=0x{:08X}", (UINT)hr));
+        Logger::Log(LogLevel::Error, std::format("❌ FlushGPU: commandQueue->Signal failed HR=0x{:08X}", (UINT)hr), "[DX12]");
         return;
     }
 
@@ -675,7 +675,7 @@ void Graphics::SignalFence()
     const HRESULT hr = commandQueue->Signal(fence.Get(), signalValue);
     if (FAILED(hr))
     {
-        Logger::Log(LogLevel::Error, std::format("❌ SignalFence: commandQueue->Signal failed HR=0x{:08X}", (UINT)hr));
+        Logger::Log(LogLevel::Error, std::format("❌ SignalFence: commandQueue->Signal failed HR=0x{:08X}", (UINT)hr), "[DX12]");
         return;
     }
 
@@ -693,13 +693,13 @@ void Graphics::CreateSwapChain(HWND hwnd, UINT width, UINT height)
 {
     if (!hwnd || !IsWindow(hwnd))
     {
-        Logger::Log(LogLevel::Error, "❌ CreateSwapChain: invalid HWND.");
+        Logger::Log(LogLevel::Error, "❌ CreateSwapChain: invalid HWND.", "[DX12]");
         return;
     }
 
     if (!commandQueue)
     {
-        Logger::Log(LogLevel::Error, "❌ CreateSwapChain: commandQueue is NULL.");
+        Logger::Log(LogLevel::Error, "❌ CreateSwapChain: commandQueue is NULL.", "[DX12]");
         return;
     }
 
@@ -713,7 +713,7 @@ void Graphics::CreateSwapChain(HWND hwnd, UINT width, UINT height)
         HRESULT hr = CreateDXGIFactory2(flags, IID_PPV_ARGS(&factory));
         if (FAILED(hr))
         {
-            Logger::Log(LogLevel::Error, std::format("❌ CreateSwapChain: CreateDXGIFactory2 failed HR=0x{:08X}", (UINT)hr));
+            Logger::Log(LogLevel::Error, std::format("❌ CreateSwapChain: CreateDXGIFactory2 failed HR=0x{:08X}", (UINT)hr), "[DX12]");
             return;
         }
         dxgiFactory = factory;
@@ -763,7 +763,7 @@ void Graphics::CreateSwapChain(HWND hwnd, UINT width, UINT height)
 
     if (FAILED(hr))
     {
-        Logger::Log(LogLevel::Error, std::format("❌ CreateSwapChainForHwnd failed HR=0x{:08X}", (UINT)hr));
+        Logger::Log(LogLevel::Error, std::format("❌ CreateSwapChainForHwnd failed HR=0x{:08X}", (UINT)hr), "[DX12]");
         return;
     }
 
@@ -772,7 +772,7 @@ void Graphics::CreateSwapChain(HWND hwnd, UINT width, UINT height)
     hr = sc1.As(&swapChain);
     if (FAILED(hr))
     {
-        Logger::Log(LogLevel::Error, std::format("❌ SwapChain QueryInterface failed HR=0x{:08X}", (UINT)hr));
+        Logger::Log(LogLevel::Error, std::format("❌ SwapChain QueryInterface failed HR=0x{:08X}", (UINT)hr), "[DX12]");
         swapChain.Reset();
         return;
     }
@@ -791,14 +791,14 @@ void Graphics::CreateSwapChain(HWND hwnd, UINT width, UINT height)
 //=================================
 void Graphics::ExecuteCommandLists(std::vector<ID3D12CommandList*>& commandLists) {
     if (!commandQueue) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Command Queue is NULL!");
+        Logger::Log(LogLevel::Error, "❌ ERROR: Command Queue is NULL!", "[DX12]");
         return;
     }
 
     // ✅ Force GPU wait before executing new commands
     FlushGPU();
 
-    Logger::Log(LogLevel::Info, "🚀 Executing " + std::to_string(commandLists.size()) + " Command Lists...");
+    Logger::Log(LogLevel::Info, "🚀 Executing " + std::to_string(commandLists.size()) + " Command Lists...", "[DX12]");
     commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
 }
 
@@ -806,15 +806,15 @@ void Graphics::ExecuteCommandLists(std::vector<ID3D12CommandList*>& commandLists
 // Create Command Interfaces
 //==============================
 void Graphics::CreateCommandInterfaces() {
-    Logger::Log(LogLevel::Info, "Creating Command Interfaces...");
+    Logger::Log(LogLevel::Info, "Creating Command Interfaces...", "[DX12]");
 
     if (!device) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Device is NULL before creating command queue!");
+        Logger::Log(LogLevel::Error, "❌ ERROR: Device is NULL before creating command queue!", "[DX12]");
         throw std::runtime_error("Device is NULL before command queue creation.");
     }
 
     if (!device) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Device is NULL in CreateCommandInterfaces!");
+        Logger::Log(LogLevel::Error, "❌ ERROR: Device is NULL in CreateCommandInterfaces!", "[DX12]");
         return;
     }
 
@@ -828,7 +828,7 @@ void Graphics::CreateCommandInterfaces() {
             IID_PPV_ARGS(&frames[i].allocator)
         );
         if (FAILED(hr)) {
-            Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create CommandAllocator for buffer " + std::to_string(i));
+            Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create CommandAllocator for buffer " + std::to_string(i), "[DX12]");
             return;
         }
     }
@@ -851,33 +851,33 @@ void Graphics::CreateCommandInterfaces() {
 
     HRESULT hr = device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue));
     if (FAILED(hr) || !commandQueue) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Command Queue! HRESULT: " + std::to_string(hr));
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Command Queue! HRESULT: " + std::to_string(hr), "[DX12]");
         throw std::runtime_error("Command Queue Creation Failed!");
     }
 
-    Logger::Log(LogLevel::Info, std::format("✅ Command Queue Created Successfully! Address: {}", reinterpret_cast<uintptr_t>(commandQueue.Get())));
+    Logger::Log(LogLevel::Info, std::format("✅ Command Queue Created Successfully! Address: {}", reinterpret_cast<uintptr_t>(commandQueue.Get())), "[DX12]");
 
     // ✅ Validate Command Queue
     if (!commandQueue) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Command Queue is NULL after creation!");
+        Logger::Log(LogLevel::Error, "❌ ERROR: Command Queue is NULL after creation!", "[DX12]");
         throw std::runtime_error("Command Queue is NULL after creation!");
     }
 
     // ✅ Create Command Allocator
     hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator));
     if (FAILED(hr) || !commandAllocator) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Command Allocator! HRESULT: " + std::to_string(hr));
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Command Allocator! HRESULT: " + std::to_string(hr), "[DX12]");
         throw std::runtime_error("Command Allocator Creation Failed!");
     }
 
     // ✅ Create Fence
     hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
     if (FAILED(hr)) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Fence! HRESULT: " + std::to_string(hr));
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Fence! HRESULT: " + std::to_string(hr), "[DX12]");
         throw std::runtime_error("Fence Creation Failed!");
     }
     fenceValue = 1;
-    Logger::Log(LogLevel::Info, "✅ Fence Created Successfully.");
+    Logger::Log(LogLevel::Info, "✅ Fence Created Successfully.", "[DX12]");
 
     // ✅ Create Command List
     hr = device->CreateCommandList(
@@ -888,19 +888,19 @@ void Graphics::CreateCommandInterfaces() {
         IID_PPV_ARGS(&commandList)
     );
     if (FAILED(hr) || !commandList) {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Command List! HRESULT: " + std::to_string(hr));
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Command List! HRESULT: " + std::to_string(hr), "[DX12]");
         throw std::runtime_error("Command List Creation Failed!");
     }
 
     // Close it immediately for reuse later
     commandList->Close();
-    Logger::Log(LogLevel::Info, std::format("✅ Command List Created Successfully! Address: {}", reinterpret_cast<uintptr_t>(commandList.Get())));
+    Logger::Log(LogLevel::Info, std::format("✅ Command List Created Successfully! Address: {}", reinterpret_cast<uintptr_t>(commandList.Get())), "[DX12]");
 
     // ✅ Create dedicated upload allocator + command list (closed when idle)
     hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&uploadAllocator));
     if (FAILED(hr) || !uploadAllocator)
     {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Upload Command Allocator!");
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Upload Command Allocator!", "[DX12]");
         throw std::runtime_error("Upload Command Allocator Creation Failed!");
     }
 
@@ -913,12 +913,12 @@ void Graphics::CreateCommandInterfaces() {
     );
     if (FAILED(hr) || !uploadCommandList)
     {
-        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Upload Command List!");
+        Logger::Log(LogLevel::Error, "❌ ERROR: Failed to create Upload Command List!", "[DX12]");
         throw std::runtime_error("Upload Command List Creation Failed!");
     }
     uploadCommandList->Close();
 
-    Logger::Log(LogLevel::Info, "✅ Command Interfaces Successfully Created.");
+    Logger::Log(LogLevel::Info, "✅ Command Interfaces Successfully Created.", "[DX12]");
 }
 
 //===============================================================================//
@@ -951,7 +951,7 @@ void Graphics::BeginFrame(HWND hWnd)
 
     // Frame counter
     static UINT64 g_FrameCounter = 0;
-    Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter));
+    Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter), "[Core]");
 
     // Phase 1A: release GPU resources whose fences have completed.
     ProcessDeferredReleases();
@@ -959,7 +959,7 @@ void Graphics::BeginFrame(HWND hWnd)
     // Enforce single ImGui frame ownership.
     if (ImGuiFrameStarted)
     {
-        Logger::Log(LogLevel::Error, "❌ ImGui::NewFrame called twice in one engine frame!");
+        Logger::Log(LogLevel::Error, "❌ ImGui::NewFrame called twice in one engine frame!", "[ImGui]");
         AbortFrame("Double ImGui NewFrame");
         return;
     }
@@ -970,7 +970,7 @@ void Graphics::BeginFrame(HWND hWnd)
         ApplyPendingResize(hWnd);
     else if (pendingResize && !loggedDeferredResizeBeforeFirstPresent)
     {
-        Logger::Log(LogLevel::Info, "⏳ Resize deferred — waiting for first Present()");
+        Logger::Log(LogLevel::Info, "⏳ Resize deferred — waiting for first Present()", "[DX12]");
         loggedDeferredResizeBeforeFirstPresent = true;
     }
 
@@ -998,7 +998,7 @@ void Graphics::BeginFrame(HWND hWnd)
     // ==========================
     if (!device || !commandQueue || !fence || !swapChain)
     {
-        Logger::Log(LogLevel::Error, "❌ BeginFrame: missing DX12 core objects (device/queue/fence/swapchain). ");
+        Logger::Log(LogLevel::Error, "❌ BeginFrame: missing DX12 core objects (device/queue/fence/swapchain). ", "[DX12]");
         HandleDeviceLost(hWnd);
         return;
     }
@@ -1051,13 +1051,13 @@ void Graphics::BeginFrame(HWND hWnd)
     {
         Logger::Log(LogLevel::Error, std::format(
             "🚨 Fence->GetCompletedValue() == UINT64_MAX (device lost sentinel). BackBuffer={} FenceToWaitFor={}",
-            currentBackBufferIndex, fenceToWaitFor));
+            currentBackBufferIndex, fenceToWaitFor), "[DX12]");
 
         if (device)
         {
             const HRESULT removed = device->GetDeviceRemovedReason();
             Logger::Log(LogLevel::Error, std::format(
-                "🚨 DeviceRemovedReason=0x{:08X}", (UINT)removed));
+                "🚨 DeviceRemovedReason=0x{:08X}", (UINT)removed), "[DX12]");
         }
 
         HandleDeviceLost(hWnd);
@@ -1147,20 +1147,20 @@ void Graphics::BeginFrame(HWND hWnd)
     // Must happen after allocator+command list reset and SRV heap binding.
     if (g_ImGuiFontsNeedUpload)
     {
-        Logger::Log(LogLevel::Info, "[FontDiag] Uploading ImGui font texture on first frame");
+        Logger::Log(LogLevel::Info, "[FontDiag] Uploading ImGui font texture on first frame", "[ImGui]");
         if (ImGui_ImplDX12_CreateFontsTexture(device.Get(), commandList.Get()))
         {
             g_ImGuiFontsNeedUpload = false;
         }
         else
         {
-            Logger::Log(LogLevel::Error, "[FontDiag] Failed to upload ImGui font texture on first frame");
+            Logger::Log(LogLevel::Error, "[FontDiag] Failed to upload ImGui font texture on first frame", "[ImGui]");
         }
     }
 
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
-    Logger::Log(LogLevel::Debug, "🆕 ImGui New Frame Started");
+    Logger::Log(LogLevel::Debug, "🆕 ImGui New Frame Started", "[ImGui]");
 
     // Ensure most UI stays in the main OS viewport unless explicitly moved.
     // (Prevents accidental extra platform windows for small tool/overlay windows)
@@ -1197,14 +1197,14 @@ void Graphics::EndFrame(HWND hWnd)
 
     if (!commandListOpen)
     {
-        Logger::Log(LogLevel::Error, "❌ EndFrame() called with closed command list.");
+        Logger::Log(LogLevel::Error, "❌ EndFrame() called with closed command list.", "[Core]");
         frameStarted = false;
         return;
     }
 
     if (!commandList || !commandQueue || !fence)
     {
-        Logger::Log(LogLevel::Error, "❌ EndFrame(): missing commandList/commandQueue/fence.");
+        Logger::Log(LogLevel::Error, "❌ EndFrame(): missing commandList/commandQueue/fence.", "[DX12]");
         commandListOpen = false;
         frameStarted = false;
         return;
@@ -1213,7 +1213,7 @@ void Graphics::EndFrame(HWND hWnd)
     const HRESULT hrClose = commandList->Close();
     if (FAILED(hrClose))
     {
-        Logger::Log(LogLevel::Error, std::format("❌ EndFrame(): commandList->Close failed HR=0x{:08X}", (UINT)hrClose));
+        Logger::Log(LogLevel::Error, std::format("❌ EndFrame(): commandList->Close failed HR=0x{:08X}", (UINT)hrClose), "[DX12]");
         commandListOpen = false;
         frameStarted = false;
         return;
@@ -1229,7 +1229,7 @@ void Graphics::EndFrame(HWND hWnd)
     const HRESULT hrSignal = commandQueue->Signal(fence.Get(), signalValue);
     if (FAILED(hrSignal))
     {
-        Logger::Log(LogLevel::Error, std::format("❌ EndFrame(): commandQueue->Signal failed HR=0x{:08X}", (UINT)hrSignal));
+        Logger::Log(LogLevel::Error, std::format("❌ EndFrame(): commandQueue->Signal failed HR=0x{:08X}", (UINT)hrSignal), "[DX12]");
     }
     else
     {
@@ -1263,19 +1263,19 @@ void Graphics::Present(HWND hWnd)
 
     if (commandListOpen)
     {
-        Logger::Log(LogLevel::Error, "❌ Present() called while command list is still open.");
+        Logger::Log(LogLevel::Error, "❌ Present() called while command list is still open.", "[DX12]");
         return;
     }
 
     if (g_PresentedThisFrame)
     {
-        Logger::Log(LogLevel::Error, "❌ Present() called more than once in a single frame.");
+        Logger::Log(LogLevel::Error, "❌ Present() called more than once in a single frame.", "[DX12]");
         return;
     }
 
     if (!swapChain)
     {
-        Logger::Log(LogLevel::Error, "❌ Present() called with null swapChain.");
+        Logger::Log(LogLevel::Error, "❌ Present() called with null swapChain.", "[DX12]");
         return;
     }
 
@@ -1299,7 +1299,7 @@ void Graphics::Present(HWND hWnd)
     const HRESULT hr = swapChain->Present(syncInterval, presentFlags);
     if (FAILED(hr))
     {
-        Logger::Log(LogLevel::Error, std::format("❌ Present failed HR=0x{:08X}", (UINT)hr));
+        Logger::Log(LogLevel::Error, std::format("❌ Present failed HR=0x{:08X}", (UINT)hr), "[DX12]");
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
             HandleDeviceLost(hWnd);
         return;
@@ -1977,10 +1977,23 @@ void Graphics::Render(HWND hWnd)
 {
     (void)hWnd;
 
+    // Phase 2.5: Single invariant guard for the render phase.
+    // Rendering must only occur after BeginFrame() has started the frame and the command list is recording.
+    if (!frameStarted || !commandListOpen)
+    {
+        Logger::Log(LogLevel::Error,
+            std::format("❌ Render() called outside a valid frame | frameStarted={} commandListOpen={}",
+                frameStarted ? 1 : 0,
+                commandListOpen ? 1 : 0),
+            "[Core]");
+        return;
+    }
+
+    // Keep the existing error log for closed command list (signal is still useful).
     if (!commandListOpen)
     {
         Logger::Log(LogLevel::Error,
-            "❌ Render() called with closed command list!");
+            "❌ Render() called with closed command list!", "[DX12]");
         return;
     }
 
@@ -2003,6 +2016,19 @@ void Graphics::Render(HWND hWnd)
 
     ImGui::Render();
     g_ImGuiRenderedThisFrame = true;
+
+    // Phase 3A: scene render scaffolding.
+    // Non-destructive: emits logs/validates wiring only (no draw calls yet).
+    {
+        SceneRenderContext sctx;
+        sctx.device = device.Get();
+        sctx.commandList = commandList.Get();
+        sctx.viewportWidth = sceneRTWidth;
+        sctx.viewportHeight = sceneRTHeight;
+        sctx.frameIndex = currentBackBufferIndex;
+        Scene::Render(sctx);
+    }
+
     ImDrawData* drawData = ImGui::GetDrawData();
     if (!drawData)
         return;
@@ -2055,12 +2081,6 @@ void Graphics::RequestResize(UINT width, UINT height)
     pendingResize = true;
 }
 
-//===============================================
-// Apply Pending Resize Function
-//===============================================
-// Call this to apply a pending resize request
-// Resizes the swap chain and updates the RTVs
-//===============================================
 void Graphics::ApplyPendingResize(HWND hWnd)
 {
     if (!pendingResize)
@@ -2072,7 +2092,7 @@ void Graphics::ApplyPendingResize(HWND hWnd)
         if (!loggedDeferredResizeBeforeFirstPresent)
         {
             loggedDeferredResizeBeforeFirstPresent = true;
-            Logger::Log(LogLevel::Info, "ℹ️ Resize deferred — waiting for first Present");
+            Logger::Log(LogLevel::Info, "ℹ️ Resize deferred — waiting for first Present", "[DX12]");
         }
         return;
     }
@@ -2083,33 +2103,7 @@ void Graphics::ApplyPendingResize(HWND hWnd)
 
     HandleResize(hWnd);
 
-    Logger::Log(LogLevel::Info, std::format("✅ Swapchain resize applied: {}x{}", w, h));
-}
-
-//===============================================
-// Process Pending Scene Render Target Resize Function
-//===============================================
-// Checks and applies any pending resize for the scene render target
-// This is separate from the swap chain resize
-// Ensures the scene render target matches the current window size
-//===============================================
-void Graphics::ProcessPendingSceneRenderTargetResize()
-{
-    if (!pendingSceneRTResize)
-        return;
-
-    const UINT w = pendingSceneRTW;
-    const UINT h = pendingSceneRTH;
-
-    pendingSceneRTResize = false;
-    EnsureSceneRenderTarget(w, h);
-}
-
-void Graphics::HandleResize(HWND hWnd)
-{
-    // Existing engine uses deferred resize requests and applies them at the top of BeginFrame.
-    // `ApplyPendingResize()` contains the hasPresentedOnce gating.
-    ApplyPendingResize(hWnd);
+    Logger::Log(LogLevel::Info, std::format("✅ Swapchain resize applied: {}x{}", w, h), "[DX12]");
 }
 
 void Graphics::ProcessPendingFontReload()

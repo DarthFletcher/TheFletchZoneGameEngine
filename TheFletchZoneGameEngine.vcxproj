@@ -179,6 +179,7 @@
     <ClInclude Include="include\Input.h" />
     <ClInclude Include="include\logger.h" />
     <ClInclude Include="include\resource.h" />
+    <ClInclude Include="Include\Scene.h" />
     <ClInclude Include="Include\SceneCamera.h" />
     <ClInclude Include="Include\ShaderCompiler.h" />
     <ClInclude Include="include\ShaderUtils.h" />
@@ -216,6 +217,7 @@
     <ClCompile Include="src\Input.cpp" />
     <ClCompile Include="src\logger.cpp" />
     <ClCompile Include="src\Main.cpp" />
+    <ClCompile Include="Src\Scene.cpp" />
     <ClCompile Include="Src\SceneCamera.cpp" />
     <ClCompile Include="Src\ShaderCompiler.cpp" />
     <ClCompile Include="src\ShaderUtils.cpp" />

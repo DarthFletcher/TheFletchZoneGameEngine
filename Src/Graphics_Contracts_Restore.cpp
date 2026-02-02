@@ -1,20 +1,25 @@
 #include "Graphics.h"
 #include "Engine.h"
 
-// This compilation unit exists to provide definitions for Graphics methods
-// that are declared in `Graphics.h` but may not be present in `Graphics.cpp`
-// (for example, after large refactors/experiments). Keeping these definitions
-// centralized prevents linker breakage.
+// TEMPORARY CONTRACT RESTORATION LAYER
+// Functions in this compilation unit exist only to satisfy legacy link contracts
+// during refactors. They should migrate back to their owning subsystem over time.
+
+// --- Device loss / frame contract glue (Graphics core) --------------------------------
 
 void Graphics::HandleDeviceLost(HWND hWnd)
 {
+    // RESTORE_CANDIDATE: message/category cleanup + potential migration into Graphics.cpp when stable.
     Logger::Log(LogLevel::Error, "? HandleDeviceLost called. Attempting full Graphics reset.");
     Shutdown();
     (void)Initialize(hWnd);
 }
 
+// --- Scene / RenderTarget ownership (scene RT management candidates) -----------------
+
 void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height)
 {
+    // RESTORE_CANDIDATE: should live next to other scene-RT ownership once Graphics is split.
     width = (std::max)(1u, width);
     height = (std::max)(1u, height);
 
@@ -25,6 +30,7 @@ void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height)
 
 void Graphics::ProcessDeferredReleases()
 {
+    // RESTORE_CANDIDATE: consider migrating into a dedicated Graphics_ResourceLifetime.cpp when splitting.
     if (deferredReleases.empty() || !fence)
         return;
 
@@ -87,6 +93,7 @@ void Graphics::ProcessDeferredReleases()
 
 void Graphics::AbortFrame(const char* why)
 {
+    // RESTORE_CANDIDATE: should live next to frame lifecycle methods in Graphics.cpp.
     Logger::Log(LogLevel::Error, std::format("?? AbortFrame: {}", why ? why : "(unknown)"));
 
     if (commandListOpen && commandList)
@@ -97,8 +104,11 @@ void Graphics::AbortFrame(const char* why)
     ImGuiFrameStarted = false;
 }
 
+// --- Swapchain / backbuffer ownership (resize + RTV creation candidates) --------------
+
 void Graphics::CreateRenderTargetViews()
 {
+    // RESTORE_CANDIDATE: once Graphics.cpp is split, migrate into a Graphics_Swapchain.cpp unit.
     if (!device || !swapChain)
         return;
 
@@ -142,3 +152,24 @@ void Graphics::CreateRenderTargetViews()
 // (removed) Graphics::ReloadImGuiFont(float) implementation now lives in `Src/Graphics.cpp`.
 
 // (removed) Graphics::EnsureSceneRenderTarget(UINT, UINT) implementation now lives in `Src/Graphics.cpp`.
+
+void Graphics::ProcessPendingSceneRenderTargetResize()
+{
+    // RESTORE_CANDIDATE: should live alongside scene RT ownership (Graphics.cpp or a future Graphics_Scene.cpp).
+    if (!pendingSceneRTResize)
+        return;
+
+    const UINT w = pendingSceneRTW;
+    const UINT h = pendingSceneRTH;
+
+    pendingSceneRTResize = false;
+    EnsureSceneRenderTarget(w, h);
+}
+
+void Graphics::HandleResize(HWND hWnd)
+{
+    // RESTORE_CANDIDATE: once resize ownership is fully centralized, remove this indirection.
+    // Existing engine uses deferred resize requests and applies them at the top of BeginFrame.
+    // `ApplyPendingResize()` contains the hasPresentedOnce gating.
+    ApplyPendingResize(hWnd);
+}
