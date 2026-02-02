@@ -31,3 +31,6 @@ The engine has recently completed a major internal restructuring to ensure:
 
 This checkpoint establishes a stable foundation for reintroducing
 scene rendering, shaders, and gameplay systems in upcoming phases.
+
+## License
+MIT License © 2026 TheFletchZone
