@@ -6,11 +6,26 @@ A custom DirectX 12 game engine written in C++.
 - DirectX 12 rendering pipeline
 - Deterministic engine-owned frame lifecycle (BeginFrame → Render → EndFrame → Present)
 - Dear ImGui (Win32 + DX12) with docking and multi-viewport support
+- **Fully custom ImGui DX12 backend with engine-owned resource lifetime**
 - Engine-owned ImGui resources (SRV heap, font upload, pipeline state)
 - Robust device lost recovery (DRED-enabled)
 - Resize-safe swapchain handling
 - Custom logging and diagnostics system
 - Docking editor UI foundation
+
+## Custom ImGui Backend
+
+The engine uses a **fully custom Dear ImGui DX12 renderer backend**.
+
+Unlike the stock ImGui DX12 backend, this engine:
+- Owns the entire GPU frame lifecycle
+- Defers font upload until a valid command list exists
+- Lazily creates ImGui root signatures and PSOs at draw time
+- Manages its own SRV heap and descriptor allocation
+- Avoids backend-driven GPU work during initialization
+- Supports deterministic recovery from device loss and resize events
+
+ImGui is treated as a UI library only — **not** as a driver of GPU ownership or frame submission.
 
 ## Build Requirements
 - Windows 10/11
