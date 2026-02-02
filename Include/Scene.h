@@ -16,19 +16,19 @@ struct SceneRenderContext
     uint32_t viewportWidth = 0;
     uint32_t viewportHeight = 0;
 
-    uint32_t frameIndex = 0;
+    uint64_t frameIndex = 0;
 };
 
 enum class ShaderID : uint32_t
 {
-    None = 0,
-
-    // Placeholders for Phase 3A ownership/wiring.
-    Scene_Triangle_VS,
-    Scene_Triangle_PS,
+    Invalid = 0,
+    SceneSolid,
+    SceneGrid,
+    Count,
 };
 
-namespace Scene
+class Scene
 {
-    void Render(const SceneRenderContext& ctx);
-}
+public:
+    static void Render(const SceneRenderContext& ctx);
+};

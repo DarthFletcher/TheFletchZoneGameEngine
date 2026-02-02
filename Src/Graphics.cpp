@@ -2025,7 +2025,7 @@ void Graphics::Render(HWND hWnd)
         sctx.commandList = commandList.Get();
         sctx.viewportWidth = sceneRTWidth;
         sctx.viewportHeight = sceneRTHeight;
-        sctx.frameIndex = currentBackBufferIndex;
+        sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
         Scene::Render(sctx);
     }
 
