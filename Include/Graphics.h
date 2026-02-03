@@ -52,6 +52,16 @@ class Entity;
 // Implemented in `Src/Main.cpp`.
 const std::vector<Entity*>& GetSceneEntitiesForRendering();
 
+// Phase 3D: resize authority.
+enum class ResizeSource : uint8_t
+{
+    Window,
+    DPI,
+    User,
+    Engine,
+    Unknown,
+};
+
 class Graphics {
 public:
     void EnsureValidCommandQueue();
@@ -181,6 +191,7 @@ public:
     // Scene viewport render target (offscreen texture) exposed to UI.
     void EnsureSceneRenderTarget(UINT width, UINT height);
     void RequestSceneRenderTargetResize(UINT width, UINT height);
+    void RequestSceneRenderTargetResize(UINT width, UINT height, ResizeSource source);
     void ProcessPendingSceneRenderTargetResize();
     void RenderSceneToTarget();
     ImTextureID GetSceneImGuiTextureID() const { return sceneImGuiTextureID; }
@@ -206,6 +217,7 @@ public:
 
     // Deferred main swapchain resize (called from WM_SIZE). Applied at top of BeginFrame.
     void RequestResize(UINT width, UINT height);
+    void RequestResize(UINT width, UINT height, ResizeSource source);
 
     // Scene picking helpers
     PickRay ComputeScenePickRay(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize) const;
@@ -347,10 +359,12 @@ private:
     UINT pendingWidth = 0;
     UINT pendingHeight = 0;
     bool pendingResize = false;
+    ResizeSource pendingResizeSource = ResizeSource::Unknown;
 
     UINT pendingSceneRTW = 0;
     UINT pendingSceneRTH = 0;
     bool pendingSceneRTResize = false;
+    ResizeSource pendingSceneRTResizeSource = ResizeSource::Unknown;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneRenderTarget;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> sceneRtvHeap;
@@ -418,7 +432,39 @@ private:
 
     // Main swapchain has successfully presented at least once.
     bool hasPresentedOnce = false;
+
+    void Dx12HealthCheck();
+
+    enum class FramePhase : uint8_t { None, Begun, Rendered, Ended, Presented };
+    FramePhase healthPhase = FramePhase::None;
+
+    uint64_t healthFrameCounter = 0;
+    uint64_t lastHealthFrameIndex = 0;
+    bool hadLastHealthFrameIndex = false;
+
+    uint64_t lastHealthFenceValue = 0;
+    bool hadLastHealthFenceValue = false;
+
+    uint64_t lastHealthCompletedFence = 0;
+    bool hadLastHealthCompletedFence = false;
+
+    size_t dx12InfoQueueLastIndex = 0;
+
+    std::chrono::steady_clock::time_point healthThrottleLast{};
+
+    bool logged_FrameIndexRegressed = false;
+    bool logged_FenceValueRegressed = false;
+    bool logged_CompletedFenceRegressed = false;
+
+    bool logged_FrameOrder_RenderBeforeBegin = false;
+    bool logged_CommandListOpenMismatch = false;
+
+    bool logged_Dx12_DeviceRemoved = false;
+    bool logged_Dx12_SwapchainBackBufferIndexOOR = false;
+    bool logged_Dx12_RtvHeapNull = false;
+    bool logged_Dx12_BackBufferNull = false;
 };
+
 
 // Call-site tracing helper. Use everywhere instead of direct `ReloadImGuiFont()`.
 #ifndef RELOAD_IMGUI_FONT

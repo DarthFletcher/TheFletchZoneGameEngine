@@ -66,7 +66,7 @@ namespace EditorPanels
                 const UINT w = (UINT)(size.x > 1.0f ? size.x : 1.0f);
                 const UINT h = (UINT)(size.y > 1.0f ? size.y : 1.0f);
 
-                gfx.RequestSceneRenderTargetResize(w, h);
+                gfx.RequestSceneRenderTargetResize(w, h, ResizeSource::User);
 
                 ImTextureID tex = gfx.GetSceneImGuiTextureID();
                 if (tex)

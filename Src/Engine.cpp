@@ -65,7 +65,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 lastHeight = height;
 
                 Logger::Log(LogLevel::Info, "🔄 Resizing Window: " + std::to_string(width) + "x" + std::to_string(height));
-                Graphics::GetInstance().RequestResize(width, height);
+                Graphics::GetInstance().RequestResize(width, height, ResizeSource::Window);
             }
         }
         break;

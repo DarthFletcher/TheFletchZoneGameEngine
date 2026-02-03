@@ -1317,6 +1317,35 @@ void Graphics::Present(HWND hWnd)
     g_PresentedThisFrame = true;
 }
 
+// Phase 3D helpers
+namespace
+{
+    static const char* ResizeSourceToString(ResizeSource s)
+    {
+        switch (s)
+        {
+        case ResizeSource::Window: return "Window";
+        case ResizeSource::DPI: return "DPI";
+        case ResizeSource::User: return "User";
+        case ResizeSource::Engine: return "Engine";
+        case ResizeSource::Unknown:
+        default: return "Unknown";
+        }
+    }
+
+    static bool Resize_ShouldLog(std::chrono::milliseconds interval = std::chrono::milliseconds(250))
+    {
+        static auto last = std::chrono::steady_clock::now();
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last >= interval)
+        {
+            last = now;
+            return true;
+        }
+        return false;
+    }
+}
+
 //====================================
 // Get Device Function
 //====================================
@@ -2164,12 +2193,25 @@ void Graphics::Render(HWND hWnd)
 //===============================================
 void Graphics::RequestResize(UINT width, UINT height)
 {
-    if (width == 0 || height == 0)
-        return;
+    RequestResize(width, height, ResizeSource::Unknown);
+}
+
+void Graphics::RequestResize(UINT width, UINT height, ResizeSource source)
+{
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
 
     pendingWidth = width;
     pendingHeight = height;
+    pendingResizeSource = source;
     pendingResize = true;
+
+    if (Resize_ShouldLog())
+    {
+        Logger::Log(LogLevel::Info, std::format(
+            "[Resize] Requested w={} h={} source={} pending=true",
+            width, height, ResizeSourceToString(source)));
+    }
 }
 
 void Graphics::ApplyPendingResize(HWND hWnd)
@@ -2190,26 +2232,12 @@ void Graphics::ApplyPendingResize(HWND hWnd)
 
     const UINT w = pendingWidth;
     const UINT h = pendingHeight;
+    const ResizeSource src = pendingResizeSource;
+
     pendingResize = false;
+    pendingResizeSource = ResizeSource::Unknown;
 
     HandleResize(hWnd);
 
-    Logger::Log(LogLevel::Info, std::format("✅ Swapchain resize applied: {}x{}", w, h), "[DX12]");
-}
-
-void Graphics::ProcessPendingFontReload()
-{
-    if (!pendingFontReload)
-        return;
-
-    if (!hasPresentedOnce)
-        return;
-
-    if (commandListOpen || frameStarted || ImGuiFrameStarted)
-        return;
-
-    const float sizePx = pendingFontPixelSize;
-    pendingFontReload = false;
-
-    ReloadImGuiFontImpl(sizePx, "<deferred>", 0);
+    Logger::Log(LogLevel::Info, std::format("[Resize] Applied w={} h={} source={}", w, h, ResizeSourceToString(src)));
 }

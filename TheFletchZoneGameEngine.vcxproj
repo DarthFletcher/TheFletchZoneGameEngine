@@ -244,6 +244,7 @@
     <None Include="cpp.hint" />
     <None Include="Directory.Build.props" />
     <None Include="Directory.Build.targets" />
+    <None Include="docs\CHANGELOG_0.3.0.md" />
     <None Include="Docs\ShaderCompilationComplete.md" />
     <None Include="Docs\ShaderCompilationQuickRef.md" />
     <None Include="ENGINE_CONTRACT.md" />
