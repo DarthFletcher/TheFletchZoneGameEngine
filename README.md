@@ -9,6 +9,7 @@ A Custom DirectX12 Game Engine Written In C++.
 - **Fully custom ImGui DX12 backend with engine-owned resource lifetime**
 - Fully custom Dear ImGui Win32 + DirectX 12 backend (engine-owned, non-stock)
 - Engine-owned scene rendering path (separate from ImGui)
+- Engine-owned camera system (explicit view/projection ownership)
 - Engine-owned ImGui resources (SRV heap, font upload, pipeline state)
 - Robust device lost recovery (DRED-enabled)
 - Resize-safe swapchain handling
