@@ -8,6 +8,8 @@ struct ID3D12GraphicsCommandList;
 // Phase 3A: minimal scene render scaffolding.
 // No draw calls yet; this only validates wiring and ownership.
 
+struct CameraData;
+
 struct SceneRenderContext
 {
     ID3D12Device* device = nullptr;
@@ -17,6 +19,10 @@ struct SceneRenderContext
     uint32_t viewportHeight = 0;
 
     uint64_t frameIndex = 0;
+
+    // Phase 3C: authoritative camera data for this scene render.
+    // Scene must not access any global camera.
+    const CameraData* camera = nullptr;
 };
 
 enum class ShaderID : uint32_t

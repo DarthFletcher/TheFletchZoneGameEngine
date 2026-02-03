@@ -3,6 +3,8 @@
 #include "Logger.h"
 #include "ShaderUtils.h"
 
+#include "CameraData.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -12,6 +14,7 @@
 
 #include <d3d12.h>
 #include <wrl.h>
+#include <DirectXMath.h>
 
 extern ID3D12DescriptorHeap* g_SRVHeap;
 
@@ -72,6 +75,7 @@ namespace
 
     static SceneDrawResources g_scene;
     static bool g_loggedInvalidCtx = false;
+    static bool g_loggedMissingCamera = false;
 
     static void FillIdentity(float (&m)[16])
     {
@@ -335,11 +339,12 @@ namespace
                 return;
             }
 
+            // Initialized; real per-frame values are written in `Scene::Render()` from `ctx.camera`.
             g_scene.cbData = {};
             FillIdentity(g_scene.cbData.viewProj);
             g_scene.cbData.cameraPos[0] = 0.0f;
             g_scene.cbData.cameraPos[1] = 0.0f;
-            g_scene.cbData.cameraPos[2] = -2.0f;
+            g_scene.cbData.cameraPos[2] = 0.0f;
             g_scene.cbData.gridFadeDist = 10.0f;
 
             const HRESULT hrMap = g_scene.cb->Map(0, nullptr, &g_scene.cbCpu);
@@ -534,6 +539,16 @@ void Scene::Render(const SceneRenderContext& ctx)
         return;
     }
 
+    if (!ctx.camera)
+    {
+        if (!g_loggedMissingCamera)
+        {
+            Logger::Log(LogLevel::Error, "Phase 3C: Scene::Render missing ctx.camera (camera ownership not wired)", "[Scene]");
+            g_loggedMissingCamera = true;
+        }
+        return;
+    }
+
     // Clamp to guard against accidental invalid sizes.
     constexpr uint32_t kMin = 1u;
     constexpr uint32_t kMax = 16384u;
@@ -545,7 +560,28 @@ void Scene::Render(const SceneRenderContext& ctx)
     if (g_scene.initFailed || !g_scene.rootSig || !g_scene.pso || !g_scene.vb || !g_scene.cb || !g_scene.gridPso || !g_scene.gridVb)
         return;
 
-    // Frame-safe deterministic CB write (single constant for now).
+    // Phase 3C: build CB from engine-owned camera (LH) and transpose to match HLSL mul(float4, matrix).
+    {
+        using namespace DirectX;
+
+        const XMMATRIX view = XMLoadFloat4x4(&ctx.camera->view);
+        const XMMATRIX proj = XMLoadFloat4x4(&ctx.camera->proj);
+        const XMMATRIX vp = XMMatrixMultiply(view, proj);
+        const XMMATRIX vpT = XMMatrixTranspose(vp);
+
+        XMFLOAT4X4 vpStore{};
+        XMStoreFloat4x4(&vpStore, vpT);
+        memcpy(g_scene.cbData.viewProj, &vpStore, sizeof(float) * 16);
+
+        g_scene.cbData.cameraPos[0] = ctx.camera->position.x;
+        g_scene.cbData.cameraPos[1] = ctx.camera->position.y;
+        g_scene.cbData.cameraPos[2] = ctx.camera->position.z;
+
+        // Keep as a constant for now (Phase 3C).
+        g_scene.cbData.gridFadeDist = 10.0f;
+    }
+
+    // Exactly one CB upload per Scene::Render.
     if (g_scene.cbCpu)
         memcpy(g_scene.cbCpu, &g_scene.cbData, sizeof(SceneCB));
 

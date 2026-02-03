@@ -159,6 +159,9 @@
     <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3dx12.h" />
     <ClInclude Include="include\BootDiagnostics.h" />
     <ClInclude Include="include\BootProgress.h" />
+    <ClInclude Include="Include\Camera.h" />
+    <ClInclude Include="Include\CameraData.h" />
+    <ClInclude Include="Include\CameraSystem.h" />
     <ClInclude Include="include\Components.h" />
     <ClInclude Include="include\Config.h" />
     <ClInclude Include="include\CrashDiagnostics.h" />
@@ -201,6 +204,8 @@
     <ClCompile Include="DirectX-Headers-1.614.1\include\directx\d3d12.cpp" />
     <ClCompile Include="src\BootDiagnostics.cpp" />
     <ClCompile Include="Src\BootProgress.cpp" />
+    <ClCompile Include="Src\Camera.cpp" />
+    <ClCompile Include="Src\CameraSystem.cpp" />
     <ClCompile Include="src\Config.cpp" />
     <ClCompile Include="src\CrashDiagnostics.cpp" />
     <ClCompile Include="Src\EditorPanels.cpp" />
@@ -235,6 +240,7 @@
     <Image Include="TheFletchZoneGameEngine.ico" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="CHANGELOG.md" />
     <None Include="cpp.hint" />
     <None Include="Directory.Build.props" />
     <None Include="Directory.Build.targets" />

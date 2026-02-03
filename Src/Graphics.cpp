@@ -42,6 +42,8 @@
 #include "ShaderUtils.h"
 #include <DirectXMath.h>
 
+#include "CameraSystem.h"
+
 // ✅ Define and Initialize Static Variables (Fixes "unresolved external" error)
 std::chrono::high_resolution_clock::time_point Graphics::frameStart = std::chrono::high_resolution_clock::now();
 double Graphics::deltaTime = 0.0;
@@ -925,18 +927,18 @@ void Graphics::CreateCommandInterfaces() {
 //                        ImGui Frame Life Cycle (Corrected)                     //
 //===============================================================================//
 
-//=================================
+//---------------------------------
 // Begin Dock Space Function
-//=================================
+//---------------------------------
 void Graphics::BeginDockSpace()
 {
     // DockSpace is now owned by UI (UI::BeginDockSpace).
     // Keeping this method as a no-op to avoid breaking existing call sites.
 }
 
-//=================================
+//---------------------------------
 // Begin Frame Function            
-//=================================
+//---------------------------------
 void Graphics::BeginFrame(HWND hWnd)
 {
 #ifndef NDEBUG
@@ -977,7 +979,14 @@ void Graphics::BeginFrame(HWND hWnd)
     // Process any pending scene RT resize before we open/reset the command list for this frame.
     ProcessPendingSceneRenderTargetResize();
 
-#ifndef NDEBUG
+    // Phase 3C: update engine-owned camera exactly once per frame, before any scene draw.
+    // Use the scene render target dimensions for correct aspect (not the main window).
+    CameraSystem::Update(
+        static_cast<uint64_t>(g_FrameCounter),
+        static_cast<float>(Graphics::deltaTime),
+        (uint32_t)(sceneRTWidth != 0 ? sceneRTWidth : (UINT)screenWidth),
+        (uint32_t)(sceneRTHeight != 0 ? sceneRTHeight : (UINT)screenHeight));
+
     // Phase 1B drift detector: per-buffer fence stamps must never exceed the last signaled fence.
     if (currentBackBufferIndex < NUM_BACK_BUFFERS)
     {
@@ -991,7 +1000,6 @@ void Graphics::BeginFrame(HWND hWnd)
             return;
         }
     }
-#endif
 
     // ==========================
     // Guard: core DX12 objects must exist
@@ -2059,8 +2067,6 @@ void Graphics::RenderSceneToTarget()
 
 void Graphics::Render(HWND hWnd)
 {
-    (void)hWnd;
-
     // Phase 2.5: Single invariant guard for the render phase.
     // Rendering must only occur after BeginFrame() has started the frame and the command list is recording.
     if (!frameStarted || !commandListOpen)
@@ -2110,6 +2116,7 @@ void Graphics::Render(HWND hWnd)
         sctx.viewportWidth = sceneRTWidth;
         sctx.viewportHeight = sceneRTHeight;
         sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
+        sctx.camera = &CameraSystem::GetActiveData();
         Scene::Render(sctx);
     }
 
