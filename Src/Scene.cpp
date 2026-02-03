@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <d3d12.h>
 #include <wrl.h>
@@ -51,9 +52,15 @@ namespace
     struct SceneDrawResources
     {
         ComPtr<ID3D12RootSignature> rootSig;
+
         ComPtr<ID3D12PipelineState> pso;
         ComPtr<ID3D12Resource> vb;
         D3D12_VERTEX_BUFFER_VIEW vbv{};
+
+        // Grid pass (separate PSO + VB)
+        ComPtr<ID3D12PipelineState> gridPso;
+        ComPtr<ID3D12Resource> gridVb;
+        D3D12_VERTEX_BUFFER_VIEW gridVbv{};
 
         ComPtr<ID3D12Resource> cb;
         SceneCB cbData{};
@@ -108,8 +115,11 @@ namespace
         if (g_scene.initFailed)
             return;
 
+        // If core resources exist and (if built) grid resources exist, we are done.
         if (g_scene.rootSig && g_scene.pso && g_scene.vb && g_scene.cb)
-            return;
+        {
+            // Grid resources are optional; build them lazily if missing.
+        }
 
         if (!g_scene.initLogged)
         {
@@ -120,6 +130,7 @@ namespace
         // ---------------------------
         // Root Signature (b0 only)
         // ---------------------------
+        if (!g_scene.rootSig)
         {
             D3D12_ROOT_PARAMETER param{};
             param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -178,6 +189,7 @@ namespace
         // ---------------------------
         // PSO (opaque, no depth)
         // ---------------------------
+        if (!g_scene.pso)
         {
             D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
                 { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, (UINT)offsetof(SceneVertex, pos), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -255,6 +267,7 @@ namespace
         // ---------------------------
         // Vertex Buffer (upload heap, static geometry)
         // ---------------------------
+        if (!g_scene.vb)
         {
             const std::array<SceneVertex, 3> verts = {
                 SceneVertex{ { 0.0f,  0.5f, 0.0f }, { 1.0f, 0.2f, 0.2f, 1.0f } },
@@ -301,6 +314,7 @@ namespace
         // ---------------------------
         // Constant Buffer (upload heap, persistently mapped)
         // ---------------------------
+        if (!g_scene.cb)
         {
             constexpr UINT cbSize = 256;
             const D3D12_HEAP_PROPERTIES heapProps = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
@@ -321,7 +335,6 @@ namespace
                 return;
             }
 
-            // Fully initialize CB contents deterministically.
             g_scene.cbData = {};
             FillIdentity(g_scene.cbData.viewProj);
             g_scene.cbData.cameraPos[0] = 0.0f;
@@ -338,6 +351,173 @@ namespace
             }
 
             memcpy(g_scene.cbCpu, &g_scene.cbData, sizeof(SceneCB));
+        }
+
+        // ---------------------------
+        // Grid pass resources (separate PSO + VB)
+        // ---------------------------
+        if (!g_scene.gridPso)
+        {
+            ComPtr<ID3DBlob> gvs;
+            ComPtr<ID3DBlob> gps;
+            try
+            {
+                gvs = CompileShaderFromRelativeFile(L"shaders\\scene_grid_vs.hlsl", "main", "vs_5_1");
+                gps = CompileShaderFromRelativeFile(L"shaders\\scene_grid_ps.hlsl", "main", "ps_5_1");
+            }
+            catch (const std::exception& e)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, std::string("Phase 3B: grid shader compile failed: ") + e.what(), "[Scene]");
+                return;
+            }
+
+            D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
+                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, (UINT)offsetof(SceneVertex, pos), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, (UINT)offsetof(SceneVertex, color), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            };
+
+            // Alpha blend (for distance fade)
+            D3D12_BLEND_DESC blend{};
+            blend.AlphaToCoverageEnable = FALSE;
+            blend.IndependentBlendEnable = FALSE;
+            {
+                auto& rt = blend.RenderTarget[0];
+                rt.BlendEnable = TRUE;
+                rt.LogicOpEnable = FALSE;
+                rt.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+                rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+                rt.BlendOp = D3D12_BLEND_OP_ADD;
+                rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+                rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+                rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+                rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+                rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+            }
+
+            D3D12_RASTERIZER_DESC rast{};
+            rast.FillMode = D3D12_FILL_MODE_SOLID;
+            rast.CullMode = D3D12_CULL_MODE_NONE; // lines: no cull
+            rast.FrontCounterClockwise = FALSE;
+            rast.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+            rast.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+            rast.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+            rast.DepthClipEnable = TRUE;
+            rast.MultisampleEnable = FALSE;
+            rast.AntialiasedLineEnable = FALSE;
+            rast.ForcedSampleCount = 0;
+            rast.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+            D3D12_DEPTH_STENCIL_DESC ds{};
+            ds.DepthEnable = FALSE;
+            ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+            ds.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+            ds.StencilEnable = FALSE;
+            ds.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+            ds.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+            ds.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+            ds.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+            ds.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+            ds.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+            ds.BackFace = ds.FrontFace;
+
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+            psoDesc.pRootSignature = g_scene.rootSig.Get();
+            psoDesc.VS = { gvs->GetBufferPointer(), gvs->GetBufferSize() };
+            psoDesc.PS = { gps->GetBufferPointer(), gps->GetBufferSize() };
+            psoDesc.BlendState = blend;
+            psoDesc.SampleMask = UINT_MAX;
+            psoDesc.RasterizerState = rast;
+            psoDesc.DepthStencilState = ds;
+            psoDesc.InputLayout = { inputLayout, _countof(inputLayout) };
+            psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+            psoDesc.NumRenderTargets = 1;
+            psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            psoDesc.SampleDesc.Count = 1;
+            psoDesc.SampleDesc.Quality = 0;
+            psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+            const HRESULT hrPSO = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&g_scene.gridPso));
+            if (FAILED(hrPSO) || !g_scene.gridPso)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, "Phase 3B: CreateGraphicsPipelineState(grid) failed", "[Scene]");
+                return;
+            }
+        }
+
+        if (!g_scene.gridVb)
+        {
+            // Build a simple XZ plane line grid centered at origin.
+            // N lines each direction, covering [-extent, +extent].
+            constexpr int kDiv = 20;
+            constexpr float kExtent = 10.0f;
+            constexpr float kHalf = kExtent;
+            constexpr float kStep = (kExtent * 2.0f) / (float)kDiv;
+
+            std::vector<SceneVertex> verts;
+            verts.reserve((kDiv + 1) * 4);
+
+            auto push = [&](float x, float y, float z, float r, float g, float b, float a)
+            {
+                SceneVertex v{};
+                v.pos[0] = x; v.pos[1] = y; v.pos[2] = z;
+                v.color[0] = r; v.color[1] = g; v.color[2] = b; v.color[3] = a;
+                verts.push_back(v);
+            };
+
+            for (int i = 0; i <= kDiv; ++i)
+            {
+                const float t = -kHalf + (float)i * kStep;
+
+                // Emphasize axis lines.
+                const bool isAxis = (i == kDiv / 2);
+                const float c = isAxis ? 0.85f : 0.40f;
+                const float a = isAxis ? 0.95f : 0.65f;
+
+                // Line parallel to X at Z=t
+                push(-kHalf, 0.0f, t, c, c, c, a);
+                push(+kHalf, 0.0f, t, c, c, c, a);
+
+                // Line parallel to Z at X=t
+                push(t, 0.0f, -kHalf, c, c, c, a);
+                push(t, 0.0f, +kHalf, c, c, c, a);
+            }
+
+            const UINT vbSize = (UINT)(sizeof(SceneVertex) * verts.size());
+
+            const D3D12_HEAP_PROPERTIES heapProps = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
+            const D3D12_RESOURCE_DESC bufDesc = MakeBufferDesc(vbSize);
+
+            const HRESULT hrVB = device->CreateCommittedResource(
+                &heapProps,
+                D3D12_HEAP_FLAG_NONE,
+                &bufDesc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&g_scene.gridVb));
+
+            if (FAILED(hrVB) || !g_scene.gridVb)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, "Phase 3B: CreateCommittedResource(GridVB) failed", "[Scene]");
+                return;
+            }
+
+            void* mapped = nullptr;
+            const HRESULT hrMap = g_scene.gridVb->Map(0, nullptr, &mapped);
+            if (FAILED(hrMap) || !mapped)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, "Phase 3B: GridVB Map failed", "[Scene]");
+                return;
+            }
+            memcpy(mapped, verts.data(), vbSize);
+            g_scene.gridVb->Unmap(0, nullptr);
+
+            g_scene.gridVbv.BufferLocation = g_scene.gridVb->GetGPUVirtualAddress();
+            g_scene.gridVbv.SizeInBytes = vbSize;
+            g_scene.gridVbv.StrideInBytes = sizeof(SceneVertex);
         }
     }
 }
@@ -362,7 +542,7 @@ void Scene::Render(const SceneRenderContext& ctx)
     const uint32_t h = (std::min)(kMax, (std::max)(kMin, ctx.viewportHeight));
 
     EnsureSceneResources(ctx.device);
-    if (g_scene.initFailed || !g_scene.rootSig || !g_scene.pso || !g_scene.vb || !g_scene.cb)
+    if (g_scene.initFailed || !g_scene.rootSig || !g_scene.pso || !g_scene.vb || !g_scene.cb || !g_scene.gridPso || !g_scene.gridVb)
         return;
 
     // Frame-safe deterministic CB write (single constant for now).
@@ -393,19 +573,32 @@ void Scene::Render(const SceneRenderContext& ctx)
     ctx.commandList->RSSetViewports(1, &vp);
     ctx.commandList->RSSetScissorRects(1, &sc);
 
+    // Bind shared root signature once (both PSOs compatible).
     ctx.commandList->SetGraphicsRootSignature(g_scene.rootSig.Get());
-    ctx.commandList->SetPipelineState(g_scene.pso.Get());
 
     // Fully define dynamic state that can bleed between draws.
     const float blendFactor[4] = { 0, 0, 0, 0 };
     ctx.commandList->OMSetBlendFactor(blendFactor);
     ctx.commandList->OMSetStencilRef(0);
 
-    ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    ctx.commandList->IASetVertexBuffers(0, 1, &g_scene.vbv);
-
+    // Common CB
     ctx.commandList->SetGraphicsRootConstantBufferView(0, g_scene.cb->GetGPUVirtualAddress());
 
+    // ---------------------------
+    // Solid pass (triangle)
+    // ---------------------------
+    ctx.commandList->SetPipelineState(g_scene.pso.Get());
+    ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx.commandList->IASetVertexBuffers(0, 1, &g_scene.vbv);
     ctx.commandList->DrawInstanced(3, 1, 0, 0);
+
+    // ---------------------------
+    // Grid pass (lines)
+    // ---------------------------
+    ctx.commandList->SetPipelineState(g_scene.gridPso.Get());
+    ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+    ctx.commandList->IASetVertexBuffers(0, 1, &g_scene.gridVbv);
+    ctx.commandList->DrawInstanced(g_scene.gridVbv.SizeInBytes / g_scene.gridVbv.StrideInBytes, 1, 0, 0);
+
     (void)ctx.frameIndex;
 }
