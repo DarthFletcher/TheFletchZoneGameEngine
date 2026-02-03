@@ -1919,6 +1919,48 @@ void Graphics::RenderSceneToTarget()
     if (!commandList || !sceneRenderTarget || sceneRtvHandle.ptr == 0 || sceneRTWidth == 0 || sceneRTHeight == 0)
         return;
 
+    // Validate RT invariants (non-spammy)
+    {
+        const D3D12_RESOURCE_DESC desc = sceneRenderTarget->GetDesc();
+
+        static bool loggedFmtMismatch = false;
+        if (!loggedFmtMismatch && desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM)
+        {
+            loggedFmtMismatch = true;
+            Logger::Log(LogLevel::Error, std::format(
+                "[Scene] Scene RT format mismatch: RT={} expected={} (artifacts likely)",
+                (int)desc.Format, (int)DXGI_FORMAT_R8G8B8A8_UNORM));
+        }
+
+        static bool loggedMsaaMismatch = false;
+        if (!loggedMsaaMismatch && desc.SampleDesc.Count != 1)
+        {
+            loggedMsaaMismatch = true;
+            Logger::Log(LogLevel::Error, std::format(
+                "[Scene] Scene RT MSAA mismatch: SampleCount={} expected=1 (artifacts likely)",
+                (UINT)desc.SampleDesc.Count));
+        }
+
+        // Prefer the actual resource size for VP/scissor to avoid UI-size mismatch.
+        const UINT rtW = (UINT)desc.Width;
+        const UINT rtH = (UINT)desc.Height;
+        if (rtW != sceneRTWidth || rtH != sceneRTHeight)
+        {
+            static bool loggedSizeMismatch = false;
+            if (!loggedSizeMismatch)
+            {
+                loggedSizeMismatch = true;
+                Logger::Log(LogLevel::Warning, std::format(
+                    "[Scene] Scene RT size mismatch: tracked={}x{} resource={}x{} (using resource size)",
+                    sceneRTWidth, sceneRTHeight, rtW, rtH));
+            }
+        }
+    }
+
+    const D3D12_RESOURCE_DESC desc = sceneRenderTarget->GetDesc();
+    const UINT rtW = (UINT)desc.Width;
+    const UINT rtH = (UINT)desc.Height;
+
     // Transition RT to render target
     if (sceneRTState != D3D12_RESOURCE_STATE_RENDER_TARGET)
     {
@@ -1927,7 +1969,25 @@ void Graphics::RenderSceneToTarget()
             sceneRTState,
             D3D12_RESOURCE_STATE_RENDER_TARGET);
         commandList->ResourceBarrier(1, &b);
+
+        if (SceneDiag_ShouldLog())
+        {
+            Logger::Log(LogLevel::Debug, std::format(
+                "[SceneDiag] Scene RT transition {} -> {}",
+                D3D12StateToString(sceneRTState),
+                D3D12StateToString(D3D12_RESOURCE_STATE_RENDER_TARGET)));
+        }
+
         sceneRTState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    }
+    else
+    {
+        static bool loggedRedundantToRT = false;
+        if (!loggedRedundantToRT && SceneDiag_ShouldLog())
+        {
+            loggedRedundantToRT = true;
+            Logger::Log(LogLevel::Debug, "[SceneDiag] Scene RT already in RENDER_TARGET state (redundant transition skipped)");
+        }
     }
 
     const float clearColor[4] = { 0.25f, 0.05f, 0.35f, 1.0f };
@@ -1935,20 +1995,26 @@ void Graphics::RenderSceneToTarget()
     D3D12_VIEWPORT vp{};
     vp.TopLeftX = 0.0f;
     vp.TopLeftY = 0.0f;
-    vp.Width = (float)sceneRTWidth;
-    vp.Height = (float)sceneRTHeight;
+    vp.Width = (float)rtW;
+    vp.Height = (float)rtH;
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
 
     D3D12_RECT sc{};
     sc.left = 0;
     sc.top = 0;
-    sc.right = (LONG)sceneRTWidth;
-    sc.bottom = (LONG)sceneRTHeight;
+    sc.right = (LONG)rtW;
+    sc.bottom = (LONG)rtH;
+
+    // Clamp scissor to RT bounds (defensive)
+    if (sc.right < sc.left) sc.right = sc.left;
+    if (sc.bottom < sc.top) sc.bottom = sc.top;
 
     commandList->RSSetViewports(1, &vp);
     commandList->RSSetScissorRects(1, &sc);
 
+    // Always bind the scene RTV immediately before scene draw/clear.
+    // Do not assume previous bindings (ImGui or other passes may have rebound RTVs).
     if (sceneDsvHandle.ptr != 0)
         commandList->OMSetRenderTargets(1, &sceneRtvHandle, FALSE, &sceneDsvHandle);
     else
@@ -1961,7 +2027,7 @@ void Graphics::RenderSceneToTarget()
 
     // Phase 0: placeholder pass only. Real scene drawing will be restored later.
 
-    // Transition RT back to shader resource
+    // Transition RT back to shader resource (for ImGui sampling)
     if (sceneRTState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
     {
         CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -1969,7 +2035,25 @@ void Graphics::RenderSceneToTarget()
             sceneRTState,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         commandList->ResourceBarrier(1, &b);
+
+        if (SceneDiag_ShouldLog())
+        {
+            Logger::Log(LogLevel::Debug, std::format(
+                "[SceneDiag] Scene RT transition {} -> {}",
+                D3D12StateToString(sceneRTState),
+                D3D12StateToString(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)));
+        }
+
         sceneRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+    else
+    {
+        static bool loggedRedundantToSRV = false;
+        if (!loggedRedundantToSRV && SceneDiag_ShouldLog())
+        {
+            loggedRedundantToSRV = true;
+            Logger::Log(LogLevel::Debug, "[SceneDiag] Scene RT already in PIXEL_SHADER_RESOURCE state (redundant transition skipped)");
+        }
     }
 }
 
