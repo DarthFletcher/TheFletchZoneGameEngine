@@ -56,16 +56,21 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_SIZE:
         if (wParam != SIZE_MINIMIZED) {
-            UINT width = LOWORD(lParam);
-            UINT height = HIWORD(lParam);
+            RECT rc{};
+            if (GetClientRect(hWnd, &rc))
+            {
+                const UINT clientW = (UINT)(std::max)(0L, rc.right - rc.left);
+                const UINT clientH = (UINT)(std::max)(0L, rc.bottom - rc.top);
 
-            static UINT lastWidth = 0, lastHeight = 0;
-            if (width != lastWidth || height != lastHeight) {
-                lastWidth = width;
-                lastHeight = height;
+                static UINT lastW = 0, lastH = 0;
+                if (clientW != lastW || clientH != lastH)
+                {
+                    lastW = clientW;
+                    lastH = clientH;
 
-                Logger::Log(LogLevel::Info, "🔄 Resizing Window: " + std::to_string(width) + "x" + std::to_string(height));
-                Graphics::GetInstance().RequestResize(width, height, ResizeSource::Window);
+                    Logger::Log(LogLevel::Info, std::format("🔄 WM_SIZE client={:}x{:}", clientW, clientH));
+                    Graphics::GetInstance().RequestResize(clientW, clientH, ResizeSource::Window);
+                }
             }
         }
         break;

@@ -245,6 +245,7 @@
     <None Include="Directory.Build.props" />
     <None Include="Directory.Build.targets" />
     <None Include="docs\CHANGELOG_0.3.0.md" />
+    <None Include="docs\Phase3F_RenderGraphNotes.md" />
     <None Include="Docs\ShaderCompilationComplete.md" />
     <None Include="Docs\ShaderCompilationQuickRef.md" />
     <None Include="ENGINE_CONTRACT.md" />

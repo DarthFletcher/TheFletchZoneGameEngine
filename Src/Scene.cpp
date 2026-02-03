@@ -529,6 +529,29 @@ namespace
 
 void Scene::Render(const SceneRenderContext& ctx)
 {
+    // ====================================================================
+    // Phase 3F: PASS BOUNDARY & OWNERSHIP NOTES
+    // ====================================================================
+    // This function is a CONSUMER of the command list, not an owner.
+    // It must NOT:
+    //   - Open or close the command list
+    //   - Transition the main window backbuffer
+    //   - Signal fences or flush the GPU
+    //   - Assume any specific GPU state (PSO, heaps, viewports)
+    //
+    // Ownership:
+    //   - Scene RT transitions: owned by Graphics::RenderSceneToTarget()
+    //   - Command list lifecycle: owned by Graphics::BeginFrame/EndFrame()
+    //   - Camera data: owned by CameraSystem, read-only here via ctx.camera
+    //
+    // State assumptions:
+    //   - Command list is open and recording
+    //   - Scene RT is in RENDER_TARGET state (set by caller)
+    //   - g_SRVHeap may or may not be bound (we re-bind defensively)
+    //
+    // ImGui bleed: ImGui may have left PSO/heap/viewport bound. We reset all.
+    // ====================================================================
+
     if (!ctx.device || !ctx.commandList)
     {
         if (!g_loggedInvalidCtx)
@@ -585,6 +608,24 @@ void Scene::Render(const SceneRenderContext& ctx)
     if (g_scene.cbCpu)
         memcpy(g_scene.cbCpu, &g_scene.cbData, sizeof(SceneCB));
 
+    // ====================================================================
+    // Phase 3F: EXPLICIT STATE SETUP
+    // ====================================================================
+    // WHY: ImGui or other passes may have left incompatible state bound.
+    // D3D12 does NOT auto-reset state between draws. We must explicitly
+    // bind our own PSO, root signature, heaps, and dynamic state.
+    //
+    // Order matters:
+    //   1. Descriptor heaps (required before any SRV/CBV bindings)
+    //   2. Viewport + scissor (defines rasterization region)
+    //   3. Root signature (defines shader bindings)
+    //   4. Blend factor + stencil ref (dynamic state that persists)
+    //   5. CBV (constant buffer for transforms)
+    //   6. PSO (defines shaders, blend, rasterizer, depth)
+    //   7. IA state (topology, vertex buffers)
+    //   8. Draw calls
+    // ====================================================================
+
     // ---------------------------
     // Explicit state setup (no ImGui bleed)
     // ---------------------------
@@ -620,17 +661,24 @@ void Scene::Render(const SceneRenderContext& ctx)
     // Common CB
     ctx.commandList->SetGraphicsRootConstantBufferView(0, g_scene.cb->GetGPUVirtualAddress());
 
-    // ---------------------------
-    // Solid pass (triangle)
-    // ---------------------------
+    // ====================================================================
+    // Phase 3F: OPAQUE GEOMETRY PASS (Triangle)
+    // ====================================================================
+    // Draws solid geometry with no blending, no depth test.
+    // PSO: opaque (blend disabled), backface culling enabled
+    // ====================================================================
     ctx.commandList->SetPipelineState(g_scene.pso.Get());
     ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ctx.commandList->IASetVertexBuffers(0, 1, &g_scene.vbv);
     ctx.commandList->DrawInstanced(3, 1, 0, 0);
 
-    // ---------------------------
-    // Grid pass (lines)
-    // ---------------------------
+    // ====================================================================
+    // Phase 3F: GRID OVERLAY PASS (Lines)
+    // ====================================================================
+    // Draws alpha-blended grid lines over opaque geometry.
+    // PSO: alpha blend enabled, no culling (lines are double-sided)
+    // Shares same root signature + CB as opaque pass.
+    // ====================================================================
     ctx.commandList->SetPipelineState(g_scene.gridPso.Get());
     ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
     ctx.commandList->IASetVertexBuffers(0, 1, &g_scene.gridVbv);

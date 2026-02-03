@@ -307,6 +307,7 @@
     <None Include="shaders\scene_triangle_ps.hlsl" />
     <None Include="CHANGELOG.md" />
     <None Include="docs\CHANGELOG_0.3.0.md" />
+    <None Include="docs\Phase3F_RenderGraphNotes.md" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />
