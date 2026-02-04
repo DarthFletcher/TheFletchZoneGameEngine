@@ -2255,31 +2255,183 @@ void Graphics::ApplyPendingResize(HWND hWnd)
         return;
     }
 
+    // Hard guard: never call ResizeBuffers while a frame is active.
+    if (commandListOpen || frameStarted || ImGuiFrameStarted)
+    {
+        static auto s_midFrameLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s_midFrameLast >= std::chrono::seconds(1))
+        {
+            s_midFrameLast = now;
+            Logger::Log(LogLevel::Debug, std::format(
+                "[ResizeDiag] ApplyPendingResize skipped — mid-frame (cmdOpen={} frameStarted={} imguiStarted={})",
+                commandListOpen ? 1 : 0,
+                frameStarted ? 1 : 0,
+                ImGuiFrameStarted ? 1 : 0), "[DX12]");
+        }
+        return; // keep pendingResize=true
+    }
+
+    if (!swapChain || !device || !commandQueue || !fence)
+        return;
+
     const UINT w = pendingWidth;
     const UINT h = pendingHeight;
     const ResizeSource src = pendingResizeSource;
-
-    pendingResize = false;
-    pendingResizeSource = ResizeSource::Unknown;
-
-    if (!swapChain || !device)
-        return;
 
     // Ensure we use client-rect authority (WM_SIZE recorded client size).
     const UINT newW = (std::max)(1u, w);
     const UINT newH = (std::max)(1u, h);
 
-    // Release references to backbuffers before ResizeBuffers.
+    // No-op suppression: if swapchain already matches requested size, consume the request.
+    {
+        DXGI_SWAP_CHAIN_DESC scDesc{};
+        if (SUCCEEDED(swapChain->GetDesc(&scDesc)))
+        {
+            const UINT curW = scDesc.BufferDesc.Width;
+            const UINT curH = scDesc.BufferDesc.Height;
+            if (curW == newW && curH == newH)
+            {
+                pendingResize = false;
+                pendingResizeSource = ResizeSource::Unknown;
+
+                static auto s_noopLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+                const auto now = std::chrono::steady_clock::now();
+                if (now - s_noopLast >= std::chrono::seconds(1))
+                {
+                    s_noopLast = now;
+                    Logger::Log(LogLevel::Debug, std::format(
+                        "[ResizeDiag] No-op resize suppressed (requested={}x{} swapchain={}x{} src={})",
+                        newW, newH, curW, curH, ResizeSourceToString(src)), "[DX12]");
+                }
+
+                screenWidth = (int)newW;
+                screenHeight = (int)newH;
+                currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+                return;
+            }
+        }
+    }
+
+    // Optional edge-size rejection (minimize/transient states): keep pending, retry later.
+    if ((newW <= 1u || newH <= 1u) && hWnd && IsIconic(hWnd))
+    {
+        static auto s_iconicLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s_iconicLast >= std::chrono::seconds(1))
+        {
+            s_iconicLast = now;
+            Logger::Log(LogLevel::Debug, std::format(
+                "[ResizeDiag] Resize deferred — window iconic (requested={}x{} src={})",
+                newW, newH, ResizeSourceToString(src)), "[DX12]");
+        }
+        return;
+    }
+
+    // Ensure GPU is idle before touching swapchain buffers.
+    if (!fenceEvent)
+        fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+    const UINT64 idleFenceValue = ++fenceValue;
+    lastSignaledFenceValue = idleFenceValue;
+
+    const HRESULT hrSignal = commandQueue->Signal(fence.Get(), idleFenceValue);
+    if (FAILED(hrSignal))
+    {
+        Logger::Log(LogLevel::Error, std::format(
+            "[ResizeDiag] commandQueue->Signal for idle fence failed HR=0x{:08X}", (UINT)hrSignal), "[DX12]");
+        return;
+    }
+
+    const UINT64 completedBefore = fence->GetCompletedValue();
+    if (completedBefore < idleFenceValue)
+    {
+        Logger::Log(LogLevel::Debug, std::format(
+            "[ResizeDiag] Waiting for GPU idle before ResizeBuffers (fence={} completed={})",
+            idleFenceValue, completedBefore), "[DX12]");
+
+        (void)fence->SetEventOnCompletion(idleFenceValue, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+
+        const UINT64 completedAfter = fence->GetCompletedValue();
+        (void)completedAfter;
+    }
+
+    // Stamp all frames as idle at this fence.
+    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
+        frames[i].fenceValue = idleFenceValue;
+
+    // Release swapchain-dependent references before ResizeBuffers.
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
         backBuffers[i].Reset();
 
+    // The RTV heap holds descriptors referencing the old backbuffers.
+    rtvHeap.Reset();
+
     const UINT flags = allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
-    HRESULT hr = swapChain->ResizeBuffers(NUM_BACK_BUFFERS, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM, flags);
+    const DXGI_FORMAT fmt = DXGI_FORMAT_R8G8B8A8_UNORM;
+
+#ifndef NDEBUG
+    // Useful one-shot-ish swapchain summary before calling ResizeBuffers.
+    static auto s_descLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    const auto nowDesc = std::chrono::steady_clock::now();
+    if (nowDesc - s_descLast >= std::chrono::seconds(1))
+    {
+        s_descLast = nowDesc;
+        DXGI_SWAP_CHAIN_DESC scDesc{};
+        if (SUCCEEDED(swapChain->GetDesc(&scDesc)))
+        {
+            Logger::Log(LogLevel::Debug, std::format(
+                "[ResizeDiag] Pre-ResizeBuffers | sc={}x{} fmt={} buffers={} swapEffect={} flags=0x{:X} reqFlags=0x{:X} reqFmt={}",
+                scDesc.BufferDesc.Width, scDesc.BufferDesc.Height,
+                (int)scDesc.BufferDesc.Format,
+                scDesc.BufferCount,
+                (int)scDesc.SwapEffect,
+                (UINT)scDesc.Flags,
+                (UINT)flags,
+                (int)fmt), "[DX12]");
+        }
+    }
+#endif
+
+    HRESULT hr = swapChain->ResizeBuffers(NUM_BACK_BUFFERS, newW, newH, fmt, flags);
     if (FAILED(hr))
     {
-        Logger::Log(LogLevel::Error, std::format("[Resize] ResizeBuffers failed HR=0x{:08X} (w={} h={})", (UINT)hr, newW, newH), "[DX12]");
+        // Keep request pending so we can retry.
+        pendingResize = true;
+        pendingResizeSource = src;
+
+        Logger::Log(LogLevel::Error, std::format(
+            "[Resize] ResizeBuffers failed HR=0x{:08X} (w={} h={}) src={}",
+            (UINT)hr, newW, newH, ResizeSourceToString(src)), "[DX12]");
+
+        const char* decoded = "";
+        if (hr == DXGI_ERROR_INVALID_CALL) decoded = "DXGI_ERROR_INVALID_CALL";
+        else if (hr == DXGI_ERROR_DEVICE_REMOVED) decoded = "DXGI_ERROR_DEVICE_REMOVED";
+        else if (hr == DXGI_ERROR_DEVICE_RESET) decoded = "DXGI_ERROR_DEVICE_RESET";
+        else if (hr == E_OUTOFMEMORY) decoded = "E_OUTOFMEMORY";
+
+        if (decoded && decoded[0])
+            Logger::Log(LogLevel::Error, std::format("[ResizeDiag] ResizeBuffers HRESULT decode: {}", decoded), "[DX12]");
+
+        if (device)
+        {
+            const HRESULT removed = device->GetDeviceRemovedReason();
+            if (removed != S_OK)
+                Logger::Log(LogLevel::Error, std::format("[ResizeDiag] DeviceRemovedReason=0x{:08X}", (UINT)removed), "[DX12]");
+
+            if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || removed == DXGI_ERROR_DEVICE_REMOVED || removed == DXGI_ERROR_DEVICE_RESET)
+            {
+                HandleDeviceLost(hWnd);
+            }
+        }
+
         return;
     }
+
+    // Success: consume the resize request.
+    pendingResize = false;
+    pendingResizeSource = ResizeSource::Unknown;
 
     CreateRenderTargetViews();
 
