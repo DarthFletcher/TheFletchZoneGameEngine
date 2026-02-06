@@ -61,6 +61,18 @@ static bool ImGuiFrameStarted = false; // ✅ Track ImGui frame lifecycle
 static bool imguiReadyPublished = false;
 static bool g_ImGuiRenderedThisFrame = false;
 
+// Tracks which view mode the scene grid VB was built for (so we can rebuild on mode swap)
+static ViewMode g_LastSceneGridBuiltViewMode = ViewMode::Mode3D;
+
+// Static variable to track the next available SRV descriptor
+static UINT g_SRVDescriptorIndex = 1; // slot 0 reserved for ImGui font
+
+// Scene RT uses a stable reserved SRV slot to avoid leaking heap descriptors on resize.
+static UINT g_SceneRT_SrvDescriptorIndex = 0; // 0 = unreserved
+static bool g_SceneRT_SrvSlotLogged = false;
+
+static bool g_CreateEventFailedLogged = false;
+
 // One-shot font upload gate: initialized true, cleared after successful upload.
 static bool g_ImGuiFontsNeedUpload = true;
 
@@ -68,11 +80,24 @@ static bool g_ImGuiFontsNeedUpload = true;
 // Present() must be called exactly once per frame, and only by Engine.
 static bool g_PresentedThisFrame = false;
 
-// Tracks which view mode the scene grid VB was built for (so we can rebuild on mode swap)
-static ViewMode g_LastSceneGridBuiltViewMode = ViewMode::Mode3D;
+static bool EnsureFenceEventOrLog()
+{
+    if (Graphics::fenceEvent)
+        return true;
 
-// Static variable to track the next available SRV descriptor
-static UINT g_SRVDescriptorIndex = 1; // slot 0 reserved for ImGui font
+    Graphics::fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!Graphics::fenceEvent)
+    {
+        if (!g_CreateEventFailedLogged)
+        {
+            g_CreateEventFailedLogged = true;
+            Logger::Log(LogLevel::Error, "[FrameHealth] CreateEvent failed during GPU wait; skipping wait (unsafe)", "[DX12]");
+        }
+        return false;
+    }
+
+    return true;
+}
 
 // SRV allocator callbacks (custom ImGui DX12 backend signatures)
 static void ImGui_SrvDescriptorAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu_handle);
@@ -182,6 +207,7 @@ std::future<void> Graphics::LoadTextureAsync(std::string filePath) {
 // Checks and logs the supported MSAA quality levels for 4x MSAA
 // Call this during device initialization
 //===============================================
+
 void Graphics::CheckMSAAQuality() {
     D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS msaaQualityLevels = {};
     msaaQualityLevels.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -203,6 +229,7 @@ void Graphics::CheckMSAAQuality() {
 // Sets up MSAA quality levels and logs the result
 // Call this during device initialization
 //===============================================
+
 void Graphics::InitializeMSAA()
 {
     if (!device) return;
@@ -233,6 +260,7 @@ void Graphics::InitializeMSAA()
 // or during critical operations
 // to detect device loss early.
 //===============================================
+
 void Graphics::CheckDeviceHealth() {
     if (!device) return;
     HRESULT reason = device->GetDeviceRemovedReason();
@@ -247,6 +275,7 @@ void Graphics::CheckDeviceHealth() {
 // Dynamically adjusts screen resolution to maintain target FPS
 // Call this function periodically, e.g., once every few seconds
 //===============================================
+
 void Graphics::AdjustResolutionBasedOnFPS(float currentFPS) {
     static auto lastAdjustmentTime = std::chrono::high_resolution_clock::now();
 
@@ -618,8 +647,8 @@ void Graphics::FlushGPU()
     if (!commandQueue || !fence)
         return;
 
-    if (!fenceEvent)
-        fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!EnsureFenceEventOrLog())
+        return;
 
     const UINT64 signalValue = ++fenceValue;
     lastSignaledFenceValue = signalValue;
@@ -645,8 +674,12 @@ void Graphics::WaitForFenceValue(UINT64 value)
     if (!fence || value == 0)
         return;
 
-    if (!fenceEvent)
-        fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!EnsureFenceEventOrLog())
+    {
+        // Unsafe fallback: keep things moving; caller should retry next frame.
+        Sleep(1);
+        return;
+    }
 
     const UINT64 completed = fence->GetCompletedValue();
     if (completed == UINT64_MAX)
@@ -659,17 +692,13 @@ void Graphics::WaitForFenceValue(UINT64 value)
     }
 }
 
-//==============================================
-// Signal Fence Function
-//==============================================
-
 void Graphics::SignalFence()
 {
     if (!commandQueue || !fence)
         return;
 
-    if (!fenceEvent)
-        fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!EnsureFenceEventOrLog())
+        return;
 
     const UINT64 signalValue = ++fenceValue;
     lastSignaledFenceValue = signalValue;
@@ -1015,6 +1044,17 @@ void Graphics::BeginFrame(HWND hWnd)
     // Sync GPU for current backbuffer
     // ==========================
     currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+    if (currentBackBufferIndex >= NUM_BACK_BUFFERS)
+    {
+        if (!logged_Dx12_SwapchainBackBufferIndexOOR)
+        {
+            logged_Dx12_SwapchainBackBufferIndexOOR = true;
+            Logger::Log(LogLevel::Error, std::format(
+                "[DX12] [Invariant] BackBufferIndex out of range: idx={} NUM_BACK_BUFFERS={} — clamped to 0",
+                currentBackBufferIndex, (UINT)NUM_BACK_BUFFERS));
+        }
+        currentBackBufferIndex = 0;
+    }
 
 #ifndef NDEBUG
     // Throttled frame lifecycle validation log.
@@ -1349,6 +1389,7 @@ namespace
 //====================================
 // Get Device Function
 //====================================
+
 ID3D12Device* Graphics::GetDevice() const
 {
     return device.Get();
@@ -1357,6 +1398,7 @@ ID3D12Device* Graphics::GetDevice() const
 //====================================
 // Get ImGui SRV Heap Function
 //====================================
+
 ID3D12DescriptorHeap* Graphics::GetImGuiSrvHeap() const
 {
     return imguiHeap.Get();
@@ -1386,7 +1428,227 @@ D3D12_CPU_DESCRIPTOR_HANDLE Graphics::AllocateSRV()
     return handle;
 }
 
-// ...existing code...
+//===============================================
+// Request Resize Function
+//===============================================
+void Graphics::RequestResize(UINT width, UINT height)
+{
+    RequestResize(width, height, ResizeSource::Unknown);
+}
+
+void Graphics::RequestResize(UINT width, UINT height, ResizeSource source)
+{
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+
+    pendingWidth = width;
+    pendingHeight = height;
+    pendingResizeSource = source;
+    pendingResize = true;
+
+    if (Resize_ShouldLog())
+    {
+        Logger::Log(LogLevel::Info, std::format(
+            "[Resize] Requested w={} h={} source={} pending=true",
+            width, height, ResizeSourceToString(source)));
+    }
+}
+
+//===============================================
+// Pending font reload helper (kept minimal)
+//===============================================
+void Graphics::ProcessPendingFontReload()
+{
+    if (!pendingFontReload)
+        return;
+
+    pendingFontReload = false;
+
+    // Reuse existing call path; this function enforces all safety gates.
+    ReloadImGuiFontImpl(pendingFontPixelSize, "<deferred>", 0);
+}
+
+//===============================================
+// Pending Scene RT Resize Apply
+//===============================================
+void Graphics::ProcessPendingSceneRenderTargetResize()
+{
+    if (!pendingSceneRTResize)
+        return;
+
+    const UINT w = pendingSceneRTW;
+    const UINT h = pendingSceneRTH;
+
+    pendingSceneRTResize = false;
+    pendingSceneRTResizeSource = ResizeSource::Unknown;
+
+    EnsureSceneRenderTarget(w, h);
+}
+
+//==============================
+// Deferred Release Processing
+//==============================
+void Graphics::ProcessDeferredReleases()
+{
+    if (!fence)
+        return;
+
+    const UINT64 completed = fence->GetCompletedValue();
+    if (completed == UINT64_MAX)
+        return;
+
+    if (deferredReleases.empty())
+        return;
+
+    size_t write = 0;
+    for (size_t read = 0; read < deferredReleases.size(); ++read)
+    {
+        auto& item = deferredReleases[read];
+        if (item.fenceValue != 0 && item.fenceValue <= completed)
+        {
+#ifndef NDEBUG
+            drStats.released++;
+#endif
+            item.object.Reset();
+            continue;
+        }
+
+        if (write != read)
+            deferredReleases[write] = std::move(item);
+        ++write;
+    }
+
+    deferredReleases.resize(write);
+
+#ifndef NDEBUG
+    drStats.peakQueue = (std::max)(drStats.peakQueue, deferredReleases.size());
+    if (!deferredReleases.empty())
+        drStats.oldestFence = deferredReleases.front().fenceValue;
+    else
+        drStats.oldestFence = 0;
+#endif
+}
+
+//==============================
+// Abort Frame Helper
+//==============================
+void Graphics::AbortFrame(const char* why)
+{
+    Logger::Log(LogLevel::Error, std::format("[FrameAbort] {}", (why ? why : "<unknown>")), "[DX12]");
+
+    if (commandListOpen && commandList)
+        (void)commandList->Close();
+
+    commandListOpen = false;
+    frameStarted = false;
+    ImGuiFrameStarted = false;
+}
+
+//==============================
+// Create Render Target Views (Swapchain Backbuffers)
+//==============================
+void Graphics::CreateRenderTargetViews()
+{
+    if (!device || !swapChain)
+        return;
+
+    // Release old references first.
+    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
+        backBuffers[i].Reset();
+
+    rtvHeap.Reset();
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvDesc{};
+    rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvDesc.NumDescriptors = NUM_BACK_BUFFERS;
+    rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    HRESULT hr = device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&rtvHeap));
+    if (FAILED(hr) || !rtvHeap)
+    {
+        Logger::Log(LogLevel::Error, std::format("❌ CreateRenderTargetViews: CreateDescriptorHeap(RTV) failed HR=0x{:08X}", (UINT)hr), "[DX12]");
+        return;
+    }
+
+    const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE handle = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
+    {
+        hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i]));
+        if (FAILED(hr) || !backBuffers[i])
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ CreateRenderTargetViews: GetBuffer({}) failed HR=0x{:08X}", i, (UINT)hr), "[DX12]");
+            return;
+        }
+
+        device->CreateRenderTargetView(backBuffers[i].Get(), nullptr, handle);
+        handle.ptr += (SIZE_T)inc;
+    }
+
+    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+}
+
+//====================================
+// Apply Pending Resize
+//====================================
+void Graphics::ApplyPendingResize(HWND hwnd)
+{
+    if (!pendingResize)
+        return;
+
+    if (!swapChain || !device)
+        return;
+
+    if (commandListOpen || frameStarted || ImGuiFrameStarted)
+        return;
+
+    UINT w = pendingWidth;
+    UINT h = pendingHeight;
+    w = (std::max)(1u, w);
+    h = (std::max)(1u, h);
+
+    // Consume request first (prevents loops on failure paths).
+    pendingResize = false;
+    pendingResizeSource = ResizeSource::Unknown;
+
+    // Some drivers require at least one Present() before ResizeBuffers.
+    if (!hasPresentedOnce)
+        return;
+
+    // Force GPU idle before destroying swapchain-dependent resources.
+    FlushGPU();
+
+    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
+        backBuffers[i].Reset();
+
+    rtvHeap.Reset();
+
+    const UINT flags = allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
+    const HRESULT hr = swapChain->ResizeBuffers(NUM_BACK_BUFFERS, w, h, DXGI_FORMAT_R8G8B8A8_UNORM, flags);
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error, std::format("❌ ResizeBuffers failed HR=0x{:08X} (will retry)", (UINT)hr), "[DX12]");
+        pendingWidth = w;
+        pendingHeight = h;
+        pendingResize = true;
+        return;
+    }
+
+    screenWidth = (int)w;
+    screenHeight = (int)h;
+
+    CreateRenderTargetViews();
+
+    if (Resize_ShouldLog())
+    {
+        Logger::Log(LogLevel::Info, std::format("[Resize] Applied w={} h={}", w, h), "[DX12]");
+    }
+
+    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+}
+
+//...existing code...
 
 Graphics& Graphics::GetInstance()
 {
@@ -1630,6 +1892,7 @@ void Graphics::OnImGuiReady()
 // ========================================
 // Setup ImGui Fonts and Scaling
 // ========================================
+
 void Graphics::SetupImGuiFontsAndScaling(HWND inHwnd)
 {
     if (!inHwnd)
@@ -1773,9 +2036,62 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     width = (std::max)(1u, width);
     height = (std::max)(1u, height);
 
+    // Contract: never destroy/recreate the Scene RT mid-frame.
+    if (commandListOpen || frameStarted || ImGuiFrameStarted)
+    {
+        static bool loggedMidFrame = false;
+        if (!loggedMidFrame)
+        {
+            loggedMidFrame = true;
+            Logger::Log(LogLevel::Error, "[SceneRT] EnsureSceneRenderTarget called mid-frame; deferring to next BeginFrame", "[DX12]");
+        }
+
+        RequestSceneRenderTargetResize(width, height, ResizeSource::Engine);
+        return;
+    }
+
+    // Already valid?
     if (sceneRenderTarget && sceneRtvHeap && sceneSrvCpu.ptr != 0 && sceneSrvGpu.ptr != 0 &&
         sceneRTWidth == width && sceneRTHeight == height)
         return;
+
+    // Reserve a stable SRV slot once for the scene target.
+    if (imguiHeap && device && g_SceneRT_SrvDescriptorIndex == 0)
+    {
+        g_SceneRT_SrvDescriptorIndex = g_SRVDescriptorIndex++; // consume from the global allocator once
+        if (!g_SceneRT_SrvSlotLogged)
+        {
+            g_SceneRT_SrvSlotLogged = true;
+            Logger::Log(LogLevel::Info, std::format("[SceneRT] Reserved stable SRV slot {} for Scene RT", g_SceneRT_SrvDescriptorIndex), "[DX12]");
+        }
+    }
+
+    // GPU-idle + lifetime correctness (same strictness as swapchain path)
+    if (!commandQueue || !fence)
+        return;
+
+    if (!EnsureFenceEventOrLog())
+        return; // keep pendingResize=true
+
+    const UINT64 idleFenceValue = ++fenceValue;
+    lastSignaledFenceValue = idleFenceValue;
+
+    const HRESULT hrSignal = commandQueue->Signal(fence.Get(), idleFenceValue);
+    if (FAILED(hrSignal))
+    {
+        Logger::Log(LogLevel::Error, std::format("[SceneRT] commandQueue->Signal for idle fence failed HR=0x{:08X}", (UINT)hrSignal), "[DX12]");
+        return;
+    }
+
+    const UINT64 completedBefore = fence->GetCompletedValue();
+    if (completedBefore < idleFenceValue)
+    {
+        (void)fence->SetEventOnCompletion(idleFenceValue, fenceEvent);
+        WaitForSingleObject(fenceEvent, INFINITE);
+    }
+
+    // Stamp the scene releases to the idle fence so they retire deterministically.
+    lastSignaledFenceValue = idleFenceValue;
 
     // Release old resources safely.
     EnqueueDeferredRelease(sceneRenderTarget);
@@ -1881,7 +2197,6 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
         if (FAILED(hr) || !sceneDepth)
         {
             Logger::Log(LogLevel::Error, std::format("❌ EnsureSceneRenderTarget: failed to create scene depth HR=0x{:08X}", (UINT)hr));
-            // Depth is optional for the placeholder pass; keep color RT alive.
             sceneDsvHeap.Reset();
             sceneDsvHandle = {};
             sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
@@ -1916,34 +2231,29 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     }
 
     // ---------------------------------------------------------------------------------
-    // Create SRV in the engine ImGui heap for ImGui::Image
+    // Create/Rewrite SRV in the engine ImGui heap for ImGui::Image (stable slot)
     // ---------------------------------------------------------------------------------
     {
         sceneSrvCpu = {};
         sceneSrvGpu = {};
         sceneImGuiTextureID = (ImTextureID)0;
 
-        if (imguiHeap)
+        if (imguiHeap && g_SceneRT_SrvDescriptorIndex != 0)
         {
-            // Allocate a CPU descriptor from the same heap.
-            sceneSrvCpu = AllocateSRV();
+            const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = imguiHeap->GetCPUDescriptorHandleForHeapStart();
+            const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = imguiHeap->GetGPUDescriptorHandleForHeapStart();
 
-            if (sceneSrvCpu.ptr != 0)
-            {
-                const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = imguiHeap->GetCPUDescriptorHandleForHeapStart();
-                const UINT index = (UINT)((sceneSrvCpu.ptr - cpuStart.ptr) / (SIZE_T)inc);
-                const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = imguiHeap->GetGPUDescriptorHandleForHeapStart();
-                sceneSrvGpu = { gpuStart.ptr + (UINT64)index * (UINT64)inc };
-                sceneImGuiTextureID = (ImTextureID)sceneSrvGpu.ptr;
+            sceneSrvCpu.ptr = cpuStart.ptr + (SIZE_T)g_SceneRT_SrvDescriptorIndex * (SIZE_T)inc;
+            sceneSrvGpu.ptr = gpuStart.ptr + (UINT64)g_SceneRT_SrvDescriptorIndex * (UINT64)inc;
+            sceneImGuiTextureID = (ImTextureID)sceneSrvGpu.ptr;
 
-                D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-                srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-                srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                srv.Texture2D.MipLevels = 1;
-                device->CreateShaderResourceView(sceneRenderTarget.Get(), &srv, sceneSrvCpu);
-            }
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Texture2D.MipLevels = 1;
+            device->CreateShaderResourceView(sceneRenderTarget.Get(), &srv, sceneSrvCpu);
         }
     }
 }
@@ -2017,15 +2327,6 @@ void Graphics::RenderSceneToTarget()
 
         sceneRTState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
-    else
-    {
-        static bool loggedRedundantToRT = false;
-        if (!loggedRedundantToRT && SceneDiag_ShouldLog())
-        {
-            loggedRedundantToRT = true;
-            Logger::Log(LogLevel::Debug, "[SceneDiag] Scene RT already in RENDER_TARGET state (redundant transition skipped)");
-        }
-    }
 
     const float clearColor[4] = { 0.25f, 0.05f, 0.35f, 1.0f };
 
@@ -2050,8 +2351,7 @@ void Graphics::RenderSceneToTarget()
     commandList->RSSetViewports(1, &vp);
     commandList->RSSetScissorRects(1, &sc);
 
-    // Always bind the scene RTV immediately before scene draw/clear.
-    // Do not assume previous bindings (ImGui or other passes may have rebound RTVs).
+    // Bind the scene RTV/DSV.
     if (sceneDsvHandle.ptr != 0)
         commandList->OMSetRenderTargets(1, &sceneRtvHandle, FALSE, &sceneDsvHandle);
     else
@@ -2062,7 +2362,17 @@ void Graphics::RenderSceneToTarget()
     if (sceneDsvHandle.ptr != 0)
         commandList->ClearDepthStencilView(sceneDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    // Phase 0: placeholder pass only. Real scene drawing will be restored later.
+    // Draw scene INTO the scene RT while it is bound and in RENDER_TARGET.
+    {
+        SceneRenderContext sctx;
+        sctx.device = device.Get();
+        sctx.commandList = commandList.Get();
+        sctx.viewportWidth = rtW;
+        sctx.viewportHeight = rtH;
+        sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
+        sctx.camera = &CameraSystem::GetActiveData();
+        Scene::Render(sctx);
+    }
 
     // Transition RT back to shader resource (for ImGui sampling)
     if (sceneRTState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
@@ -2082,15 +2392,6 @@ void Graphics::RenderSceneToTarget()
         }
 
         sceneRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    }
-    else
-    {
-        static bool loggedRedundantToSRV = false;
-        if (!loggedRedundantToSRV && SceneDiag_ShouldLog())
-        {
-            loggedRedundantToSRV = true;
-            Logger::Log(LogLevel::Debug, "[SceneDiag] Scene RT already in PIXEL_SHADER_RESOURCE state (redundant transition skipped)");
-        }
     }
 }
 
@@ -2136,19 +2437,6 @@ void Graphics::Render(HWND hWnd)
     ImGui::Render();
     g_ImGuiRenderedThisFrame = true;
 
-    // Phase 3A: scene render scaffolding.
-    // Non-destructive: emits logs/validates wiring only (no draw calls yet).
-    {
-        SceneRenderContext sctx;
-        sctx.device = device.Get();
-        sctx.commandList = commandList.Get();
-        sctx.viewportWidth = sceneRTWidth;
-        sctx.viewportHeight = sceneRTHeight;
-        sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
-        sctx.camera = &CameraSystem::GetActiveData();
-        Scene::Render(sctx);
-    }
-
     ImDrawData* drawData = ImGui::GetDrawData();
     if (!drawData)
         return;
@@ -2172,7 +2460,7 @@ void Graphics::Render(HWND hWnd)
     {
         const D3D12_RESOURCE_DESC bbDesc = backBuffers[currentBackBufferIndex]->GetDesc();
         const UINT bbW = (UINT)bbDesc.Width;
-        const UINT bbH = bbDesc.Height;
+        const UINT bbH = (UINT)bbDesc.Height;
 
         D3D12_VIEWPORT vp{};
         vp.TopLeftX = 0.0f;
@@ -2206,296 +2494,6 @@ void Graphics::Render(HWND hWnd)
         D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATE_PRESENT);
     commandList->ResourceBarrier(1, &toPresent);
-}
 
-//===============================================
-// Request Resize Function
-//===============================================
-// Call this to request a swap chain resize
-// Width and height of 0 will be ignored
-// Requested resizes are applied at the top of the next BeginFrame()
-// Example: Graphics::GetInstance().RequestResize(1920, 1080);
-//===============================================
-void Graphics::RequestResize(UINT width, UINT height)
-{
-    RequestResize(width, height, ResizeSource::Unknown);
-}
-
-void Graphics::RequestResize(UINT width, UINT height, ResizeSource source)
-{
-    width = (std::max)(1u, width);
-    height = (std::max)(1u, height);
-
-    pendingWidth = width;
-    pendingHeight = height;
-    pendingResizeSource = source;
-    pendingResize = true;
-
-    if (Resize_ShouldLog())
-    {
-        Logger::Log(LogLevel::Info, std::format(
-            "[Resize] Requested w={} h={} source={} pending=true",
-            width, height, ResizeSourceToString(source)));
-    }
-}
-
-void Graphics::ApplyPendingResize(HWND hWnd)
-{
-    if (!pendingResize)
-        return;
-
-    // Never resize before first present; just keep the request pending.
-    if (!hasPresentedOnce)
-    {
-        if (!loggedDeferredResizeBeforeFirstPresent)
-        {
-            loggedDeferredResizeBeforeFirstPresent = true;
-            Logger::Log(LogLevel::Info, "ℹ️ Resize deferred — waiting for first Present", "[DX12]");
-        }
-        return;
-    }
-
-    // Hard guard: never call ResizeBuffers while a frame is active.
-    if (commandListOpen || frameStarted || ImGuiFrameStarted)
-    {
-        static auto s_midFrameLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-        const auto now = std::chrono::steady_clock::now();
-        if (now - s_midFrameLast >= std::chrono::seconds(1))
-        {
-            s_midFrameLast = now;
-            Logger::Log(LogLevel::Debug, std::format(
-                "[ResizeDiag] ApplyPendingResize skipped — mid-frame (cmdOpen={} frameStarted={} imguiStarted={})",
-                commandListOpen ? 1 : 0,
-                frameStarted ? 1 : 0,
-                ImGuiFrameStarted ? 1 : 0), "[DX12]");
-        }
-        return; // keep pendingResize=true
-    }
-
-    if (!swapChain || !device || !commandQueue || !fence)
-        return;
-
-    const UINT w = pendingWidth;
-    const UINT h = pendingHeight;
-    const ResizeSource src = pendingResizeSource;
-
-    // Ensure we use client-rect authority (WM_SIZE recorded client size).
-    const UINT newW = (std::max)(1u, w);
-    const UINT newH = (std::max)(1u, h);
-
-    // No-op suppression: if swapchain already matches requested size, consume the request.
-    {
-        DXGI_SWAP_CHAIN_DESC scDesc{};
-        if (SUCCEEDED(swapChain->GetDesc(&scDesc)))
-        {
-            const UINT curW = scDesc.BufferDesc.Width;
-            const UINT curH = scDesc.BufferDesc.Height;
-            if (curW == newW && curH == newH)
-            {
-                pendingResize = false;
-                pendingResizeSource = ResizeSource::Unknown;
-
-                static auto s_noopLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-                const auto now = std::chrono::steady_clock::now();
-                if (now - s_noopLast >= std::chrono::seconds(1))
-                {
-                    s_noopLast = now;
-                    Logger::Log(LogLevel::Debug, std::format(
-                        "[ResizeDiag] No-op resize suppressed (requested={}x{} swapchain={}x{} src={})",
-                        newW, newH, curW, curH, ResizeSourceToString(src)), "[DX12]");
-                }
-
-                screenWidth = (int)newW;
-                screenHeight = (int)newH;
-                currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
-                return;
-            }
-        }
-    }
-
-    // Optional edge-size rejection (minimize/transient states): keep pending, retry later.
-    if ((newW <= 1u || newH <= 1u) && hWnd && IsIconic(hWnd))
-    {
-        static auto s_iconicLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-        const auto now = std::chrono::steady_clock::now();
-        if (now - s_iconicLast >= std::chrono::seconds(1))
-        {
-            s_iconicLast = now;
-            Logger::Log(LogLevel::Debug, std::format(
-                "[ResizeDiag] Resize deferred — window iconic (requested={}x{} src={})",
-                newW, newH, ResizeSourceToString(src)), "[DX12]");
-        }
-        return;
-    }
-
-    // Ensure GPU is idle before touching swapchain buffers.
-    if (!fenceEvent)
-        fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-
-    const UINT64 idleFenceValue = ++fenceValue;
-    lastSignaledFenceValue = idleFenceValue;
-
-    const HRESULT hrSignal = commandQueue->Signal(fence.Get(), idleFenceValue);
-    if (FAILED(hrSignal))
-    {
-        Logger::Log(LogLevel::Error, std::format(
-            "[ResizeDiag] commandQueue->Signal for idle fence failed HR=0x{:08X}", (UINT)hrSignal), "[DX12]");
-        return;
-    }
-
-    const UINT64 completedBefore = fence->GetCompletedValue();
-    if (completedBefore < idleFenceValue)
-    {
-        Logger::Log(LogLevel::Debug, std::format(
-            "[ResizeDiag] Waiting for GPU idle before ResizeBuffers (fence={} completed={})",
-            idleFenceValue, completedBefore), "[DX12]");
-
-        (void)fence->SetEventOnCompletion(idleFenceValue, fenceEvent);
-        WaitForSingleObject(fenceEvent, INFINITE);
-
-        const UINT64 completedAfter = fence->GetCompletedValue();
-        (void)completedAfter;
-    }
-
-    // Stamp all frames as idle at this fence.
-    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
-        frames[i].fenceValue = idleFenceValue;
-
-    // Release swapchain-dependent references before ResizeBuffers.
-    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
-        backBuffers[i].Reset();
-
-    // The RTV heap holds descriptors referencing the old backbuffers.
-    rtvHeap.Reset();
-
-    const UINT flags = allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
-    const DXGI_FORMAT fmt = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-#ifndef NDEBUG
-    // Useful one-shot-ish swapchain summary before calling ResizeBuffers.
-    static auto s_descLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-    const auto nowDesc = std::chrono::steady_clock::now();
-    if (nowDesc - s_descLast >= std::chrono::seconds(1))
-    {
-        s_descLast = nowDesc;
-        DXGI_SWAP_CHAIN_DESC scDesc{};
-        if (SUCCEEDED(swapChain->GetDesc(&scDesc)))
-        {
-            Logger::Log(LogLevel::Debug, std::format(
-                "[ResizeDiag] Pre-ResizeBuffers | sc={}x{} fmt={} buffers={} swapEffect={} flags=0x{:X} reqFlags=0x{:X} reqFmt={}",
-                scDesc.BufferDesc.Width, scDesc.BufferDesc.Height,
-                (int)scDesc.BufferDesc.Format,
-                scDesc.BufferCount,
-                (int)scDesc.SwapEffect,
-                (UINT)scDesc.Flags,
-                (UINT)flags,
-                (int)fmt), "[DX12]");
-        }
-    }
-#endif
-
-    HRESULT hr = swapChain->ResizeBuffers(NUM_BACK_BUFFERS, newW, newH, fmt, flags);
-    if (FAILED(hr))
-    {
-        // Keep request pending so we can retry.
-        pendingResize = true;
-        pendingResizeSource = src;
-
-        Logger::Log(LogLevel::Error, std::format(
-            "[Resize] ResizeBuffers failed HR=0x{:08X} (w={} h={}) src={}",
-            (UINT)hr, newW, newH, ResizeSourceToString(src)), "[DX12]");
-
-        const char* decoded = "";
-        if (hr == DXGI_ERROR_INVALID_CALL) decoded = "DXGI_ERROR_INVALID_CALL";
-        else if (hr == DXGI_ERROR_DEVICE_REMOVED) decoded = "DXGI_ERROR_DEVICE_REMOVED";
-        else if (hr == DXGI_ERROR_DEVICE_RESET) decoded = "DXGI_ERROR_DEVICE_RESET";
-        else if (hr == E_OUTOFMEMORY) decoded = "E_OUTOFMEMORY";
-
-        if (decoded && decoded[0])
-            Logger::Log(LogLevel::Error, std::format("[ResizeDiag] ResizeBuffers HRESULT decode: {}", decoded), "[DX12]");
-
-        if (device)
-        {
-            const HRESULT removed = device->GetDeviceRemovedReason();
-            if (removed != S_OK)
-                Logger::Log(LogLevel::Error, std::format("[ResizeDiag] DeviceRemovedReason=0x{:08X}", (UINT)removed), "[DX12]");
-
-            if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || removed == DXGI_ERROR_DEVICE_REMOVED || removed == DXGI_ERROR_DEVICE_RESET)
-            {
-                HandleDeviceLost(hWnd);
-            }
-        }
-
-        return;
-    }
-
-    // Success: consume the resize request.
-    pendingResize = false;
-    pendingResizeSource = ResizeSource::Unknown;
-
-    CreateRenderTargetViews();
-
-    screenWidth = (int)newW;
-    screenHeight = (int)newH;
-    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
-
-    // Throttled debug invariant logging (1 Hz)
-    static auto s_lastLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-    const auto now = std::chrono::steady_clock::now();
-    if (now - s_lastLog >= std::chrono::seconds(1))
-    {
-        s_lastLog = now;
-
-        RECT rc{};
-        UINT clientW = 0, clientH = 0;
-        if (hWnd && GetClientRect(hWnd, &rc))
-        {
-            clientW = (UINT)(std::max)(0L, rc.right - rc.left);
-            clientH = (UINT)(std::max)(0L, rc.bottom - rc.top);
-        }
-
-        DXGI_SWAP_CHAIN_DESC scDesc{};
-        UINT scW = (UINT)screenWidth;
-        UINT scH = (UINT)screenHeight;
-        if (SUCCEEDED(swapChain->GetDesc(&scDesc)))
-        {
-            if (scDesc.BufferDesc.Width != 0) scW = scDesc.BufferDesc.Width;
-            if (scDesc.BufferDesc.Height != 0) scH = scDesc.BufferDesc.Height;
-        }
-
-        float dpiScale = 1.0f;
-        if (hWnd)
-        {
-            const UINT dpi = GetDpiForWindow(hWnd);
-            dpiScale = (dpi > 0) ? (float)dpi / 96.0f : 1.0f;
-        }
-
-        if (ImGui::GetCurrentContext())
-        {
-            ImGuiIO& io = ImGui::GetIO();
-            Logger::Log(LogLevel::Debug, std::format(
-                "[ResizeInv] client={}x{} swapchain={}x{} cached={}x{} bbIndex={} ImGui.DisplaySize=({:.1f},{:.1f}) FBScale=({:.2f},{:.2f}) dpiScale={:.3f} src={}",
-                clientW, clientH,
-                scW, scH,
-                (UINT)screenWidth, (UINT)screenHeight,
-                currentBackBufferIndex,
-                io.DisplaySize.x, io.DisplaySize.y,
-                io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y,
-                dpiScale,
-                ResizeSourceToString(src)), "[DX12]");
-        }
-        else
-        {
-            Logger::Log(LogLevel::Debug, std::format(
-                "[ResizeInv] client={}x{} swapchain={}x{} cached={}x{} bbIndex={} dpiScale={:.3f} src={}",
-                clientW, clientH,
-                scW, scH,
-                (UINT)screenWidth, (UINT)screenHeight,
-                currentBackBufferIndex,
-                dpiScale,
-                ResizeSourceToString(src)), "[DX12]");
-        }
-    }
-
-    Logger::Log(LogLevel::Info, std::format("[Resize] Applied w={} h={} source={}", newW, newH, ResizeSourceToString(src)));
+    (void)hWnd;
 }

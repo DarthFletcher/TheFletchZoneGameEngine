@@ -5,17 +5,20 @@
 // Functions in this compilation unit exist only to satisfy legacy link contracts
 // during refactors. They should migrate back to their owning subsystem over time.
 
-// --- Device loss / frame contract glue (Graphics core) --------------------------------
+// Keep this file LIMITED to true ABI/legacy shims.
 
 void Graphics::HandleDeviceLost(HWND hWnd)
 {
-    // RESTORE_CANDIDATE: message/category cleanup + potential migration into Graphics.cpp when stable.
-    Logger::Log(LogLevel::Error, "HandleDeviceLost called. Attempting full Graphics reset.", "[DX12]");
+    static bool logged = false;
+    if (!logged)
+    {
+        logged = true;
+        Logger::Log(LogLevel::Error, "HandleDeviceLost legacy shim hit (should be rare)", "[DX12]");
+    }
+
     Shutdown();
     (void)Initialize(hWnd);
 }
-
-// --- Scene / RenderTarget ownership (scene RT management candidates) -----------------
 
 void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height)
 {
@@ -24,7 +27,6 @@ void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height)
 
 void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height, ResizeSource source)
 {
-    // Phase 3D: record request only (no GPU work here).
     width = (std::max)(1u, width);
     height = (std::max)(1u, height);
 
@@ -32,166 +34,4 @@ void Graphics::RequestSceneRenderTargetResize(UINT width, UINT height, ResizeSou
     pendingSceneRTH = height;
     pendingSceneRTResizeSource = source;
     pendingSceneRTResize = true;
-}
-
-void Graphics::ProcessDeferredReleases()
-{
-    // RESTORE_CANDIDATE: consider migrating into a dedicated Graphics_ResourceLifetime.cpp when splitting.
-    if (deferredReleases.empty() || !fence)
-        return;
-
-    const UINT64 completed = fence->GetCompletedValue();
-
-    size_t releasedThisFrame = 0;
-
-    size_t write = 0;
-    for (size_t read = 0; read < deferredReleases.size(); ++read)
-    {
-        if (deferredReleases[read].fenceValue <= completed)
-        {
-            deferredReleases[read].object.Reset();
-            ++releasedThisFrame;
-        }
-        else
-        {
-            deferredReleases[write++] = std::move(deferredReleases[read]);
-        }
-    }
-
-    deferredReleases.resize(write);
-
-#ifndef NDEBUG
-    drStats.released += releasedThisFrame;
-
-    if (!deferredReleases.empty())
-    {
-        UINT64 minFence = UINT64_MAX;
-        for (const auto& it : deferredReleases)
-            minFence = (std::min)(minFence, it.fenceValue);
-
-        if (minFence > completed)
-        {
-            drStats.stuckFrames++;
-            if (drStats.stuckFrames == 300)
-            {
-                Logger::Log(LogLevel::Warning, std::format(
-                    "DeferredRelease appears stuck: completedFence={} minQueuedFence={} queueSize={} (300 frames)",
-                    completed, minFence, deferredReleases.size()), "[DX12]");
-            }
-        }
-        else
-        {
-            drStats.stuckFrames = 0;
-        }
-
-        drStats.oldestFence = minFence;
-    }
-    else
-    {
-        drStats.stuckFrames = 0;
-        drStats.oldestFence = 0;
-    }
-#endif
-
-    if (deferredReleases.size() > 5000)
-        Logger::Log(LogLevel::Warning, "Deferred release queue is very large; possible lifetime leak.", "[DX12]");
-}
-
-void Graphics::AbortFrame(const char* why)
-{
-    // RESTORE_CANDIDATE: should live next to frame lifecycle methods in Graphics.cpp.
-    Logger::Log(LogLevel::Error, std::format("AbortFrame: {}", why ? why : "(unknown)"), "[Core]");
-
-    if (commandListOpen && commandList)
-        (void)commandList->Close();
-
-    commandListOpen = false;
-    frameStarted = false;
-    ImGuiFrameStarted = false;
-}
-
-// --- Swapchain / backbuffer ownership (resize + RTV creation candidates) --------------
-
-void Graphics::CreateRenderTargetViews()
-{
-    // RESTORE_CANDIDATE: once Graphics.cpp is split, migrate into a Graphics_Swapchain.cpp unit.
-    if (!device || !swapChain)
-        return;
-
-    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = NUM_BACK_BUFFERS;
-    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-
-    rtvHeap.Reset();
-    HRESULT hr = device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtvHeap));
-    if (FAILED(hr) || !rtvHeap)
-    {
-        Logger::Log(LogLevel::Error, std::format("CreateRenderTargetViews: CreateDescriptorHeap failed HR=0x{:08X}", (UINT)hr), "[DX12]");
-        return;
-    }
-
-    const UINT rtvDescriptorSizeLocal = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    rtvDescriptorSize = rtvDescriptorSizeLocal;
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart());
-
-    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
-    {
-        backBuffers[i].Reset();
-        hr = swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i]));
-        if (FAILED(hr) || !backBuffers[i])
-        {
-            Logger::Log(LogLevel::Error, std::format("CreateRenderTargetViews: GetBuffer({}) failed HR=0x{:08X}", i, (UINT)hr), "[DX12]");
-            return;
-        }
-
-        device->CreateRenderTargetView(backBuffers[i].Get(), nullptr, rtvHandle);
-        rtvHandle.Offset(1, rtvDescriptorSizeLocal);
-    }
-}
-
-// (removed) Graphics::Present(HWND) implementation now lives in `Src/Graphics.cpp`.
-
-// (removed) Graphics::SetupImGuiFontsAndScaling(HWND) implementation now lives in `Src/Graphics.cpp`.
-
-// (removed) Graphics::ReloadImGuiFont(float) implementation now lives in `Src/Graphics.cpp`.
-
-// (removed) Graphics::EnsureSceneRenderTarget(UINT, UINT) implementation now lives in `Src/Graphics.cpp`.
-
-void Graphics::ProcessPendingSceneRenderTargetResize()
-{
-    // RESTORE_CANDIDATE: should live alongside scene RT ownership (Graphics.cpp or a future Graphics_Scene.cpp).
-    if (!pendingSceneRTResize)
-        return;
-
-    const UINT w = pendingSceneRTW;
-    const UINT h = pendingSceneRTH;
-    const ResizeSource src = pendingSceneRTResizeSource;
-
-    pendingSceneRTResize = false;
-    pendingSceneRTResizeSource = ResizeSource::Unknown;
-
-    EnsureSceneRenderTarget(w, h);
-
-    Logger::Log(LogLevel::Info, std::format("[Resize] Applied SceneRT w={} h={} source={}", w, h,
-        (src == ResizeSource::Window) ? "Window" :
-        (src == ResizeSource::DPI) ? "DPI" :
-        (src == ResizeSource::User) ? "User" :
-        (src == ResizeSource::Engine) ? "Engine" : "Unknown"), "[DX12]");
-}
-
-void Graphics::HandleResize(HWND hWnd)
-{
-    // RESTORE_CANDIDATE: once resize ownership is fully centralized, remove this indirection.
-    // Existing engine uses deferred resize requests and applies them at the top of BeginFrame.
-    // `ApplyPendingResize()` contains the hasPresentedOnce gating.
-    ApplyPendingResize(hWnd);
-}
-
-void Graphics::ProcessPendingFontReload()
-{
-    // Contract restoration: this symbol is referenced by BeginFrame().
-    // Font reload behavior remains owned by Graphics.cpp; if the implementation was moved,
-    // keep this as a no-op until consolidated.
 }

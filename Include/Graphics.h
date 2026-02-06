@@ -286,6 +286,9 @@ public:
 
     void ProcessDeferredReleases();
 
+    // Fence wait event (Win32 handle). Exposed for internal TU helpers.
+    static HANDLE fenceEvent;
+
 private:
     HRESULT CreateDX12Device();
     void ExecuteCommandLists(std::vector<ID3D12CommandList*>& commandLists);
@@ -330,7 +333,6 @@ private:
     UINT currentBackBufferIndex = 0;
     UINT rtvDescriptorSize = 0;
     UINT64 fenceValue = 0;
-    static HANDLE fenceEvent;
 
     static const int FrameRenderBufferCount = 3;
     FrameRenderBuffer FrameRenderBuffers[FrameRenderBufferCount];
