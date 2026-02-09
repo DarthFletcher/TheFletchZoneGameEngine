@@ -60,9 +60,13 @@ Detailed design notes are available in:
 ## Project Structure
 
 ├─ Include/ // Public engine interfaces
+
 ├─ Src/ // Engine implementations
+
 ├─ docs/ // Design + phase documentation
+
 ├─ tools/ // Build helpers
+
 ├─ shaders/ // HLSL shaders
 
 
