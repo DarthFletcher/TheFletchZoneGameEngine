@@ -2,24 +2,48 @@
 #define HINT_MACROS_H
 
 #include <stdexcept>   // For std::runtime_error
-#include <string>      // For std::to_string
+#include <string>
 #include <sstream>     // For std::ostringstream (better error messages)
-#include <comdef.h>    // For _com_error (HRESULT to string)
-#include <wrl.h>       // For Microsoft::WRL::ComPtr
-#include <dxgi1_6.h>   // For GPU selection
-#include <vector>      // For storing available GPUs
-#include <d3dx12.h>    // Fixes missing DirectX 12 macros
+#include <vector>
+
+#include "DX12Common.h"
 #include "Utils.h"     // For WideStringToString
+
+namespace Dx12Common
+{
+    inline std::string HrToString(HRESULT hr)
+    {
+        const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+        LPWSTR buffer = nullptr;
+        const DWORD len = ::FormatMessageW(flags, nullptr, static_cast<DWORD>(hr),
+            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+
+        std::wstring msg;
+        if (len && buffer)
+        {
+            msg.assign(buffer, buffer + len);
+            ::LocalFree(buffer);
+        }
+
+        if (msg.empty())
+        {
+            std::wostringstream hex;
+            hex << L"HRESULT 0x" << std::hex << static_cast<unsigned long>(hr);
+            msg = hex.str();
+        }
+
+        return Utils::WideStringToString(msg);
+    }
+}
 
 // ✅ Error handling macro for DirectX calls
 #define DX_CHECK(hr)                                      \
     if (FAILED(hr)) {                                     \
-        _com_error err(hr);                               \
-        std::ostringstream oss;                          \
-        oss << "DirectX error at " << __FILE__           \
-            << ": " << __LINE__                          \
-            << " -> " << Utils::WideStringToString(err.ErrorMessage()); \
-        throw std::runtime_error(oss.str());             \
+        std::ostringstream oss;                           \
+        oss << "DirectX error at " << __FILE__            \
+            << ": " << __LINE__                           \
+            << " -> " << Dx12Common::HrToString(hr);      \
+        throw std::runtime_error(oss.str());              \
     }
 
 // ✅ Safe release macro (works with COM objects)
@@ -27,7 +51,7 @@
     if ((p) != nullptr) { (p)->Release(); (p) = nullptr; }
 
 // ✅ Convert HRESULT to string safely (for debugging/logging)
-#define HR_TO_STRING(hr) (Utils::WideStringToString(_com_error(hr).ErrorMessage()))
+#define HR_TO_STRING(hr) (Dx12Common::HrToString(hr))
 
 // ✅ Safe release for WRL smart pointers (ComPtr)
 #define SAFE_RELEASE_COMPTR(p) (p.Reset())

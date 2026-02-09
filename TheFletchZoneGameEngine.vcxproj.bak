@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -115,8 +115,9 @@
       <PreprocessToFile>false</PreprocessToFile>
       <WholeProgramOptimization>false</WholeProgramOptimization>
       <AdditionalUsingDirectories>%(AdditionalUsingDirectories)</AdditionalUsingDirectories>
-      <AdditionalIncludeDirectories>C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Third Party;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\cmake;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include\directx;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking\backends;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Third Party;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\cmake;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include\directx;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking\backends;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard_C>Default</LanguageStandard_C>
+      <ShowIncludes>false</ShowIncludes>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -157,11 +158,16 @@
     <ClInclude Include="Dependencies\imgui-docking\imstb_truetype.h" />
     <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3d12.h" />
     <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3dx12.h" />
+    <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3dx12_check_feature_support.h" />
     <ClInclude Include="include\BootDiagnostics.h" />
     <ClInclude Include="include\BootProgress.h" />
+    <ClInclude Include="Include\Camera.h" />
+    <ClInclude Include="Include\CameraData.h" />
+    <ClInclude Include="Include\CameraSystem.h" />
     <ClInclude Include="include\Components.h" />
     <ClInclude Include="include\Config.h" />
     <ClInclude Include="include\CrashDiagnostics.h" />
+    <ClInclude Include="Include\DX12Common.h" />
     <ClInclude Include="Include\EditorCommon.h" />
     <ClInclude Include="Include\EditorIcons.h" />
     <ClInclude Include="include\EditorPanels.h" />
@@ -178,8 +184,11 @@
     <ClInclude Include="include\imgui_impl_win32_custom.h" />
     <ClInclude Include="include\Input.h" />
     <ClInclude Include="include\logger.h" />
+    <ClInclude Include="Include\Mesh.h" />
     <ClInclude Include="include\resource.h" />
+    <ClInclude Include="Include\Scene.h" />
     <ClInclude Include="Include\SceneCamera.h" />
+    <ClInclude Include="Include\ShaderCompiler.h" />
     <ClInclude Include="include\ShaderUtils.h" />
     <ClInclude Include="include\SplashScreen.h" />
     <ClInclude Include="Include\SplashWindow.h" />
@@ -197,14 +206,19 @@
     <ClCompile Include="Dependencies\imgui-docking\imgui_tables.cpp" />
     <ClCompile Include="Dependencies\imgui-docking\imgui_widgets.cpp" />
     <ClCompile Include="DirectX-Headers-1.614.1\include\directx\d3d12.cpp" />
+    <ClCompile Include="DirectX-Headers-1.614.1\include\directx\d3dx12_check_feature_support.cpp" />
     <ClCompile Include="src\BootDiagnostics.cpp" />
     <ClCompile Include="Src\BootProgress.cpp" />
+    <ClCompile Include="Src\Camera.cpp" />
+    <ClCompile Include="Src\CameraSystem.cpp" />
     <ClCompile Include="src\Config.cpp" />
     <ClCompile Include="src\CrashDiagnostics.cpp" />
     <ClCompile Include="Src\EditorPanels.cpp" />
     <ClCompile Include="src\Engine.cpp" />
     <ClCompile Include="src\Game.cpp" />
     <ClCompile Include="Src\Graphics.cpp" />
+    <ClCompile Include="Src\Graphics_Contracts_Restore.cpp" />
+    <ClCompile Include="Src\Graphics_Picking.cpp" />
     <ClCompile Include="src\ImGuiUtils.cpp" />
     <ClCompile Include="src\ImGui_ImplDX12_DescriptorHeap.cpp" />
     <ClCompile Include="Src\imgui_impl_dx12_custom.cpp" />
@@ -213,7 +227,10 @@
     <ClCompile Include="src\Input.cpp" />
     <ClCompile Include="src\logger.cpp" />
     <ClCompile Include="src\Main.cpp" />
+    <ClCompile Include="Src\Mesh.cpp" />
+    <ClCompile Include="Src\Scene.cpp" />
     <ClCompile Include="Src\SceneCamera.cpp" />
+    <ClCompile Include="Src\ShaderCompiler.cpp" />
     <ClCompile Include="src\ShaderUtils.cpp" />
     <ClCompile Include="src\SplashScreen.cpp" />
     <ClCompile Include="Src\SplashWindow.cpp" />
@@ -229,10 +246,19 @@
     <Image Include="TheFletchZoneGameEngine.ico" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="CHANGELOG.md" />
     <None Include="cpp.hint" />
+    <None Include="Directory.Build.props" />
     <None Include="Directory.Build.targets" />
+    <None Include="docs\CHANGELOG_0.3.0.md" />
+    <None Include="docs\Phase3F_RenderGraphNotes.md" />
+    <None Include="Docs\ShaderCompilationComplete.md" />
+    <None Include="Docs\ShaderCompilationQuickRef.md" />
+    <None Include="ENGINE_CONTRACT.md" />
     <None Include="include\macros.hints" />
     <None Include="packages.config" />
+    <None Include="TheFletchZoneGameEngine.vcxproj.new" />
+    <None Include="tools\CopyDXCDlls.bat" />
     <None Include="tools\FixSceneShaderBuildStep.ps1" />
     <None Include="tools\FixShaderBuildStep.ps1" />
   </ItemGroup>
@@ -240,24 +266,13 @@
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />
   </ItemGroup>
   <ItemGroup>
-    <!-- Runtime-only shader (do NOT compile with FXC) -->
-    <FxCompile Remove="shaders\debug_triangle.hlsl" />
-    <!-- ImGui shaders -->
-    <FxCompile Include="shaders\imgui_vs.hlsl">
-      <ShaderType>Vertex</ShaderType>
-      <ShaderModel>5.0</ShaderModel>
-      <EntryPoint>VSMain</EntryPoint>
-    </FxCompile>
-    <FxCompile Include="shaders\imgui_ps.hlsl">
-      <ShaderType>Pixel</ShaderType>
-      <ShaderModel>5.0</ShaderModel>
-      <EntryPoint>PSMain</EntryPoint>
-    </FxCompile>
-    <FxCompile Include="shaders\scene_grid_ps.hlsl">
-      <FileType>Document</FileType>
-    </FxCompile>
-    <FxCompile Include="shaders\scene_grid_vs.hlsl" />
-    <FxCompile Include="shaders\scene_triangle_ps.hlsl" />
+    <!-- HLSL shaders - compiled at runtime by engine (not by VS) -->
+    <None Include="shaders\debug_triangle.hlsl" />
+    <None Include="shaders\imgui_vs.hlsl" />
+    <None Include="shaders\imgui_ps.hlsl" />
+    <None Include="shaders\scene_grid_ps.hlsl" />
+    <None Include="shaders\scene_grid_vs.hlsl" />
+    <None Include="shaders\scene_triangle_ps.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <Font Include="Assets\Fonts\DroidSans.ttf">

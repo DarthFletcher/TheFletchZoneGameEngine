@@ -3,8 +3,6 @@
 #include "imgui.h"
 #include <vector>
 #include <string>
-#include <wrl.h>
-#include <dxgi1_6.h>
 
 // ==========================
 // 🌅 UI Namespace
@@ -51,17 +49,6 @@ namespace UI {
     // ImGui debug tools
     bool IsImGuiDemoVisible();
     bool IsImGuiMetricsVisible();
-}
-
-// ==========================
-// 🖥️ GPU Selection Namespace
-// ==========================
-namespace GPUSelection {
-    extern std::vector<std::wstring> gpuList;
-    extern Microsoft::WRL::ComPtr<IDXGIAdapter1> selectedGPU;
-
-    void ListAvailableGPUs();
-    void SelectGPU(int index);
 }
 
 

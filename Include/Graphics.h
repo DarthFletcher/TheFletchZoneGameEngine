@@ -1,8 +1,7 @@
 #pragma once
 
-#include <windows.h>
-#include <dxgi1_6.h>
-#include <d3d12.h>
+#include "DX12Common.h"
+
 #include <wrl.h>
 #include <vector>
 #include <combaseapi.h>
@@ -28,6 +27,8 @@
 
 // Phase 3A: scene render scaffolding (logs only).
 #include "Scene.h"
+// Phase 4A: engine-owned first mesh (cube)
+#include "Mesh.h"
 
 extern HWND mainHwnd;
 extern ID3D12DescriptorHeap* g_SRVHeap;
@@ -185,6 +186,9 @@ public:
 
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>& GetImguiHeap() { return imguiHeap; }
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> GetCommandList() const { return commandList; }
+
+    // Phase 4A: engine-owned cube mesh (single mesh only for now)
+    const MeshData& GetCubeMesh() const { return cubeMesh; }
 
     bool IsUploadReady() const;
 
@@ -419,6 +423,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneAxesVB;
     D3D12_VERTEX_BUFFER_VIEW sceneAxesVBV = {};
     UINT sceneAxesVertexCount = 0;
+
+    // Phase 4A: first engine-owned mesh
+    MeshData cubeMesh{};
 
     struct DeferredReleaseItem
     {

@@ -1,15 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- MSBuild props that inject vcpkg include/lib paths for DXC -->
+<!-- MSBuild props that inject include/lib paths for dependencies -->
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <VcpkgRoot>$(MSBuildProjectDirectory)\vcpkg_installed\x64-windows</VcpkgRoot>
-    <VcpkgIncludePath>$(VcpkgRoot)\include</VcpkgIncludePath>
     <VcpkgLibPath>$(VcpkgRoot)\lib</VcpkgLibPath>
+
+    <!-- DirectX-Headers: for Windows desktop builds we only ever want the 'include' folder. -->
+    <DXHeadersRoot>$(MSBuildProjectDirectory)\DirectX-Headers-1.614.1</DXHeadersRoot>
+    <DXHeadersInclude>$(DXHeadersRoot)\include</DXHeadersInclude>
   </PropertyGroup>
+
   <ItemDefinitionGroup>
     <ClCompile>
-      <AdditionalIncludeDirectories>$(VcpkgIncludePath);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- Put repo-pinned DX-Headers include first. -->
+      <AdditionalIncludeDirectories>$(DXHeadersInclude);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+
+      <!-- Strip any accidental include paths that expose WSL stubs or CMake folders. -->
+      <AdditionalIncludeDirectories>$(AdditionalIncludeDirectories.Replace('$(DXHeadersRoot)\cmake;',''))</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(AdditionalIncludeDirectories.Replace('$(DXHeadersInclude)\wsl;',''))</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(AdditionalIncludeDirectories.Replace('$(DXHeadersInclude)\wsl\stubs;',''))</AdditionalIncludeDirectories>
     </ClCompile>
+
     <Link>
       <AdditionalLibraryDirectories>$(VcpkgLibPath);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>dxcompiler.lib;%(AdditionalDependencies)</AdditionalDependencies>

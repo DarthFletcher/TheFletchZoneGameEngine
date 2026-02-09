@@ -6,11 +6,10 @@
 #define IMGUI_NUM_FRAMES_IN_FLIGHT 3
 #endif
 
+// Engine DX12 include (must be the only DX12 include path)
+#include "DX12Common.h"
+
 // System Headers
-#include <windows.h>
-#include <dxgi1_6.h>
-#include <d3d12.h>
-#include <dxgidebug.h>
 #include <ShellScalingAPI.h>
 #include <string>
 #include <codecvt>
@@ -23,7 +22,6 @@
 #include <format>
 #include <queue>
 #pragma comment(lib, "Shcore.lib")
-#include <d3d12sdklayers.h> // Required for DRED interfaces
 
 // ImGui Headers
 #include "imgui.h"
@@ -43,6 +41,8 @@
 #include <DirectXMath.h>
 
 #include "CameraSystem.h"
+// Phase 4A
+#include "Mesh.h"
 
 // ✅ Define and Initialize Static Variables (Fixes "unresolved external" error)
 std::chrono::high_resolution_clock::time_point Graphics::frameStart = std::chrono::high_resolution_clock::now();
@@ -377,6 +377,9 @@ bool Graphics::Initialize(HWND hWnd)
 
     CreateCommandInterfaces();
 
+    // Phase 4A: engine-owned first mesh (cube). Deterministic, no command submission.
+    CreateCubeMesh(device.Get(), cubeMesh);
+
     GPUSelection::ListAvailableGPUs();
     Logger::Log(LogLevel::Info, "✅ GPU list populated", "[DX12]");
 
@@ -491,6 +494,11 @@ void Graphics::Shutdown()
 
     for (int i = 0; i < NUM_BACK_BUFFERS; i++)
         EnqueueDeferredRelease(backBuffers[i]);
+
+    // Phase 4A: release engine-owned mesh resources with frame-safe deferred release.
+    EnqueueDeferredRelease(cubeMesh.vertexBuffer);
+    EnqueueDeferredRelease(cubeMesh.indexBuffer);
+    cubeMesh = {};
 
     if (swapChain) swapChain.Reset();
     SafeReleaseComPtr("rtvHeap", rtvHeap, true);
