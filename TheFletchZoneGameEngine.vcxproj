@@ -115,9 +115,8 @@
       <PreprocessToFile>false</PreprocessToFile>
       <WholeProgramOptimization>false</WholeProgramOptimization>
       <AdditionalUsingDirectories>%(AdditionalUsingDirectories)</AdditionalUsingDirectories>
-      <AdditionalIncludeDirectories>C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Third Party;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking\backends;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Third Party;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\cmake;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include\directx;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking\backends;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard_C>Default</LanguageStandard_C>
-      <ShowIncludes>true</ShowIncludes>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -156,6 +155,8 @@
     <ClInclude Include="Dependencies\imgui-docking\imstb_rectpack.h" />
     <ClInclude Include="Dependencies\imgui-docking\imstb_textedit.h" />
     <ClInclude Include="Dependencies\imgui-docking\imstb_truetype.h" />
+    <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3d12.h" />
+    <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3dx12.h" />
     <ClInclude Include="include\BootDiagnostics.h" />
     <ClInclude Include="include\BootProgress.h" />
     <ClInclude Include="Include\Camera.h" />
@@ -164,7 +165,6 @@
     <ClInclude Include="include\Components.h" />
     <ClInclude Include="include\Config.h" />
     <ClInclude Include="include\CrashDiagnostics.h" />
-    <ClInclude Include="Include\DX12Common.h" />
     <ClInclude Include="Include\EditorCommon.h" />
     <ClInclude Include="Include\EditorIcons.h" />
     <ClInclude Include="include\EditorPanels.h" />
@@ -181,7 +181,6 @@
     <ClInclude Include="include\imgui_impl_win32_custom.h" />
     <ClInclude Include="include\Input.h" />
     <ClInclude Include="include\logger.h" />
-    <ClInclude Include="Include\Mesh.h" />
     <ClInclude Include="include\resource.h" />
     <ClInclude Include="Include\Scene.h" />
     <ClInclude Include="Include\SceneCamera.h" />
@@ -194,8 +193,6 @@
     <ClInclude Include="include\Timer.h" />
     <ClInclude Include="include\UI.h" />
     <ClInclude Include="include\Utils.h" />
-    <ClInclude Include="Include\UtilsDX12.h" />
-    <ClInclude Include="Include\Win32Common.h" />
     <ClInclude Include="Third Party\stb_image.h" />
   </ItemGroup>
   <ItemGroup>
@@ -204,6 +201,7 @@
     <ClCompile Include="Dependencies\imgui-docking\imgui_draw.cpp" />
     <ClCompile Include="Dependencies\imgui-docking\imgui_tables.cpp" />
     <ClCompile Include="Dependencies\imgui-docking\imgui_widgets.cpp" />
+    <ClCompile Include="DirectX-Headers-1.614.1\include\directx\d3d12.cpp" />
     <ClCompile Include="src\BootDiagnostics.cpp" />
     <ClCompile Include="Src\BootProgress.cpp" />
     <ClCompile Include="Src\Camera.cpp" />
@@ -224,7 +222,6 @@
     <ClCompile Include="src\Input.cpp" />
     <ClCompile Include="src\logger.cpp" />
     <ClCompile Include="src\Main.cpp" />
-    <ClCompile Include="Src\Mesh.cpp" />
     <ClCompile Include="Src\Scene.cpp" />
     <ClCompile Include="Src\SceneCamera.cpp" />
     <ClCompile Include="Src\ShaderCompiler.cpp" />

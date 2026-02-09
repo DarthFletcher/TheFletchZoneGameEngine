@@ -1,5 +1,3 @@
-#include "DX12Common.h"   // MUST be first for DX-adjacent files
-
 #include "SplashScreen.h"
 #include "Logger.h"
 #include "imgui.h"

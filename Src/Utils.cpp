@@ -1,27 +1,27 @@
-#include "Utils.h"
-#include "UtilsDX12.h"
-
-#include "DX12Common.h"
-
-#include <comdef.h>
-#include <wrl.h>
-#include <iostream>
-#include <vector>
-#include "UI.h"
-#include <chrono>
-#include <iomanip>
-#include <sstream>
-#include <fstream>
-#include <shellapi.h>
-#include <logger.h>
-#include <filesystem>
-#include <format>
-#include <stdexcept>
-#include <string>
+#include "Utils.h"        // ✅ Include Utils header for utility functions
+#include <Windows.h>      // ✅ For MultiByteToWideChar & WideCharToMultiByte
+#include <comdef.h>       // ✅ For _com_error (HRESULT error conversion)
+#include <dxgi1_6.h>      // ✅ For DXGI interfaces
+#include <wrl.h>          // ✅ For Microsoft::WRL::ComPtr
+#include <iostream>       // ✅ For std::cerr
+#include <vector>         // ✅ For storing GPU list
+#include "UI.h" 		  // ✅ For UI related functions
+#include <d3d12.h> 	      // ✅ For D3D12 interfaces
+#include <d3d12sdklayers.h> // ✅ For D3D12_AUTO_BREADCRUMB_OP and related enums
+#include <chrono> 	      // ✅ For timing functions
+#include <iomanip>       // ✅ For std::put_time
+#include <sstream>      // ✅ For std::ostringstream
+#include <fstream> 	   // ✅ For file operations
+#include <shellapi.h>    // ✅ For ShellExecute
+#include <logger.h> 	// ✅ For logging
+#include <filesystem> // C++17
+#include <format>     // C++20
+#include <stdexcept>  // ✅ For std::runtime_error
+#include <string> // ✅ For std::string and std::wstring
 
 // ✅ Define static members of GPUSelection
 std::vector<std::wstring> GPUSelection::gpuList;
-IDXGIAdapter1* GPUSelection::selectedGPU = nullptr;
+Microsoft::WRL::ComPtr<IDXGIAdapter1> GPUSelection::selectedGPU;
 
 // ✅ Convert Wide String to Narrow String
 std::string Utils::WideStringToString(const std::wstring& wstr) {
@@ -44,8 +44,8 @@ std::wstring Utils::StringToWideString(const std::string& str) {
 }
 
 // ✅ Convert HRESULT to readable string
-std::string Utils::HrToString(long hr) {
-    _com_error err((HRESULT)hr);
+std::string Utils::HrToString(HRESULT hr) {
+    _com_error err(hr);
     return Utils::WideStringToString(err.ErrorMessage()); // ✅ Fix wide string conversion issue
 }
 
@@ -124,7 +124,7 @@ void GPUSelection::SelectGPU(int index)
 }
 
 // ✅ Select GPU by Index (Now merged with SelectGPU)
-IDXGIAdapter1* GPUSelection::SelectGPUByIndex(int index) {
+Microsoft::WRL::ComPtr<IDXGIAdapter1> GPUSelection::SelectGPUByIndex(int index) {
     Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
     HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
     if (FAILED(hr)) {
@@ -133,7 +133,7 @@ IDXGIAdapter1* GPUSelection::SelectGPUByIndex(int index) {
 
     // Ensure GPU List is populated before selection
     if (gpuList.empty()) {
-        GPUSelection::ListAvailableGPUs();
+        GPUSelection::ListAvailableGPUs(); // ✅ Ensure the GPU list is available
     }
 
     // Validate GPU index
@@ -147,9 +147,10 @@ IDXGIAdapter1* GPUSelection::SelectGPUByIndex(int index) {
         throw std::runtime_error("❌ Failed to select GPU at index " + std::to_string(index) + ": " + Utils::HrToString(hr));
     }
 
-    // Store raw pointer; lifetime is owned by this TU's ComPtr.
-    selectedGPU = adapter.Get();
+    // ✅ Store the selected GPU in `selectedGPU`
+    selectedGPU = adapter;
 
+    // ✅ Print confirmation of selection
     std::wcout << L"✅ Selected GPU: " << gpuList[index] << std::endl;
 
     return selectedGPU;
@@ -163,6 +164,7 @@ IDXGIAdapter1* GPUSelection::SelectGPUByIndex(int index) {
     return s;
 }*/
 
+//Then Does this in other places:
 /* ImVec2 raw_size = SanitizeViewportSize(viewport->Size);
 int width = static_cast<int>(raw_size.x);
 int height = static_cast<int>(raw_size.y);*/

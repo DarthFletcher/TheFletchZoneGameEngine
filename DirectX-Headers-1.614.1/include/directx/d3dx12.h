@@ -19,10 +19,7 @@
 #include "d3dx12_render_pass.h"
 #include "d3dx12_resource_helpers.h"
 #include "d3dx12_root_signature.h"
-
-#ifndef D3DX12_NO_PROPERTY_FORMAT_TABLE_HELPERS
 #include "d3dx12_property_format_table.h"
-#endif
 
 #ifndef D3DX12_NO_STATE_OBJECT_HELPERS
 #include "d3dx12_state_object.h"

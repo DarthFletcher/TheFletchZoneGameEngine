@@ -1,7 +1,7 @@
 #pragma once
 #include <wrl.h>
+#include <d3dcompiler.h>
 
-#include "DX12Common.h"
 #include "ShaderCompiler.h"
 
 Microsoft::WRL::ComPtr<ID3DBlob> CompileShader(const char* source, const char* target);

@@ -26,7 +26,7 @@
 #include <d3dcompiler.h> // for D3DCompile
 #include <windows.h> // for HWND
 #include <algorithm> // for std::min/std::max
-#include "DX12Common.h" // for CD3DX12_* helpers
+#include <d3dx12.h> // for CD3DX12_* helpers
 #include "Logger.h" // for Logger::Log
 #include <format> // for std::format 
 #include <ImGui_ImplDX12_DescriptorHeap.h>

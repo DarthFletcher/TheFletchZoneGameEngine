@@ -24,6 +24,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3d12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="Dependencies\imgui-docking\imconfig.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -82,6 +85,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\resource.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\Downloads\imgui-docking\imgui-docking\imgui_internal.h">
@@ -153,18 +159,6 @@
     <ClInclude Include="Include\CameraSystem.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Include\DX12Common.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Include\Mesh.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Include\Win32Common.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Include\UtilsDX12.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui_demo.cpp">
@@ -207,6 +201,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Dependencies\imgui-docking\imgui.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="DirectX-Headers-1.614.1\include\directx\d3d12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Dependencies\imgui-docking\imgui_widgets.cpp">
@@ -267,9 +264,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Src\CameraSystem.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Src\Mesh.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
