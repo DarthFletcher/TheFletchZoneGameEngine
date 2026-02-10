@@ -16,7 +16,7 @@
   <!-- Copy DXC runtime DLLs (dxcompiler.dll, dxil.dll) next to the executable for runtime shader compilation -->
   <Target Name="CopyDXCRuntimeDlls" AfterTargets="Build">
     <PropertyGroup>
-      <_VcpkgBinDir>$(MSBuildProjectDirectory)\vcpkg_installed\x64-windows\bin</_VcpkgBinDir>
+      <_VcpkgBinDir>$(MSBuildProjectDirectory)\vcpkg_installed\$(VcpkgTriplet)\bin</_VcpkgBinDir>
     </PropertyGroup>
 
     <ItemGroup Condition="Exists('$(_VcpkgBinDir)\dxcompiler.dll')">
@@ -29,6 +29,6 @@
     <Message Importance="high" Text="Copying DXC runtime DLLs from '$(_VcpkgBinDir)' to '$(OutDir)'..." Condition="'@(_DXCRuntimeDlls)' != ''" />
     <Copy SourceFiles="@(_DXCRuntimeDlls)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" Condition="'@(_DXCRuntimeDlls)' != ''" />
 
-    <Error Text="DXC runtime DLLs not found. Expected dxcompiler.dll and dxil.dll under '$(_VcpkgBinDir)'." Condition="'@(_DXCRuntimeDlls)' == ''" />
+    <Warning Text="DXC runtime DLLs not found. Looked for dxcompiler.dll and dxil.dll under '$(_VcpkgBinDir)'." Condition="'@(_DXCRuntimeDlls)' == ''" />
   </Target>
 </Project>

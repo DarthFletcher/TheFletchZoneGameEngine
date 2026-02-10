@@ -126,7 +126,7 @@
       <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
       <OutputFile>C:\Users\fchil\source\repos\TheFletchZoneGameEngine\x64\Debug\TheFletchZoneGameEngine.exe</OutputFile>
       <AdditionalManifestDependencies>%(AdditionalManifestDependencies)</AdditionalManifestDependencies>
-      <AdditionalLibraryDirectories>C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>C:\Users\fchil\source\repos\vcpkg\packages\directx-dxc_x64-windows\lib;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\vcpkg_installed\vcpkg\pkgs\directxtk12_x64-windows\lib\pkgconfig;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <Manifest>
       <AdditionalManifestFiles>$(ProjectDir)TheFletchZoneGameEngine.exe.manifest %(AdditionalManifestFiles)</AdditionalManifestFiles>
@@ -165,6 +165,7 @@
     <ClInclude Include="include\Components.h" />
     <ClInclude Include="include\Config.h" />
     <ClInclude Include="include\CrashDiagnostics.h" />
+    <ClInclude Include="Include\DX12Common.h" />
     <ClInclude Include="Include\EditorCommon.h" />
     <ClInclude Include="Include\EditorIcons.h" />
     <ClInclude Include="include\EditorPanels.h" />
@@ -193,6 +194,7 @@
     <ClInclude Include="include\Timer.h" />
     <ClInclude Include="include\UI.h" />
     <ClInclude Include="include\Utils.h" />
+    <ClInclude Include="Include\Win32Common.h" />
     <ClInclude Include="Third Party\stb_image.h" />
   </ItemGroup>
   <ItemGroup>

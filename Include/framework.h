@@ -6,15 +6,8 @@
 
 #include "targetver.h"
 
-// Ensure basic Windows types/macros are defined before pulling in the rest of the Windows SDK.
-// This avoids IntelliSense/build parse errors in some configurations (e.g. ULONG undefined in wincrypt/bcrypt).
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#include <sdkddkver.h>
-#include <winnt.h>
-#include <windows.h>
+// Windows SDK include firewall
+#include "Win32Common.h"
 
 #include <stdlib.h>
 #include <malloc.h>

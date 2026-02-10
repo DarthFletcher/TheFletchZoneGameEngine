@@ -149,7 +149,14 @@ Microsoft::WRL::ComPtr<ID3DBlob> CompileShaderFromFile(const wchar_t* filename, 
         DWORD cwdLen = GetCurrentDirectoryW(MAX_PATH, cwdW);
         std::wstring wcwd = (cwdLen > 0 && cwdLen < MAX_PATH) ? std::wstring(cwdW) : L"";
 
-        auto narrow = [](const std::wstring& w) { return std::string(w.begin(), w.end()); };
+        auto narrow = [](const std::wstring& w) -> std::string {
+            if (w.empty()) return {};
+            int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            if (sizeNeeded <= 1) return {};
+            std::string out(static_cast<size_t>(sizeNeeded - 1), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, out.data(), sizeNeeded, nullptr, nullptr);
+            return out;
+        };
 
         const std::string fileN = filename ? narrow(std::wstring(filename)) : std::string("(null)");
         const std::string cwdN = narrow(wcwd);
