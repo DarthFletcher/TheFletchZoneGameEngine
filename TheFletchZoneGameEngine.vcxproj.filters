@@ -159,6 +159,9 @@
     <ClInclude Include="Include\CameraSystem.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Include\Mesh.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="Include\Win32Common.h">
       <Filter>Header Files</Filter>
     </ClInclude>

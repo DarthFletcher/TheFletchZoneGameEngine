@@ -115,7 +115,7 @@
       <PreprocessToFile>false</PreprocessToFile>
       <WholeProgramOptimization>false</WholeProgramOptimization>
       <AdditionalUsingDirectories>%(AdditionalUsingDirectories)</AdditionalUsingDirectories>
-      <AdditionalIncludeDirectories>C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Third Party;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\cmake;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include\directx;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking\backends;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Third Party;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\cmake;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include\directx;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking\backends;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard_C>Default</LanguageStandard_C>
     </ClCompile>
     <Link>
@@ -182,6 +182,7 @@
     <ClInclude Include="include\imgui_impl_win32_custom.h" />
     <ClInclude Include="include\Input.h" />
     <ClInclude Include="include\logger.h" />
+    <ClInclude Include="Include\Mesh.h" />
     <ClInclude Include="include\resource.h" />
     <ClInclude Include="Include\Scene.h" />
     <ClInclude Include="Include\SceneCamera.h" />
