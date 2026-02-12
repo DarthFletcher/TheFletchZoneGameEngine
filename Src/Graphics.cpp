@@ -34,6 +34,7 @@
 
 // Engine Headers
 #include "Graphics.h"
+#include "Mesh.h"
 #include "logger.h"
 #include "UI.h"
 #include "ImGuiPlatformIO_Extended.h" // <- Add this below imgui_impl_win32.h and imgui_impl_dx12.h
@@ -329,6 +330,14 @@ bool Graphics::Initialize(HWND hWnd)
 
     ListAvailableGPUs();
     CreateDX12Device();
+
+    // Phase 4A: Graphics owns the cube mesh (upload heap only, safe at init).
+    if (!CreateCubeMesh(device.Get(), m_cubeMesh))
+    {
+        Logger::Log(LogLevel::Error, "Failed to create cube mesh.", "[Graphics]");
+        return false;
+    }
+
     // 🎮 Log selected GPU info
     ComPtr<IDXGIAdapter> adapter;
     ComPtr<IDXGIFactory4> factory;
@@ -403,6 +412,9 @@ bool Graphics::Initialize(HWND hWnd)
 void Graphics::Shutdown()
 {
     Logger::Log(LogLevel::Info, "🔻 Shutting down graphics...", "[Core]");
+
+    // Phase 4A: drop engine-owned static geometry handles before flush/release.
+    m_cubeMesh = {};
 
     // Ensure we are not mid-recording when releasing GPU resources.
     if (commandListOpen)

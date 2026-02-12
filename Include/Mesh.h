@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DX12Common.h"
+#include <cstdint>
 
 struct MeshData
 {
@@ -10,16 +11,9 @@ struct MeshData
     D3D12_VERTEX_BUFFER_VIEW VBV{};
     D3D12_INDEX_BUFFER_VIEW  IBV{};
 
-    UINT IndexCount = 0;
-
-    void Reset()
-    {
-        VertexBuffer.Reset();
-        IndexBuffer.Reset();
-        VBV = {};
-        IBV = {};
-        IndexCount = 0;
-    }
+    uint32_t IndexCount = 0;
 };
 
+// Creates a cube mesh in UPLOAD heap only (CPU-writable). No command list submission.
 bool CreateCubeMesh(ID3D12Device* device, MeshData& outMesh);
+

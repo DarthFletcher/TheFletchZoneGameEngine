@@ -8,7 +8,7 @@
 #include <wrl.h>       // For Microsoft::WRL::ComPtr
 #include <dxgi1_6.h>   // For GPU selection
 #include <vector>      // For storing available GPUs
-#include <d3dx12.h>    // Fixes missing DirectX 12 macros
+#include <directx/d3dx12.h>    // Fixes missing DirectX 12 macros
 #include "Utils.h"     // For WideStringToString
 
 // ✅ Error handling macro for DirectX calls

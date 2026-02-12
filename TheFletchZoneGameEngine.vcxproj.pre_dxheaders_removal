@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -23,7 +23,7 @@
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{938e6efb-0ef4-4707-b764-c230ebea1900}</ProjectGuid>
     <RootNamespace>TheFletchZoneGameEngine</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.19041.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -115,7 +115,7 @@
       <PreprocessToFile>false</PreprocessToFile>
       <WholeProgramOptimization>false</WholeProgramOptimization>
       <AdditionalUsingDirectories>%(AdditionalUsingDirectories)</AdditionalUsingDirectories>
-      <AdditionalIncludeDirectories>C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Third Party;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking\backends;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Third Party;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectXTex;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\cmake;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include\directx;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking\backends;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\Dependencies\imgui-docking;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\DirectX-Headers-1.614.1\include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\\Include;C:\Users\fchil\source\repos\TheFletchZoneGameEngine\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard_C>Default</LanguageStandard_C>
     </ClCompile>
     <Link>
@@ -155,6 +155,8 @@
     <ClInclude Include="Dependencies\imgui-docking\imstb_rectpack.h" />
     <ClInclude Include="Dependencies\imgui-docking\imstb_textedit.h" />
     <ClInclude Include="Dependencies\imgui-docking\imstb_truetype.h" />
+    <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3d12.h" />
+    <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3dx12.h" />
     <ClInclude Include="include\BootDiagnostics.h" />
     <ClInclude Include="include\BootProgress.h" />
     <ClInclude Include="Include\Camera.h" />
@@ -202,6 +204,7 @@
     <ClCompile Include="Dependencies\imgui-docking\imgui_draw.cpp" />
     <ClCompile Include="Dependencies\imgui-docking\imgui_tables.cpp" />
     <ClCompile Include="Dependencies\imgui-docking\imgui_widgets.cpp" />
+    <ClCompile Include="DirectX-Headers-1.614.1\include\directx\d3d12.cpp" />
     <ClCompile Include="src\BootDiagnostics.cpp" />
     <ClCompile Include="Src\BootProgress.cpp" />
     <ClCompile Include="Src\Camera.cpp" />
@@ -252,7 +255,6 @@
     <None Include="ENGINE_CONTRACT.md" />
     <None Include="include\macros.hints" />
     <None Include="packages.config" />
-    <None Include="TheFletchZoneGameEngine.vcxproj.copilot_edit" />
     <None Include="TheFletchZoneGameEngine.vcxproj.new" />
     <None Include="tools\CopyDXCDlls.bat" />
     <None Include="tools\FixSceneShaderBuildStep.ps1" />

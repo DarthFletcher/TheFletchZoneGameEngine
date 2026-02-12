@@ -26,7 +26,7 @@
 #include <d3dcompiler.h> // for D3DCompile
 #include <windows.h> // for HWND
 #include <algorithm> // for std::min/std::max
-#include <d3dx12.h> // for CD3DX12_* helpers
+#include <directx/d3dx12.h> // for CD3DX12_* helpers
 #include "Logger.h" // for Logger::Log
 #include <format> // for std::format 
 #include <ImGui_ImplDX12_DescriptorHeap.h>
@@ -1123,7 +1123,6 @@ void ImGui_ImplDX12_NewFrame()
             ImGui_ImplDX12_LogSwapChainHealth("NewFrame(Main)", bd->InitInfo.SwapChain);
         }
     }
-
 // Cycle to next frame index (for triple buffering)
     bd->FrameIndex = (bd->FrameIndex + 1) % IMGUI_NUM_FRAMES_IN_FLIGHT;
 

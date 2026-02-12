@@ -26,11 +26,16 @@
 #include "SceneCamera.h"
 #include "EditorCommon.h"
 
+// Phase 4A: engine-owned mesh container
+#include "Mesh.h"
+
 // Phase 3A: scene render scaffolding (logs only).
 #include "Scene.h"
 
 extern HWND mainHwnd;
 extern ID3D12DescriptorHeap* g_SRVHeap;
+
+// Forward declaration (definition in `Mesh.h`).
 
 struct FrameRenderBuffer {
     Microsoft::WRL::ComPtr<ID3D12Resource> IndexBuffer;
@@ -286,6 +291,8 @@ public:
 
     void ProcessDeferredReleases();
 
+    const MeshData& GetCubeMesh() const { return m_cubeMesh; }
+
 private:
     HRESULT CreateDX12Device();
     void ExecuteCommandLists(std::vector<ID3D12CommandList*>& commandLists);
@@ -295,6 +302,9 @@ private:
     bool ResizeSwapChainBuffers(UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags);
     void HandleResize(HWND hWnd);
     void ApplyPendingResize(HWND hWnd);
+
+    // Graphics owns GPU geometry (Phase 4A)
+    MeshData m_cubeMesh;
 
     bool fontUploaded = false;
     HWND hWnd = nullptr;
@@ -464,7 +474,6 @@ private:
     bool logged_Dx12_RtvHeapNull = false;
     bool logged_Dx12_BackBufferNull = false;
 };
-
 
 // Call-site tracing helper. Use everywhere instead of direct `ReloadImGuiFont()`.
 #ifndef RELOAD_IMGUI_FONT

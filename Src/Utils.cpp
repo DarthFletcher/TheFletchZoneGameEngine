@@ -242,12 +242,25 @@ const char* D3D12AutoBreadcrumbOpToString(D3D12_AUTO_BREADCRUMB_OP op)
     case D3D12_AUTO_BREADCRUMB_OP_INITIALIZEEXTENSIONCOMMAND: return "InitializeExtensionCommand";
     case D3D12_AUTO_BREADCRUMB_OP_EXECUTEEXTENSIONCOMMAND: return "ExecuteExtensionCommand";
     case D3D12_AUTO_BREADCRUMB_OP_DISPATCHMESH: return "DispatchMesh";
+
+#if defined(D3D12_AUTO_BREADCRUMB_OP_ENCODEFRAME)
     case D3D12_AUTO_BREADCRUMB_OP_ENCODEFRAME: return "EncodeFrame";
+#endif
+#if defined(D3D12_AUTO_BREADCRUMB_OP_RESOLVEENCODEROUTPUTMETADATA)
     case D3D12_AUTO_BREADCRUMB_OP_RESOLVEENCODEROUTPUTMETADATA: return "ResolveEncoderOutputMetadata";
+#endif
+#if defined(D3D12_AUTO_BREADCRUMB_OP_BARRIER)
     case D3D12_AUTO_BREADCRUMB_OP_BARRIER: return "Barrier";
+#endif
+#if defined(D3D12_AUTO_BREADCRUMB_OP_BEGIN_COMMAND_LIST)
     case D3D12_AUTO_BREADCRUMB_OP_BEGIN_COMMAND_LIST: return "BeginCommandList";
+#endif
+#if defined(D3D12_AUTO_BREADCRUMB_OP_DISPATCHGRAPH)
     case D3D12_AUTO_BREADCRUMB_OP_DISPATCHGRAPH: return "DispatchGraph";
+#endif
+#if defined(D3D12_AUTO_BREADCRUMB_OP_SETPROGRAM)
     case D3D12_AUTO_BREADCRUMB_OP_SETPROGRAM: return "SetProgram";
+#endif
     default: return "Unknown";
     }
 }
