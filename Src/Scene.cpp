@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <chrono>
 
 #include <d3d12.h>
 #include <wrl.h>
@@ -22,15 +23,10 @@ namespace
 {
     using Microsoft::WRL::ComPtr;
 
-    struct SceneVertex
+    static constexpr UINT Align256(UINT x)
     {
-        float pos[3];
-        float color[4];
-    };
-
-    static_assert(offsetof(SceneVertex, pos) == 0, "SceneVertex::pos offset mismatch");
-    static_assert(offsetof(SceneVertex, color) == sizeof(float) * 3, "SceneVertex::color offset mismatch");
-    static_assert(sizeof(SceneVertex) == sizeof(float) * 7, "SceneVertex size mismatch");
+        return (x + 255u) & ~255u;
+    }
 
     // Must exactly match `cbuffer SceneCB : register(b0)` layout in the HLSL.
     struct alignas(256) SceneCB
@@ -42,6 +38,29 @@ namespace
     };
 
     static_assert(sizeof(SceneCB) == 256, "SceneCB must be exactly 256 bytes");
+
+    static constexpr UINT kSceneCbStride = Align256(sizeof(SceneCB));
+    static constexpr UINT kMaxSceneObjects = 64;
+
+    struct SceneObject
+    {
+        DirectX::XMFLOAT3 Position{ 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT3 Rotation{ 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT3 Scale{ 1.0f, 1.0f, 1.0f };
+    };
+
+    static std::vector<SceneObject> g_sceneObjects;
+    static bool g_loggedPhase45 = false;
+
+    struct SceneVertex
+    {
+        float pos[3];
+        float color[4];
+    };
+
+    static_assert(offsetof(SceneVertex, pos) == 0, "SceneVertex::pos offset mismatch");
+    static_assert(offsetof(SceneVertex, color) == sizeof(float) * 3, "SceneVertex::color offset mismatch");
+    static_assert(sizeof(SceneVertex) == sizeof(float) * 7, "SceneVertex size mismatch");
 
     struct SceneDrawResources
     {
@@ -100,6 +119,16 @@ namespace
         return d;
     }
 
+    static void EnsureSceneObjectsInitialized()
+    {
+        if (!g_sceneObjects.empty())
+            return;
+
+        // Place cubes on top of the grid (grid at y=0, cube assumed ~1 unit tall).
+        g_sceneObjects.push_back(SceneObject{ {0.0f, 0.5f, 0.0f}, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f} });
+        g_sceneObjects.push_back(SceneObject{ {3.0f, 0.5f, 3.0f}, {0.0f, 0.0f, 0.0f}, {2.0f, 1.0f, 1.0f} });
+    }
+
     static void EnsureSceneResources(ID3D12Device* device)
     {
         if (!device)
@@ -127,7 +156,7 @@ namespace
             param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
             param.Descriptor.ShaderRegister = 0;
             param.Descriptor.RegisterSpace = 0;
-            param.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+            param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
             D3D12_ROOT_SIGNATURE_DESC rsDesc{};
             rsDesc.NumParameters = 1;
@@ -138,8 +167,7 @@ namespace
                 D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
                 D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
                 D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
-                D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
-                D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS;
+                D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS;
 
             ComPtr<ID3DBlob> sigBlob;
             ComPtr<ID3DBlob> errBlob;
@@ -178,7 +206,7 @@ namespace
         }
 
         // ---------------------------
-        // PSO (opaque, no depth)
+        // PSO (opaque, depth enabled)
         // ---------------------------
         if (!g_scene.pso)
         {
@@ -214,9 +242,9 @@ namespace
             rast.DepthClipEnable = TRUE;
 
             D3D12_DEPTH_STENCIL_DESC ds{};
-            ds.DepthEnable = FALSE;
-            ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-            ds.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+            ds.DepthEnable = TRUE;
+            ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+            ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
             ds.StencilEnable = FALSE;
 
             D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
@@ -233,7 +261,7 @@ namespace
             psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
             psoDesc.SampleDesc.Count = 1;
             psoDesc.SampleDesc.Quality = 0;
-            psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+            psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
             const HRESULT hrPSO = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&g_scene.pso));
             if (FAILED(hrPSO) || !g_scene.pso)
@@ -249,7 +277,7 @@ namespace
         // ---------------------------
         if (!g_scene.cb)
         {
-            constexpr UINT cbSize = 256;
+            const UINT cbSize = kSceneCbStride * kMaxSceneObjects;
             const D3D12_HEAP_PROPERTIES heapProps = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
             const D3D12_RESOURCE_DESC bufDesc = MakeBufferDesc(cbSize);
 
@@ -280,6 +308,7 @@ namespace
                 return;
             }
 
+            // Initialize slice 0 to something valid.
             std::memcpy(g_scene.cbCpu, &g_scene.cbData, sizeof(SceneCB));
         }
 
@@ -386,11 +415,13 @@ namespace
                 const float c = isAxis ? 0.85f : 0.40f;
                 const float a = isAxis ? 0.95f : 0.65f;
 
-                push(-kHalf, 0.0f, t, c, c, c, a);
-                push(+kHalf, 0.0f, t, c, c, c, a);
+                constexpr float kGridY = -0.01f;
 
-                push(t, 0.0f, -kHalf, c, c, c, a);
-                push(t, 0.0f, +kHalf, c, c, c, a);
+                push(-kHalf, kGridY, t, c, c, c, a);
+                push(+kHalf, kGridY, t, c, c, c, a);
+
+                push(t, kGridY, -kHalf, c, c, c, a);
+                push(t, kGridY, +kHalf, c, c, c, a);
             }
 
             const UINT vbSize = (UINT)(sizeof(SceneVertex) * verts.size());
@@ -476,6 +507,20 @@ void Scene::Render(const SceneRenderContext& ctx)
         return;
     }
 
+    EnsureSceneObjectsInitialized();
+    if (!g_loggedPhase45)
+    {
+        g_loggedPhase45 = true;
+        Logger::Log(LogLevel::Info, "[Scene] Phase 4A.5 multi-instance rendering active");
+    }
+
+    const float t = static_cast<float>(ctx.frameIndex) * (1.0f / 60.0f);
+    if (g_sceneObjects.size() >= 2)
+    {
+        g_sceneObjects[0].Rotation.y = t;
+        g_sceneObjects[1].Rotation.x = t;
+    }
+
     // Clamp to guard against accidental invalid sizes.
     constexpr uint32_t kMin = 1u;
     constexpr uint32_t kMax = 16384u;
@@ -487,30 +532,19 @@ void Scene::Render(const SceneRenderContext& ctx)
     if (g_scene.initFailed || !g_scene.rootSig || !g_scene.pso || !g_scene.cb || !g_scene.gridPso || !g_scene.gridVb)
         return;
 
-    // Phase 4A: build CB from engine-owned camera (LH) and transpose to match HLSL mul(float4, matrix).
+    // Phase 4A.5: compute view-projection (NOT transposed).
+    DirectX::XMMATRIX viewProj;
     {
         using namespace DirectX;
-
         const XMMATRIX view = XMLoadFloat4x4(&ctx.camera->view);
         const XMMATRIX proj = XMLoadFloat4x4(&ctx.camera->proj);
-        const XMMATRIX vp = XMMatrixMultiply(view, proj);
-        const XMMATRIX vpT = XMMatrixTranspose(vp);
-
-        XMFLOAT4X4 vpStore{};
-        XMStoreFloat4x4(&vpStore, vpT);
-        memcpy(g_scene.cbData.viewProj, &vpStore, sizeof(float) * 16);
+        viewProj = XMMatrixMultiply(view, proj);
 
         g_scene.cbData.cameraPos[0] = ctx.camera->position.x;
         g_scene.cbData.cameraPos[1] = ctx.camera->position.y;
         g_scene.cbData.cameraPos[2] = ctx.camera->position.z;
-
-        // Keep as a constant for now (Phase 3C).
         g_scene.cbData.gridFadeDist = 10.0f;
     }
-
-    // Exactly one CB upload per Scene::Render.
-    if (g_scene.cbCpu)
-        memcpy(g_scene.cbCpu, &g_scene.cbData, sizeof(SceneCB));
 
     // ====================================================================
     // Phase 4A: EXPLICIT STATE SETUP
@@ -562,11 +596,16 @@ void Scene::Render(const SceneRenderContext& ctx)
     ctx.commandList->OMSetBlendFactor(blendFactor);
     ctx.commandList->OMSetStencilRef(0);
 
-    // Common CB
+    // Common CB: bind slice 0 by default (grid can also use slice 0).
     ctx.commandList->SetGraphicsRootConstantBufferView(0, g_scene.cb->GetGPUVirtualAddress());
 
     // ====================================================================
     // Phase 4A: OPAQUE GEOMETRY PASS (Engine-owned cube)
+    // ====================================================================
+    // (Phase 4A.5 replaces this with multi-instance rendering)
+
+    // ====================================================================
+    // Phase 4A.5: OPAQUE GEOMETRY PASS (Engine-owned cube, multi-instance)
     // ====================================================================
     ctx.commandList->SetPipelineState(g_scene.pso.Get());
     ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -576,7 +615,40 @@ void Scene::Render(const SceneRenderContext& ctx)
     {
         ctx.commandList->IASetVertexBuffers(0, 1, &cube.VBV);
         ctx.commandList->IASetIndexBuffer(&cube.IBV);
-        ctx.commandList->DrawIndexedInstanced(cube.IndexCount, 1, 0, 0, 0);
+
+        using namespace DirectX;
+        const UINT objectCount = (UINT)(std::min<size_t>(g_sceneObjects.size(), kMaxSceneObjects));
+
+        for (UINT i = 0; i < objectCount; ++i)
+        {
+            const SceneObject& obj = g_sceneObjects[i];
+
+            const XMMATRIX S = XMMatrixScaling(obj.Scale.x, obj.Scale.y, obj.Scale.z);
+            const XMMATRIX R = XMMatrixRotationRollPitchYaw(obj.Rotation.x, obj.Rotation.y, obj.Rotation.z);
+            const XMMATRIX T = XMMatrixTranslation(obj.Position.x, obj.Position.y, obj.Position.z);
+            const XMMATRIX world = XMMatrixMultiply(XMMatrixMultiply(S, R), T);
+
+            const XMMATRIX wvp = XMMatrixMultiply(world, viewProj);
+            const XMMATRIX wvpT = XMMatrixTranspose(wvp);
+
+            XMFLOAT4X4 wvpStore{};
+            XMStoreFloat4x4(&wvpStore, wvpT);
+            memcpy(g_scene.cbData.viewProj, &wvpStore, sizeof(float) * 16);
+
+            g_scene.cbData.cameraPos[0] = ctx.camera->position.x;
+            g_scene.cbData.cameraPos[1] = ctx.camera->position.y;
+            g_scene.cbData.cameraPos[2] = ctx.camera->position.z;
+            g_scene.cbData.gridFadeDist = 10.0f;
+
+            const UINT offset = i * kSceneCbStride;
+            std::memcpy(static_cast<std::byte*>(g_scene.cbCpu) + offset, &g_scene.cbData, sizeof(SceneCB));
+
+            ctx.commandList->SetGraphicsRootConstantBufferView(0, g_scene.cb->GetGPUVirtualAddress() + offset);
+            ctx.commandList->DrawIndexedInstanced(cube.IndexCount, 1, 0, 0, 0);
+        }
+
+        // Re-bind slice 0 for subsequent passes (grid).
+        ctx.commandList->SetGraphicsRootConstantBufferView(0, g_scene.cb->GetGPUVirtualAddress());
     }
 
     // ====================================================================
