@@ -331,12 +331,27 @@ bool Graphics::Initialize(HWND hWnd)
     ListAvailableGPUs();
     CreateDX12Device();
 
-    // Phase 4A: Graphics owns the cube mesh (upload heap only, safe at init).
-    if (!CreateCubeMesh(device.Get(), m_cubeMesh))
+    CreateCommandInterfaces();
+
+    // Phase 4B: Graphics owns the cube mesh (DEFAULT heap + one-time upload).
+    if (!fenceEvent)
+        fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+    if (!CreateCubeMeshDefaultHeap(
+        device.Get(),
+        uploadCommandList.Get(),
+        uploadAllocator.Get(),
+        commandQueue.Get(),
+        fence.Get(),
+        fenceEvent,
+        fenceValue,
+        m_cubeMesh))
     {
-        Logger::Log(LogLevel::Error, "Failed to create cube mesh.", "[Graphics]");
+        Logger::Log(LogLevel::Error, "Failed to create cube mesh (DEFAULT heap).", "[Graphics]");
         return false;
     }
+
+    Logger::Log(LogLevel::Info, "✅ Engine cube mesh created (Phase 4B DEFAULT heap)", "[Graphics]");
 
     // 🎮 Log selected GPU info
     ComPtr<IDXGIAdapter> adapter;
@@ -354,8 +369,6 @@ bool Graphics::Initialize(HWND hWnd)
             }
         }
     }
-
-    CreateCommandInterfaces();
 
     GPUSelection::ListAvailableGPUs();
     Logger::Log(LogLevel::Info, "✅ GPU list populated", "[DX12]");
@@ -1329,6 +1342,41 @@ void Graphics::Present(HWND hWnd)
     g_PresentedThisFrame = true;
 }
 
+// Scene RT clear color presets (Phase 4A)
+namespace
+{
+    enum class SceneClearPreset : uint8_t
+    {
+        EngineNeutral = 0,
+        TrueNeutral,
+        VoidReaper,
+        Count
+    };
+
+    static SceneClearPreset g_SceneClearPreset = SceneClearPreset::EngineNeutral;
+}
+
+static const float* GetSceneClearColorRGBA()
+{
+    static const float kEngineNeutral[4] = { 0.10f, 0.10f, 0.12f, 1.0f };
+    static const float kTrueNeutral[4] = { 0.08f, 0.08f, 0.08f, 1.0f };
+    static const float kVoidReaper[4] = { 0.02f, 0.02f, 0.05f, 1.0f };
+
+    switch (g_SceneClearPreset)
+    {
+    case SceneClearPreset::TrueNeutral: return kTrueNeutral;
+    case SceneClearPreset::VoidReaper:  return kVoidReaper;
+    case SceneClearPreset::EngineNeutral:
+    default: return kEngineNeutral;
+    }
+}
+
+static void AdvanceSceneClearPreset()
+{
+    const uint8_t next = (uint8_t(g_SceneClearPreset) + 1u) % uint8_t(SceneClearPreset::Count);
+    g_SceneClearPreset = static_cast<SceneClearPreset>(next);
+}
+
 // Phase 3D helpers
 namespace
 {
@@ -2039,7 +2087,12 @@ void Graphics::RenderSceneToTarget()
         }
     }
 
-    const float clearColor[4] = { 0.25f, 0.05f, 0.35f, 1.0f };
+    // (Optional) cycle presets at runtime: press F9 to rotate clear colors.
+    // This is intentionally simple and engine-owned (UI hookup can come later).
+    if ((GetAsyncKeyState(VK_F9) & 1) != 0)
+        AdvanceSceneClearPreset();
+
+    const float* clearColor = GetSceneClearColorRGBA();
 
     D3D12_VIEWPORT vp{};
     vp.TopLeftX = 0.0f;
@@ -2074,7 +2127,17 @@ void Graphics::RenderSceneToTarget()
     if (sceneDsvHandle.ptr != 0)
         commandList->ClearDepthStencilView(sceneDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    // Phase 0: placeholder pass only. Real scene drawing will be restored later.
+    // Phase 4A: draw scene content into the scene render target (RT currently bound).
+    {
+        SceneRenderContext sctx;
+        sctx.device = device.Get();
+        sctx.commandList = commandList.Get();
+        sctx.viewportWidth = sceneRTWidth;
+        sctx.viewportHeight = sceneRTHeight;
+        sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
+        sctx.camera = &CameraSystem::GetActiveData();
+        Scene::Render(sctx);
+    }
 
     // Transition RT back to shader resource (for ImGui sampling)
     if (sceneRTState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
@@ -2148,18 +2211,7 @@ void Graphics::Render(HWND hWnd)
     ImGui::Render();
     g_ImGuiRenderedThisFrame = true;
 
-    // Phase 3A: scene render scaffolding.
-    // Non-destructive: emits logs/validates wiring only (no draw calls yet).
-    {
-        SceneRenderContext sctx;
-        sctx.device = device.Get();
-        sctx.commandList = commandList.Get();
-        sctx.viewportWidth = sceneRTWidth;
-        sctx.viewportHeight = sceneRTHeight;
-        sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
-        sctx.camera = &CameraSystem::GetActiveData();
-        Scene::Render(sctx);
-    }
+    // (Scene is rendered inside RenderSceneToTarget, into the offscreen RT.)
 
     ImDrawData* drawData = ImGui::GetDrawData();
     if (!drawData)
