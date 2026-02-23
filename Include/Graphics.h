@@ -73,6 +73,14 @@ public:
     Graphics();
     ~Graphics();
 
+    struct CBAllocation
+    {
+        D3D12_GPU_VIRTUAL_ADDRESS GpuAddress = 0;
+        uint8_t* CpuPtr = nullptr;
+    };
+
+    CBAllocation AllocateFrameCB(size_t size);
+
     void ToggleVSync(bool enable);
     static bool lockResolutionWhenMaximized;
     std::future<void> LoadTextureAsync(std::string filePath);
@@ -479,6 +487,11 @@ private:
 
     bool m_FrameActive = false;
     bool m_InsideRender = false;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_FrameCB;
+    uint8_t* m_FrameCBMapped = nullptr;
+    size_t m_FrameCBSize = 0;
+    size_t m_FrameCBOffset = 0;
 };
 
 // Call-site tracing helper. Use everywhere instead of direct `ReloadImGuiFont()`.

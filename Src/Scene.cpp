@@ -153,7 +153,7 @@ namespace
             return;
 
         // Core resources for this pass.
-        if (g_scene.rootSig && g_scene.pso && g_scene.cb && g_scene.gridPso && g_scene.gridVb)
+        if (g_scene.rootSig && g_scene.pso && g_scene.gridPso && g_scene.gridVb)
             return;
 
         if (!g_scene.initLogged)
@@ -288,43 +288,14 @@ namespace
         }
 
         // ---------------------------
-        // Constant Buffer (upload heap, persistently mapped)
+        // Constant Buffer (scene-owned) removed.
+        // CB data is uploaded via `Graphics::AllocateFrameCB()` per-frame.
         // ---------------------------
-        if (!g_scene.cb)
+        if (!g_scene.cbData.viewProj[0])
         {
-            const UINT cbSize = kSceneCbStride * kMaxSceneObjects;
-            const D3D12_HEAP_PROPERTIES heapProps = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
-            const D3D12_RESOURCE_DESC bufDesc = MakeBufferDesc(cbSize);
-
-            const HRESULT hrCB = device->CreateCommittedResource(
-                &heapProps,
-                D3D12_HEAP_FLAG_NONE,
-                &bufDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(&g_scene.cb));
-
-            if (FAILED(hrCB) || !g_scene.cb)
-            {
-                g_scene.initFailed = true;
-                Logger::Log(LogLevel::Error, "CreateCommittedResource(CB) failed", "[Scene]");
-                return;
-            }
-
             g_scene.cbData = {};
             FillIdentity(g_scene.cbData.viewProj);
             g_scene.cbData.gridFadeDist = 10.0f;
-
-            const HRESULT hrMap = g_scene.cb->Map(0, nullptr, &g_scene.cbCpu);
-            if (FAILED(hrMap) || !g_scene.cbCpu)
-            {
-                g_scene.initFailed = true;
-                Logger::Log(LogLevel::Error, "CB Map failed", "[Scene]");
-                return;
-            }
-
-            // Initialize slice 0 to something valid.
-            std::memcpy(g_scene.cbCpu, &g_scene.cbData, sizeof(SceneCB));
         }
 
         // ---------------------------
@@ -611,8 +582,13 @@ void Scene::Render(const SceneRenderContext& ctx)
     ctx.commandList->OMSetBlendFactor(blendFactor);
     ctx.commandList->OMSetStencilRef(0);
 
-    // Common CB: bind slice 0 by default (grid can also use slice 0).
-    ctx.commandList->SetGraphicsRootConstantBufferView(0, g_scene.cb->GetGPUVirtualAddress());
+    // Common CB: bind a fresh slice (shared root signature for both PSOs).
+    {
+        Graphics& gfx = Graphics::GetInstance();
+        const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
+        std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
+        ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
+    }
 
     // ====================================================================
     // Phase 4A: OPAQUE GEOMETRY PASS (Engine-owned cube)
@@ -633,6 +609,8 @@ void Scene::Render(const SceneRenderContext& ctx)
 
         using namespace DirectX;
         const UINT objectCount = (UINT)(std::min<size_t>(g_sceneObjects.size(), kMaxSceneObjects));
+
+        Graphics& gfx = Graphics::GetInstance();
 
         for (UINT i = 0; i < objectCount; ++i)
         {
@@ -655,15 +633,20 @@ void Scene::Render(const SceneRenderContext& ctx)
             g_scene.cbData.cameraPos[2] = ctx.camera->position.z;
             g_scene.cbData.gridFadeDist = 10.0f;
 
-            const UINT offset = i * kSceneCbStride;
-            std::memcpy(static_cast<std::byte*>(g_scene.cbCpu) + offset, &g_scene.cbData, sizeof(SceneCB));
+            const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
+            std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
+            ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
 
-            ctx.commandList->SetGraphicsRootConstantBufferView(0, g_scene.cb->GetGPUVirtualAddress() + offset);
             ctx.commandList->DrawIndexedInstanced(cube.IndexCount, 1, 0, 0, 0);
         }
+    }
 
-        // Re-bind slice 0 for subsequent passes (grid).
-        ctx.commandList->SetGraphicsRootConstantBufferView(0, g_scene.cb->GetGPUVirtualAddress());
+    // For subsequent passes (grid), re-bind a fresh slice.
+    {
+        Graphics& gfx = Graphics::GetInstance();
+        const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
+        std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
+        ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
     }
 
     // ====================================================================

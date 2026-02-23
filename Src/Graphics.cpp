@@ -348,6 +348,46 @@ bool Graphics::Initialize(HWND hWnd)
 
     CreateCommandInterfaces();
 
+    // Frame constant buffer upload heap (persistently mapped)
+    {
+        constexpr size_t kFrameCBSize = 1024u * 64u;
+
+        const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
+        const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(kFrameCBSize);
+
+        const HRESULT hr = device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&m_FrameCB));
+
+        if (FAILED(hr) || !m_FrameCB)
+        {
+            Logger::Log(LogLevel::Error, "❌ Failed to create FrameCB upload resource.", "[DX12]");
+            return false;
+        }
+
+        m_FrameCBSize = kFrameCBSize;
+        m_FrameCBOffset = 0;
+
+        const CD3DX12_RANGE readRange(0, 0);
+        uint8_t* mapped = nullptr;
+        const HRESULT hrMap = m_FrameCB->Map(0, &readRange, reinterpret_cast<void**>(&mapped));
+        if (FAILED(hrMap) || !mapped)
+        {
+            Logger::Log(LogLevel::Error, "❌ Failed to map FrameCB upload resource.", "[DX12]");
+            return false;
+        }
+
+        m_FrameCBMapped = mapped;
+
+#ifndef NDEBUG
+        OutputDebugStringA("[CB] FrameCB mapped once (persistent)\n");
+#endif
+    }
+
     // Phase 4B: Graphics owns the cube mesh (DEFAULT heap + one-time upload).
     if (!fenceEvent)
         fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -984,6 +1024,8 @@ void Graphics::BeginFrame(HWND hWnd)
 #ifndef NDEBUG
     ++frameCounter;
 #endif
+
+    m_FrameCBOffset = 0;
 
     // New frame: allow exactly one Present() this frame (Engine-owned).
     g_PresentedThisFrame = false;
@@ -2591,4 +2633,42 @@ void Graphics::ApplyPendingResize(HWND hWnd)
     }
 
     Logger::Log(LogLevel::Info, std::format("[Resize] Applied w={} h={} source={}", newW, newH, ResizeSourceToString(src)));
+}
+
+//===============================================
+// Implementation of per-frame constant buffer helpers
+//===============================================
+
+// GPU buffer allocation: 256B aligned, based on requested size.
+namespace
+{
+    static size_t Align256Size(size_t size)
+    {
+        return (size + 255u) & ~size_t(255u);
+    }
+}
+
+Graphics::CBAllocation Graphics::AllocateFrameCB(size_t size)
+{
+    size = Align256Size(size);
+
+#ifdef _DEBUG
+    if (!m_FrameCB || !m_FrameCBMapped)
+    {
+        OutputDebugStringA("❌ AllocateFrameCB called before FrameCB init\n");
+        __debugbreak();
+    }
+    if (m_FrameCBOffset + size > m_FrameCBSize)
+    {
+        OutputDebugStringA("❌ FrameCB overflow\n");
+        __debugbreak();
+    }
+#endif
+
+    CBAllocation alloc;
+    alloc.CpuPtr = m_FrameCBMapped + m_FrameCBOffset;
+    alloc.GpuAddress = m_FrameCB->GetGPUVirtualAddress() + m_FrameCBOffset;
+
+    m_FrameCBOffset += size;
+    return alloc;
 }
