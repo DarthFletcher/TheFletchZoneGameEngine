@@ -179,6 +179,7 @@
     <ClInclude Include="include\imgui_impl_dx12_custom.h" />
     <ClInclude Include="include\imgui_impl_win32_custom.h" />
     <ClInclude Include="include\Input.h" />
+    <ClInclude Include="Include\InstanceData.h" />
     <ClInclude Include="include\logger.h" />
     <ClInclude Include="Include\Mesh.h" />
     <ClInclude Include="include\resource.h" />

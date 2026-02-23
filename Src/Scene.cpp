@@ -130,10 +130,10 @@ namespace
 
     static void EnsureSceneObjectsInitialized()
     {
+        // Legacy path retained for now; instance list is the new draw source-of-truth.
         if (!g_sceneObjects.empty())
             return;
 
-        // Place cubes on top of the grid (grid at y=0, cube assumed ~1 unit tall).
         g_sceneObjects.push_back(SceneObject{ {0.0f, 0.5f, 0.0f}, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f} });
         g_sceneObjects.push_back(SceneObject{ {3.0f, 0.5f, 3.0f}, {0.0f, 0.0f, 0.0f}, {2.0f, 1.0f, 1.0f} });
     }
@@ -448,8 +448,44 @@ namespace
     }
 }
 
+std::vector<InstanceData> Scene::s_Instances;
+
+void Scene::EnsureInstancesInitialized()
+{
+    if (!s_Instances.empty())
+        return;
+
+    s_Instances.clear();
+    s_Instances.reserve(25);
+
+    for (int x = -2; x <= 2; ++x)
+    {
+        for (int z = -2; z <= 2; ++z)
+        {
+            InstanceData inst{};
+
+            const DirectX::XMMATRIX world = DirectX::XMMatrixTranslation(
+                float(x) * 3.0f,
+                0.5f,
+                float(z) * 3.0f);
+
+            DirectX::XMStoreFloat4x4(&inst.World, world);
+
+            inst.Color = DirectX::XMFLOAT4(
+                float(x + 2) / 4.0f,
+                0.5f,
+                float(z + 2) / 4.0f,
+                1.0f);
+
+            s_Instances.push_back(inst);
+        }
+    }
+}
+
 void Scene::Render(const SceneRenderContext& ctx)
 {
+    EnsureInstancesInitialized();
+
     // ====================================================================
     // Phase 4A: PASS BOUNDARY & OWNERSHIP NOTES
     // ====================================================================
@@ -608,19 +644,12 @@ void Scene::Render(const SceneRenderContext& ctx)
         ctx.commandList->IASetIndexBuffer(&cube.IBV);
 
         using namespace DirectX;
-        const UINT objectCount = (UINT)(std::min<size_t>(g_sceneObjects.size(), kMaxSceneObjects));
 
         Graphics& gfx = Graphics::GetInstance();
 
-        for (UINT i = 0; i < objectCount; ++i)
+        for (const auto& inst : s_Instances)
         {
-            const SceneObject& obj = g_sceneObjects[i];
-
-            const XMMATRIX S = XMMatrixScaling(obj.Scale.x, obj.Scale.y, obj.Scale.z);
-            const XMMATRIX R = XMMatrixRotationRollPitchYaw(obj.Rotation.x, obj.Rotation.y, obj.Rotation.z);
-            const XMMATRIX T = XMMatrixTranslation(obj.Position.x, obj.Position.y, obj.Position.z);
-            const XMMATRIX world = XMMatrixMultiply(XMMatrixMultiply(S, R), T);
-
+            const XMMATRIX world = XMLoadFloat4x4(&inst.World);
             const XMMATRIX wvp = XMMatrixMultiply(world, viewProj);
             const XMMATRIX wvpT = XMMatrixTranspose(wvp);
 

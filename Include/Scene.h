@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
+
+#include "InstanceData.h"
 
 struct ID3D12Device;
 struct ID3D12GraphicsCommandList;
@@ -37,4 +40,8 @@ class Scene
 {
 public:
     static void Render(const SceneRenderContext& ctx);
+
+private:
+    static std::vector<InstanceData> s_Instances;
+    static void EnsureInstancesInitialized();
 };
