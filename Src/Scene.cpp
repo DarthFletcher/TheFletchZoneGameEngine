@@ -4,6 +4,7 @@
 #include "ShaderUtils.h"
 #include "CameraData.h"
 #include "Graphics.h"
+#include "Vertex.h"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,24 @@ extern ID3D12DescriptorHeap* g_SRVHeap;
 namespace
 {
     using Microsoft::WRL::ComPtr;
+
+#ifndef NDEBUG
+    static void LogVertexPCLayoutOnce()
+    {
+        static bool s_logged = false;
+        if (s_logged)
+            return;
+        s_logged = true;
+
+        char buffer[256] = {};
+        sprintf_s(buffer,
+            "[VertexAudit] VertexPC size=%zu posOff=%zu colorOff=%zu\n",
+            sizeof(VertexPC),
+            offsetof(VertexPC, Position),
+            offsetof(VertexPC, Color));
+        OutputDebugStringA(buffer);
+    }
+#endif
 
     static constexpr UINT Align256(UINT x)
     {
@@ -51,16 +70,6 @@ namespace
 
     static std::vector<SceneObject> g_sceneObjects;
     static bool g_loggedPhase45 = false;
-
-    struct SceneVertex
-    {
-        float pos[3];
-        float color[4];
-    };
-
-    static_assert(offsetof(SceneVertex, pos) == 0, "SceneVertex::pos offset mismatch");
-    static_assert(offsetof(SceneVertex, color) == sizeof(float) * 3, "SceneVertex::color offset mismatch");
-    static_assert(sizeof(SceneVertex) == sizeof(float) * 7, "SceneVertex size mismatch");
 
     struct SceneDrawResources
     {
@@ -131,6 +140,12 @@ namespace
 
     static void EnsureSceneResources(ID3D12Device* device)
     {
+        Graphics::GetInstance().AssertNotInRender("EnsureSceneResources()");
+
+#ifndef NDEBUG
+        LogVertexPCLayoutOnce();
+#endif
+
         if (!device)
             return;
 
@@ -332,8 +347,8 @@ namespace
             }
 
             D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, (UINT)offsetof(SceneVertex, pos), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, (UINT)offsetof(SceneVertex, color), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, (UINT)offsetof(VertexPC, Position), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, (UINT)offsetof(VertexPC, Color), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
             };
 
             D3D12_BLEND_DESC blend{};
@@ -396,14 +411,14 @@ namespace
             constexpr float kHalf = kExtent;
             constexpr float kStep = (kExtent * 2.0f) / (float)kDiv;
 
-            std::vector<SceneVertex> verts;
+            std::vector<VertexPC> verts;
             verts.reserve((kDiv + 1) * 4);
 
             auto push = [&](float x, float y, float z, float r, float g, float b, float a)
             {
-                SceneVertex v{};
-                v.pos[0] = x; v.pos[1] = y; v.pos[2] = z;
-                v.color[0] = r; v.color[1] = g; v.color[2] = b; v.color[3] = a;
+                VertexPC v{};
+                v.Position = { x, y, z };
+                v.Color = { r, g, b, a };
                 verts.push_back(v);
             };
 
@@ -424,7 +439,7 @@ namespace
                 push(t, kGridY, +kHalf, c, c, c, a);
             }
 
-            const UINT vbSize = (UINT)(sizeof(SceneVertex) * verts.size());
+            const UINT vbSize = (UINT)(sizeof(VertexPC) * verts.size());
 
             const D3D12_HEAP_PROPERTIES heapProps = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
             const D3D12_RESOURCE_DESC bufDesc = MakeBufferDesc(vbSize);
@@ -457,7 +472,7 @@ namespace
 
             g_scene.gridVbv.BufferLocation = g_scene.gridVb->GetGPUVirtualAddress();
             g_scene.gridVbv.SizeInBytes = vbSize;
-            g_scene.gridVbv.StrideInBytes = sizeof(SceneVertex);
+            g_scene.gridVbv.StrideInBytes = sizeof(VertexPC);
         }
     }
 }

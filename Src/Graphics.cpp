@@ -129,6 +129,21 @@ void Graphics::EnsureValidCommandQueue() {
         throw std::runtime_error("CommandQueue is NULL.");
     }
 }
+
+void Graphics::AssertNotInRender(const char* reason)
+{
+#ifdef _DEBUG
+    if (m_InsideRender)
+    {
+        OutputDebugStringA("❌ GPU resource creation attempted during Render(): ");
+        OutputDebugStringA(reason ? reason : "(unknown)");
+        OutputDebugStringA("\n");
+        __debugbreak();
+    }
+#else
+    (void)reason;
+#endif
+}
 //===============================================
 // Constructor & Destructor Functions
 // --------------------------------
@@ -1340,6 +1355,8 @@ void Graphics::Present(HWND hWnd)
 
     hasPresentedOnce = true;
     g_PresentedThisFrame = true;
+
+    m_FrameActive = false;
 }
 
 // Scene RT clear color presets (Phase 4A)
@@ -2171,6 +2188,8 @@ void Graphics::RenderSceneToTarget()
 
 void Graphics::Render(HWND hWnd)
 {
+    m_InsideRender = true;
+
     // Phase 2.5: Single invariant guard for the render phase.
     // Rendering must only occur after BeginFrame() has started the frame and the command list is recording.
     if (!frameStarted || !commandListOpen)
@@ -2180,6 +2199,7 @@ void Graphics::Render(HWND hWnd)
                 frameStarted ? 1 : 0,
                 commandListOpen ? 1 : 0),
             "[Core]");
+        m_InsideRender = false;
         return;
     }
 
@@ -2188,11 +2208,15 @@ void Graphics::Render(HWND hWnd)
     {
         Logger::Log(LogLevel::Error,
             "❌ Render() called with closed command list!", "[DX12]");
+        m_InsideRender = false;
         return;
     }
 
     if (!commandList || !ImGui::GetCurrentContext())
+    {
+        m_InsideRender = false;
         return;
+    }
 
     // Render the Scene viewport target first (so UI can display it via ImGui::Image)
     RenderSceneToTarget();
@@ -2215,7 +2239,10 @@ void Graphics::Render(HWND hWnd)
 
     ImDrawData* drawData = ImGui::GetDrawData();
     if (!drawData)
+    {
+        m_InsideRender = false;
         return;
+    }
 
     // Transition backbuffer to RT
     CD3DX12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -2270,6 +2297,8 @@ void Graphics::Render(HWND hWnd)
         D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATE_PRESENT);
     commandList->ResourceBarrier(1, &toPresent);
+
+    m_InsideRender = false;
 }
 
 //===============================================

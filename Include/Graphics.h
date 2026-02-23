@@ -156,6 +156,9 @@ public:
 
     void CheckFrameHealth();
 
+    // Frame contract: forbid GPU resource creation during `Render()`.
+    void AssertNotInRender(const char* reason);
+
     UINT64 lastSignaledFenceValue = 0;
 
     bool InitializeImGui(HWND hWnd);
@@ -473,6 +476,9 @@ private:
     bool logged_Dx12_SwapchainBackBufferIndexOOR = false;
     bool logged_Dx12_RtvHeapNull = false;
     bool logged_Dx12_BackBufferNull = false;
+
+    bool m_FrameActive = false;
+    bool m_InsideRender = false;
 };
 
 // Call-site tracing helper. Use everywhere instead of direct `ReloadImGuiFont()`.
