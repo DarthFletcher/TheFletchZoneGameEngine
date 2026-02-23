@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <vector>
+#include <wrl.h>
+#include <d3d12.h>
 
 #include "InstanceData.h"
 
@@ -44,4 +46,11 @@ public:
 private:
     static std::vector<InstanceData> s_Instances;
     static void EnsureInstancesInitialized();
+
+    static Microsoft::WRL::ComPtr<ID3D12Resource> s_InstanceBuffer;
+    static uint8_t* s_InstanceMappedPtr;
+    static UINT s_InstanceCapacity;
+    static D3D12_CPU_DESCRIPTOR_HANDLE s_InstanceSRVCpu;
+    static D3D12_GPU_DESCRIPTOR_HANDLE s_InstanceSRVGpu;
+    static void EnsureInstanceBuffer(ID3D12Device* device);
 };

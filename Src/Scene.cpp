@@ -449,6 +449,80 @@ namespace
 }
 
 std::vector<InstanceData> Scene::s_Instances;
+Microsoft::WRL::ComPtr<ID3D12Resource> Scene::s_InstanceBuffer;
+uint8_t* Scene::s_InstanceMappedPtr = nullptr;
+UINT Scene::s_InstanceCapacity = 0;
+D3D12_CPU_DESCRIPTOR_HANDLE Scene::s_InstanceSRVCpu = {};
+D3D12_GPU_DESCRIPTOR_HANDLE Scene::s_InstanceSRVGpu = {};
+
+void Scene::EnsureInstanceBuffer(ID3D12Device* device)
+{
+    if (!device)
+        return;
+
+    const UINT required = (UINT)s_Instances.size();
+    if (s_InstanceBuffer && required <= s_InstanceCapacity)
+        return;
+
+    const UINT newCapacity = (std::max)(required, 32u);
+    const size_t bufferSize = sizeof(InstanceData) * (size_t)newCapacity;
+
+    const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
+    const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> newBuffer;
+    const HRESULT hr = device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &desc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(newBuffer.ReleaseAndGetAddressOf()));
+
+    if (FAILED(hr) || !newBuffer)
+    {
+        Logger::Log(LogLevel::Error, "EnsureInstanceBuffer: CreateCommittedResource failed", "[Scene]");
+        return;
+    }
+
+    void* mapped = nullptr;
+    const CD3DX12_RANGE readRange(0, 0);
+    const HRESULT hrMap = newBuffer->Map(0, &readRange, &mapped);
+    if (FAILED(hrMap) || !mapped)
+    {
+        Logger::Log(LogLevel::Error, "EnsureInstanceBuffer: Map failed", "[Scene]");
+        return;
+    }
+
+    // Allocate SRV descriptor once (engine-owned heap). Keep same handle when growing.
+    if (s_InstanceSRVCpu.ptr == 0 || s_InstanceSRVGpu.ptr == 0)
+    {
+        s_InstanceSRVCpu = Graphics::AllocateSRV();
+
+        const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = g_SRVHeap ? g_SRVHeap->GetGPUDescriptorHandleForHeapStart() : D3D12_GPU_DESCRIPTOR_HANDLE{};
+        s_InstanceSRVGpu.ptr = gpuStart.ptr + (UINT64)(s_InstanceSRVCpu.ptr - (g_SRVHeap ? g_SRVHeap->GetCPUDescriptorHandleForHeapStart().ptr : 0)) / inc * inc;
+
+        // If heap pointer math isn't possible (defensive), let it stay 0; CP6 will use the heap + CPU handle anyway.
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Buffer.FirstElement = 0;
+    srvDesc.Buffer.NumElements = newCapacity;
+    srvDesc.Buffer.StructureByteStride = sizeof(InstanceData);
+    srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+
+    device->CreateShaderResourceView(newBuffer.Get(), &srvDesc, s_InstanceSRVCpu);
+
+    s_InstanceBuffer = newBuffer;
+    s_InstanceMappedPtr = reinterpret_cast<uint8_t*>(mapped);
+    s_InstanceCapacity = newCapacity;
+
+    Logger::Log(LogLevel::Info, std::format("[Scene] Instance buffer ready | capacity={} bytes={}", s_InstanceCapacity, bufferSize), "[Scene]");
+}
 
 void Scene::EnsureInstancesInitialized()
 {
@@ -485,6 +559,12 @@ void Scene::EnsureInstancesInitialized()
 void Scene::Render(const SceneRenderContext& ctx)
 {
     EnsureInstancesInitialized();
+    EnsureInstanceBuffer(ctx.device);
+
+    if (s_InstanceMappedPtr && !s_Instances.empty())
+    {
+        std::memcpy(s_InstanceMappedPtr, s_Instances.data(), sizeof(InstanceData) * s_Instances.size());
+    }
 
     // ====================================================================
     // Phase 4A: PASS BOUNDARY & OWNERSHIP NOTES
