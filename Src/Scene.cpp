@@ -163,26 +163,25 @@ namespace
         }
 
         // ---------------------------
-        // Root Signature (b0 only)
+        // Root Signature (b0 + SRV t0)
         // ---------------------------
         if (!g_scene.rootSig)
         {
-            D3D12_ROOT_PARAMETER param{};
-            param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-            param.Descriptor.ShaderRegister = 0;
-            param.Descriptor.RegisterSpace = 0;
-            param.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            CD3DX12_DESCRIPTOR_RANGE srvRange{};
+            srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0
 
-            D3D12_ROOT_SIGNATURE_DESC rsDesc{};
-            rsDesc.NumParameters = 1;
-            rsDesc.pParameters = &param;
-            rsDesc.NumStaticSamplers = 0;
-            rsDesc.pStaticSamplers = nullptr;
-            rsDesc.Flags =
+            CD3DX12_ROOT_PARAMETER params[2]{};
+            params[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0
+            params[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_VERTEX); // t0
+
+            CD3DX12_ROOT_SIGNATURE_DESC rsDesc{};
+            rsDesc.Init(
+                _countof(params), params,
+                0, nullptr,
                 D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
                 D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
                 D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
-                D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS;
+                D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS);
 
             ComPtr<ID3DBlob> sigBlob;
             ComPtr<ID3DBlob> errBlob;
@@ -693,6 +692,10 @@ void Scene::Render(const SceneRenderContext& ctx)
     // Bind shared root signature once (both PSOs compatible).
     ctx.commandList->SetGraphicsRootSignature(g_scene.rootSig.Get());
 
+    // Bind instance SRV table (t0) at root param 1.
+    if (s_InstanceSRVGpu.ptr != 0)
+        ctx.commandList->SetGraphicsRootDescriptorTable(1, s_InstanceSRVGpu);
+
     // Fully define dynamic state that can bleed between draws.
     const float blendFactor[4] = { 0, 0, 0, 0 };
     ctx.commandList->OMSetBlendFactor(blendFactor);
@@ -727,8 +730,10 @@ void Scene::Render(const SceneRenderContext& ctx)
 
         Graphics& gfx = Graphics::GetInstance();
 
-        for (const auto& inst : s_Instances)
+        for (UINT i = 0; i < (UINT)s_Instances.size(); ++i)
         {
+            const auto& inst = s_Instances[i];
+
             const XMMATRIX world = XMLoadFloat4x4(&inst.World);
             const XMMATRIX wvp = XMMatrixMultiply(world, viewProj);
             const XMMATRIX wvpT = XMMatrixTranspose(wvp);
@@ -746,7 +751,7 @@ void Scene::Render(const SceneRenderContext& ctx)
             std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
             ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
 
-            ctx.commandList->DrawIndexedInstanced(cube.IndexCount, 1, 0, 0, 0);
+            ctx.commandList->DrawIndexedInstanced(cube.IndexCount, 1, 0, 0, i);
         }
     }
 
