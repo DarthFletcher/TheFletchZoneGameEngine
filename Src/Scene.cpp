@@ -704,18 +704,19 @@ void Scene::Render(const SceneRenderContext& ctx)
     // Common CB: bind a fresh slice (shared root signature for both PSOs).
     {
         Graphics& gfx = Graphics::GetInstance();
+
+        // Per-frame CB content: view-projection only (instancing supplies World/Color).
+        DirectX::XMFLOAT4X4 vpStore{};
+        DirectX::XMStoreFloat4x4(&vpStore, DirectX::XMMatrixTranspose(viewProj));
+        memcpy(g_scene.cbData.viewProj, &vpStore, sizeof(float) * 16);
+
         const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
         std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
         ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
     }
 
     // ====================================================================
-    // Phase 4A: OPAQUE GEOMETRY PASS (Engine-owned cube)
-    // ====================================================================
-    // (Phase 4A.5 replaces this with multi-instance rendering)
-
-    // ====================================================================
-    // Phase 4A.5: OPAQUE GEOMETRY PASS (Engine-owned cube, multi-instance)
+    // Phase 4A: OPAQUE GEOMETRY PASS (Engine-owned cube, instanced)
     // ====================================================================
     ctx.commandList->SetPipelineState(g_scene.pso.Get());
     ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -726,33 +727,9 @@ void Scene::Render(const SceneRenderContext& ctx)
         ctx.commandList->IASetVertexBuffers(0, 1, &cube.VBV);
         ctx.commandList->IASetIndexBuffer(&cube.IBV);
 
-        using namespace DirectX;
-
-        Graphics& gfx = Graphics::GetInstance();
-
-        for (UINT i = 0; i < (UINT)s_Instances.size(); ++i)
-        {
-            const auto& inst = s_Instances[i];
-
-            const XMMATRIX world = XMLoadFloat4x4(&inst.World);
-            const XMMATRIX wvp = XMMatrixMultiply(world, viewProj);
-            const XMMATRIX wvpT = XMMatrixTranspose(wvp);
-
-            XMFLOAT4X4 wvpStore{};
-            XMStoreFloat4x4(&wvpStore, wvpT);
-            memcpy(g_scene.cbData.viewProj, &wvpStore, sizeof(float) * 16);
-
-            g_scene.cbData.cameraPos[0] = ctx.camera->position.x;
-            g_scene.cbData.cameraPos[1] = ctx.camera->position.y;
-            g_scene.cbData.cameraPos[2] = ctx.camera->position.z;
-            g_scene.cbData.gridFadeDist = 10.0f;
-
-            const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
-            std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
-            ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
-
-            ctx.commandList->DrawIndexedInstanced(cube.IndexCount, 1, 0, 0, i);
-        }
+        const UINT instanceCount = (UINT)s_Instances.size();
+        if (instanceCount > 0)
+            ctx.commandList->DrawIndexedInstanced(cube.IndexCount, instanceCount, 0, 0, 0);
     }
 
     // For subsequent passes (grid), re-bind a fresh slice.
