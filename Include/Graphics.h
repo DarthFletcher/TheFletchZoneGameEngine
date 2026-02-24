@@ -117,6 +117,7 @@ public:
     };
 
     static constexpr UINT kBackBufferCount = 3;
+
     std::array<FrameContext, kBackBufferCount> frames{};
 
     void OnResize(HWND hWnd, UINT width, UINT height);

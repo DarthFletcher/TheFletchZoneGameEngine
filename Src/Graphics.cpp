@@ -861,10 +861,12 @@ void Graphics::CreateSwapChain(HWND hwnd, UINT width, UINT height)
 
     currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
 
-    const UINT64 completed = fence ? fence->GetCompletedValue() : 0;
+    // Pre-first-signal bring-up: none of the per-backbuffer stamps should be ahead of the last signal.
+    // Initialize to 0; stamps are set when we successfully Signal on the command queue.
+    lastSignaledFenceValue = 0;
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
     {
-        frames[i].fenceValue = completed;
+        frames[i].fenceValue = 0;
     }
 }
 
@@ -1070,10 +1072,23 @@ void Graphics::BeginFrame(HWND hWnd)
         (uint32_t)(sceneRTHeight != 0 ? sceneRTHeight : (UINT)screenHeight));
 
     // Phase 1B drift detector: per-buffer fence stamps must never exceed the last signaled fence.
+    // Guard: skip until we have actually signaled at least once (Frame 0/1 bring-up).
+    static bool s_LoggedSkipFenceCorruptionCheck_Once = false;
     if (currentBackBufferIndex < NUM_BACK_BUFFERS)
     {
         const UINT64 fv = frames[currentBackBufferIndex].fenceValue;
-        if (fv > lastSignaledFenceValue)
+        if (lastSignaledFenceValue == 0)
+        {
+            if (!s_LoggedSkipFenceCorruptionCheck_Once)
+            {
+                s_LoggedSkipFenceCorruptionCheck_Once = true;
+                Logger::Log(LogLevel::Debug,
+                    std::format("Skipping fence corruption check (no signal yet) | bb={} frameFence={} lastSignaled={}",
+                        currentBackBufferIndex, fv, lastSignaledFenceValue),
+                    "[DX12]");
+            }
+        }
+        else if (fv > lastSignaledFenceValue)
         {
             Logger::Log(LogLevel::Error, std::format(
                 "🚨 Fence state corruption detected | bb={} frameFence={} lastSignaled={} ",
@@ -1115,10 +1130,11 @@ void Graphics::BeginFrame(HWND hWnd)
 
 #ifndef NDEBUG
     // Phase 1B drift detector: per-buffer fence stamps must never exceed the last signaled fence.
+    // Guard: skip until we have actually signaled at least once (Frame 0/1 bring-up).
     if (currentBackBufferIndex < NUM_BACK_BUFFERS)
     {
         const UINT64 fv = frames[currentBackBufferIndex].fenceValue;
-        if (fv > lastSignaledFenceValue)
+        if (lastSignaledFenceValue != 0 && fv > lastSignaledFenceValue)
         {
             Logger::Log(LogLevel::Error, std::format(
                 "🚨 Fence state corruption detected | bb={} frameFence={} lastSignaled={} ",
@@ -1314,7 +1330,6 @@ void Graphics::EndFrame(HWND hWnd)
 
     // Signal and stamp fence for the current backbuffer.
     const UINT64 signalValue = ++fenceValue;
-    lastSignaledFenceValue = signalValue;
 
     const HRESULT hrSignal = commandQueue->Signal(fence.Get(), signalValue);
     if (FAILED(hrSignal))
@@ -1323,6 +1338,19 @@ void Graphics::EndFrame(HWND hWnd)
     }
     else
     {
+        lastSignaledFenceValue = signalValue;
+
+#ifndef NDEBUG
+        static bool s_LoggedFirstSignalOnce = false;
+        if (!s_LoggedFirstSignalOnce)
+        {
+            s_LoggedFirstSignalOnce = true;
+            Logger::Log(LogLevel::Debug, std::format(
+                "[DX12] First fence signal | bb={} value={}",
+                currentBackBufferIndex, signalValue));
+        }
+#endif
+
         if (currentBackBufferIndex < NUM_BACK_BUFFERS)
             frames[currentBackBufferIndex].fenceValue = signalValue;
 
@@ -1394,6 +1422,17 @@ void Graphics::Present(HWND hWnd)
             HandleDeviceLost(hWnd);
         return;
     }
+
+#ifndef NDEBUG
+    static bool s_LoggedFirstPresentOnce = false;
+    if (!s_LoggedFirstPresentOnce)
+    {
+        s_LoggedFirstPresentOnce = true;
+        Logger::Log(LogLevel::Debug, std::format(
+            "[DX12] First Present succeeded | syncInterval={} flags=0x{:X}",
+            syncInterval, presentFlags));
+    }
+#endif
 
     hasPresentedOnce = true;
     g_PresentedThisFrame = true;
@@ -1505,7 +1544,43 @@ D3D12_CPU_DESCRIPTOR_HANDLE Graphics::AllocateSRV()
     return handle;
 }
 
-// ...existing code...
+//===============================================
+// Implementation of per-frame constant buffer helpers
+//===============================================
+
+// GPU buffer allocation: 256B aligned, based on requested size.
+namespace
+{
+    static size_t Align256Size(size_t size)
+    {
+        return (size + 255u) & ~size_t(255u);
+    }
+}
+
+Graphics::CBAllocation Graphics::AllocateFrameCB(size_t size)
+{
+    size = Align256Size(size);
+
+#ifdef _DEBUG
+    if (!m_FrameCB || !m_FrameCBMapped)
+    {
+        OutputDebugStringA("❌ AllocateFrameCB called but FrameCB is not initialized/mapped.\n");
+        __debugbreak();
+    }
+    if (m_FrameCBOffset + size > m_FrameCBSize)
+    {
+        OutputDebugStringA("❌ FrameCB overflow\n");
+        __debugbreak();
+    }
+#endif
+
+    CBAllocation alloc;
+    alloc.CpuPtr = m_FrameCBMapped + m_FrameCBOffset;
+    alloc.GpuAddress = m_FrameCB->GetGPUVirtualAddress() + m_FrameCBOffset;
+
+    m_FrameCBOffset += size;
+    return alloc;
+}
 
 Graphics& Graphics::GetInstance()
 {
@@ -2633,42 +2708,4 @@ void Graphics::ApplyPendingResize(HWND hWnd)
     }
 
     Logger::Log(LogLevel::Info, std::format("[Resize] Applied w={} h={} source={}", newW, newH, ResizeSourceToString(src)));
-}
-
-//===============================================
-// Implementation of per-frame constant buffer helpers
-//===============================================
-
-// GPU buffer allocation: 256B aligned, based on requested size.
-namespace
-{
-    static size_t Align256Size(size_t size)
-    {
-        return (size + 255u) & ~size_t(255u);
-    }
-}
-
-Graphics::CBAllocation Graphics::AllocateFrameCB(size_t size)
-{
-    size = Align256Size(size);
-
-#ifdef _DEBUG
-    if (!m_FrameCB || !m_FrameCBMapped)
-    {
-        OutputDebugStringA("❌ AllocateFrameCB called before FrameCB init\n");
-        __debugbreak();
-    }
-    if (m_FrameCBOffset + size > m_FrameCBSize)
-    {
-        OutputDebugStringA("❌ FrameCB overflow\n");
-        __debugbreak();
-    }
-#endif
-
-    CBAllocation alloc;
-    alloc.CpuPtr = m_FrameCBMapped + m_FrameCBOffset;
-    alloc.GpuAddress = m_FrameCB->GetGPUVirtualAddress() + m_FrameCBOffset;
-
-    m_FrameCBOffset += size;
-    return alloc;
 }
