@@ -2154,6 +2154,31 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
         return;
     }
 
+    // CP10-A: If our reusable staging buffer is still in-flight, do not overwrite it.
+    if (m_InstanceUploadInFlight && m_InstanceUploadFenceValue != 0)
+    {
+        const UINT64 completed = fence->GetCompletedValue();
+        if (completed != UINT64_MAX && completed < m_InstanceUploadFenceValue)
+        {
+#ifndef NDEBUG
+            static auto s_lastSkipLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+            const auto now = std::chrono::steady_clock::now();
+            if (now - s_lastSkipLog >= std::chrono::milliseconds(250))
+            {
+                s_lastSkipLog = now;
+                Logger::Log(LogLevel::Debug, std::format(
+                    "[Upload] Instance upload skipped (staging in-flight) | completed={} need={} bytes={}",
+                    completed, m_InstanceUploadFenceValue, numBytes), "[DX12]");
+            }
+#endif
+            return;
+        }
+
+        // Upload completed; staging is safe to reuse.
+        m_InstanceUploadInFlight = false;
+        m_InstanceUploadFenceValue = 0;
+    }
+
     // Reusable staging buffer (UPLOAD heap)
     static Microsoft::WRL::ComPtr<ID3D12Resource> s_UploadStaging;
     static size_t s_UploadStagingSize = 0;
@@ -2254,7 +2279,20 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
         }
 
         lastSignaledFenceValue = signalValue;
-        WaitForFenceValue(signalValue);
+
+#ifndef NDEBUG
+        static bool s_loggedFirstUploadSignal = false;
+        if (!s_loggedFirstUploadSignal)
+        {
+            s_loggedFirstUploadSignal = true;
+            Logger::Log(LogLevel::Debug, std::format(
+                "[Upload] First instance upload signaled | fence={}", signalValue), "[DX12]");
+        }
+#endif
+
+        // CP10-A: do NOT wait here. Track in-flight state for safe staging reuse.
+        m_InstanceUploadFenceValue = signalValue;
+        m_InstanceUploadInFlight = true;
 
         // Keep per-frame fence stamps conservative (never ahead of our global)
         for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)

@@ -496,6 +496,10 @@ private:
     uint8_t* m_FrameCBMapped = nullptr;
     size_t m_FrameCBSize = 0;
     size_t m_FrameCBOffset = 0;
+
+    // CP10-A: deferred wait for instance uploads (avoid same-frame stall)
+    UINT64 m_InstanceUploadFenceValue = 0;
+    bool   m_InstanceUploadInFlight = false;
 };
 
 // Call-site tracing helper. Use everywhere instead of direct `ReloadImGuiFont()`.
