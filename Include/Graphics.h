@@ -305,6 +305,9 @@ public:
 
     const MeshData& GetCubeMesh() const { return m_cubeMesh; }
 
+    // CP9-B: one-shot staged upload into a GPU-local DEFAULT buffer (uses uploadCommandList/uploadAllocator).
+    void UploadBufferToDefault(ID3D12Resource* dstDefault, const void* srcData, size_t numBytes);
+
 private:
     HRESULT CreateDX12Device();
     void ExecuteCommandLists(std::vector<ID3D12CommandList*>& commandLists);
