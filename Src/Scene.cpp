@@ -454,6 +454,84 @@ UINT Scene::s_InstanceCapacity = 0;
 D3D12_CPU_DESCRIPTOR_HANDLE Scene::s_InstanceSRVCpu = {};
 D3D12_GPU_DESCRIPTOR_HANDLE Scene::s_InstanceSRVGpu = {};
 
+// CP9-A: DEFAULT heap backing store (staged upload) - introduced but not the active update path yet.
+Microsoft::WRL::ComPtr<ID3D12Resource> Scene::s_InstanceBufferDefault;
+UINT Scene::s_InstanceBufferCapacity = 0;
+
+void Scene::EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount)
+{
+    if (!device)
+        return;
+
+    const UINT required = (std::max)(requiredCount, 1u);
+    if (s_InstanceBufferDefault && required <= s_InstanceBufferCapacity)
+        return;
+
+    auto NextPowerOfTwo = [](UINT v) -> UINT
+    {
+        if (v == 0)
+            return 1;
+        v--;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+        v++;
+        return v;
+    };
+
+    const UINT minCap = (std::max)(required, 32u);
+    const UINT newCapacity = NextPowerOfTwo(minCap);
+    const size_t bufferSize = sizeof(InstanceData) * (size_t)newCapacity;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> defaultBuf;
+    {
+        const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+        const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize, D3D12_RESOURCE_FLAG_NONE);
+
+        const HRESULT hr = device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(defaultBuf.ReleaseAndGetAddressOf()));
+
+        if (FAILED(hr) || !defaultBuf)
+        {
+            Logger::Log(LogLevel::Error, "EnsureInstanceBufferDefault: CreateCommittedResource(DEFAULT) failed", "[Scene]");
+            return;
+        }
+    }
+
+    // Allocate SRV descriptor once (engine-owned heap).
+    if (s_InstanceSRVCpu.ptr == 0 || s_InstanceSRVGpu.ptr == 0)
+    {
+        s_InstanceSRVCpu = Graphics::AllocateSRV();
+
+        const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = g_SRVHeap ? g_SRVHeap->GetGPUDescriptorHandleForHeapStart() : D3D12_GPU_DESCRIPTOR_HANDLE{};
+        s_InstanceSRVGpu.ptr = gpuStart.ptr + (UINT64)(s_InstanceSRVCpu.ptr - (g_SRVHeap ? g_SRVHeap->GetCPUDescriptorHandleForHeapStart().ptr : 0)) / inc * inc;
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Buffer.FirstElement = 0;
+    srvDesc.Buffer.NumElements = newCapacity;
+    srvDesc.Buffer.StructureByteStride = sizeof(InstanceData);
+    srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+
+    device->CreateShaderResourceView(defaultBuf.Get(), &srvDesc, s_InstanceSRVCpu);
+
+    s_InstanceBufferDefault = defaultBuf;
+    s_InstanceBufferCapacity = newCapacity;
+
+    Logger::Log(LogLevel::Info, std::format("[Scene] Instance DEFAULT buffer allocated | capacity={} bytes={}", s_InstanceBufferCapacity, bufferSize), "[Scene]");
+}
+
 void Scene::EnsureInstanceBuffer(ID3D12Device* device)
 {
     if (!device)
@@ -529,7 +607,13 @@ void Scene::EnsureInstanceBuffer(ID3D12Device* device)
     srvDesc.Buffer.StructureByteStride = sizeof(InstanceData);
     srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
-    device->CreateShaderResourceView(newBuffer.Get(), &srvDesc, s_InstanceSRVCpu);
+    // CP9-A: Ensure DEFAULT buffer exists and bind SRV to it.
+    // (Old persistent UPLOAD buffer is still used for CPU writes until CP9-B switches the update path.)
+    EnsureInstanceBufferDefault(device, required);
+    if (s_InstanceBufferDefault)
+        device->CreateShaderResourceView(s_InstanceBufferDefault.Get(), &srvDesc, s_InstanceSRVCpu);
+    else
+        device->CreateShaderResourceView(newBuffer.Get(), &srvDesc, s_InstanceSRVCpu);
 
     s_InstanceBuffer = newBuffer;
     s_InstanceMappedPtr = reinterpret_cast<uint8_t*>(mapped);
