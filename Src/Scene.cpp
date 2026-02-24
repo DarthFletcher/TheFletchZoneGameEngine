@@ -458,6 +458,19 @@ D3D12_GPU_DESCRIPTOR_HANDLE Scene::s_InstanceSRVGpu = {};
 Microsoft::WRL::ComPtr<ID3D12Resource> Scene::s_InstanceBufferDefault;
 UINT Scene::s_InstanceBufferCapacity = 0;
 
+// CP9-B: dirty tracking
+bool Scene::s_InstancesDirty = true;
+uint64_t Scene::s_InstanceDataVersion = 1;
+uint64_t Scene::s_InstanceUploadedVersion = 0;
+
+const InstanceData* Scene::GetInstancesCPU() { return s_Instances.empty() ? nullptr : s_Instances.data(); }
+UINT Scene::GetInstanceCount() { return (UINT)s_Instances.size(); }
+uint64_t Scene::GetInstanceDataVersion() { return s_InstanceDataVersion; }
+uint64_t Scene::GetInstanceUploadedVersion() { return s_InstanceUploadedVersion; }
+void Scene::MarkInstancesDirty() { s_InstancesDirty = true; ++s_InstanceDataVersion; }
+void Scene::MarkInstancesUploaded(uint64_t version) { s_InstancesDirty = false; s_InstanceUploadedVersion = version; }
+ID3D12Resource* Scene::GetInstanceDefaultBuffer() { return s_InstanceBufferDefault.Get(); }
+
 void Scene::EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount)
 {
     if (!device)
@@ -683,6 +696,8 @@ void Scene::EnsureInstancesInitialized()
         if ((int)s_Instances.size() >= s_targetInstanceCount)
             break;
     }
+
+    MarkInstancesDirty();
 }
 
 void Scene::Render(const SceneRenderContext& ctx)
@@ -690,10 +705,8 @@ void Scene::Render(const SceneRenderContext& ctx)
     EnsureInstancesInitialized();
     EnsureInstanceBuffer(ctx.device);
 
-    if (s_InstanceMappedPtr && !s_Instances.empty())
-    {
-        std::memcpy(s_InstanceMappedPtr, s_Instances.data(), sizeof(InstanceData) * s_Instances.size());
-    }
+    // CP9-B: no per-frame CPU memcpy into a persistently mapped UPLOAD buffer.
+    // Graphics owns the staged upload into the DEFAULT instance buffer.
 
     // ====================================================================
     // Phase 4A: PASS BOUNDARY & OWNERSHIP NOTES

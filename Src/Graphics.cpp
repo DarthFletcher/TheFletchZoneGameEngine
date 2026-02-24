@@ -1007,7 +1007,7 @@ void Graphics::CreateCommandInterfaces() {
 
 //===============================================================================//
 //                        ImGui Frame Life Cycle (Corrected)                     //
-//===============================================================================//
+//===============================================================================
 
 //---------------------------------
 // Begin Dock Space Function
@@ -2142,6 +2142,131 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     }
 }
 
+// CP9-B: staged upload (Graphics-owned) of CPU data into a DEFAULT heap buffer.
+void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* srcData, size_t numBytes)
+{
+    if (!dstDefault || !srcData || numBytes == 0)
+        return;
+
+    if (!device || !commandQueue || !fence || !uploadAllocator || !uploadCommandList)
+    {
+        Logger::Log(LogLevel::Error, "❌ UploadBufferToDefault: missing DX12 upload context objects.", "[DX12]");
+        return;
+    }
+
+    // Reusable staging buffer (UPLOAD heap)
+    static Microsoft::WRL::ComPtr<ID3D12Resource> s_UploadStaging;
+    static size_t s_UploadStagingSize = 0;
+
+    if (!s_UploadStaging || s_UploadStagingSize < numBytes)
+    {
+        const size_t newSize = (std::max)(numBytes, (s_UploadStagingSize > 0 ? s_UploadStagingSize * 2ull : numBytes));
+
+        const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
+        const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(newSize);
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> newBuf;
+        const HRESULT hr = device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(newBuf.ReleaseAndGetAddressOf()));
+
+        if (FAILED(hr) || !newBuf)
+        {
+            Logger::Log(LogLevel::Error, "❌ UploadBufferToDefault: failed to create staging UPLOAD buffer.", "[DX12]");
+            return;
+        }
+
+        s_UploadStaging = newBuf;
+        s_UploadStagingSize = newSize;
+    }
+
+    // Map staging, write CPU data
+    {
+        void* mapped = nullptr;
+        const CD3DX12_RANGE readRange(0, 0);
+        const HRESULT hrMap = s_UploadStaging->Map(0, &readRange, &mapped);
+        if (FAILED(hrMap) || !mapped)
+        {
+            Logger::Log(LogLevel::Error, "❌ UploadBufferToDefault: staging Map failed.", "[DX12]");
+            return;
+        }
+
+        std::memcpy(mapped, srcData, numBytes);
+        s_UploadStaging->Unmap(0, nullptr);
+    }
+
+    // Record + execute upload command list
+    {
+        const HRESULT hrA = uploadAllocator->Reset();
+        if (FAILED(hrA))
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ UploadBufferToDefault: uploadAllocator->Reset failed HR=0x{:08X}", (UINT)hrA), "[DX12]");
+            return;
+        }
+
+        const HRESULT hrCL = uploadCommandList->Reset(uploadAllocator.Get(), nullptr);
+        if (FAILED(hrCL))
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ UploadBufferToDefault: uploadCommandList->Reset failed HR=0x{:08X}", (UINT)hrCL), "[DX12]");
+            return;
+        }
+
+        // Transition DEFAULT -> COPY_DEST (assume GENERIC_READ steady state)
+        {
+            const CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
+                dstDefault,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+            uploadCommandList->ResourceBarrier(1, &b);
+        }
+
+        uploadCommandList->CopyBufferRegion(dstDefault, 0, s_UploadStaging.Get(), 0, numBytes);
+
+        // Transition COPY_DEST -> GENERIC_READ
+        {
+            const CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
+                dstDefault,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_GENERIC_READ);
+            uploadCommandList->ResourceBarrier(1, &b);
+        }
+
+        const HRESULT hrClose = uploadCommandList->Close();
+        if (FAILED(hrClose))
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ UploadBufferToDefault: uploadCommandList->Close failed HR=0x{:08X}", (UINT)hrClose), "[DX12]");
+            return;
+        }
+
+        ID3D12CommandList* lists[] = { uploadCommandList.Get() };
+        commandQueue->ExecuteCommandLists(1, lists);
+
+        const UINT64 signalValue = ++fenceValue;
+        const HRESULT hrSignal = commandQueue->Signal(fence.Get(), signalValue);
+        if (FAILED(hrSignal))
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ UploadBufferToDefault: commandQueue->Signal failed HR=0x{:08X}", (UINT)hrSignal), "[DX12]");
+            return;
+        }
+
+        lastSignaledFenceValue = signalValue;
+        WaitForFenceValue(signalValue);
+
+        // Keep per-frame fence stamps conservative (never ahead of our global)
+        for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
+            frames[i].fenceValue = (std::max)(frames[i].fenceValue, signalValue);
+
+        // Return upload list to idle (closed) state.
+        (void)uploadAllocator->Reset();
+        (void)uploadCommandList->Reset(uploadAllocator.Get(), nullptr);
+        (void)uploadCommandList->Close();
+    }
+}
+
 void Graphics::RenderSceneToTarget()
 {
     if (!commandListOpen)
@@ -2263,6 +2388,22 @@ void Graphics::RenderSceneToTarget()
 
     // Phase 4A: draw scene content into the scene render target (RT currently bound).
     {
+        // CP9-B: staged upload (Graphics-owned) of instance data into DEFAULT heap, only when changed.
+        const uint64_t v = Scene::GetInstanceDataVersion();
+        if (v != Scene::GetInstanceUploadedVersion())
+        {
+            const UINT count = Scene::GetInstanceCount();
+            ID3D12Resource* dst = Scene::GetInstanceDefaultBuffer();
+            const InstanceData* cpu = Scene::GetInstancesCPU();
+            const size_t bytes = sizeof(InstanceData) * (size_t)count;
+
+            if (dst && cpu && bytes)
+            {
+                UploadBufferToDefault(dst, cpu, bytes);
+                Scene::MarkInstancesUploaded(v);
+            }
+        }
+
         SceneRenderContext sctx;
         sctx.device = device.Get();
         sctx.commandList = commandList.Get();
@@ -2592,7 +2733,7 @@ void Graphics::ApplyPendingResize(HWND hWnd)
         if (SUCCEEDED(swapChain->GetDesc(&scDesc)))
         {
             Logger::Log(LogLevel::Debug, std::format(
-                "[ResizeDiag] Pre-ResizeBuffers | sc={}x{} fmt={} buffers={} swapEffect={} flags=0x{:X} reqFlags=0x{:X} reqFmt={}",
+                "[ResizeDiag] Pre-ResizeBuffers | sc={}x{} fmt={} buffers={} swapEffect={} flags=0x{:X} reqFlags=0x{:X} reqFmt={} ",
                 scDesc.BufferDesc.Width, scDesc.BufferDesc.Height,
                 (int)scDesc.BufferDesc.Format,
                 scDesc.BufferCount,
@@ -2612,7 +2753,7 @@ void Graphics::ApplyPendingResize(HWND hWnd)
         pendingResizeSource = src;
 
         Logger::Log(LogLevel::Error, std::format(
-            "[Resize] ResizeBuffers failed HR=0x{:08X} (w={} h={}) src={}",
+            "[Resize] ResizeBuffers failed HR=0x{:08X} (w={} h={}) src={} ",
             (UINT)hr, newW, newH, ResizeSourceToString(src)), "[DX12]");
 
         const char* decoded = "";
@@ -2648,64 +2789,6 @@ void Graphics::ApplyPendingResize(HWND hWnd)
     screenWidth = (int)newW;
     screenHeight = (int)newH;
     currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
-
-    // Throttled debug invariant logging (1 Hz)
-    static auto s_lastLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-    const auto now = std::chrono::steady_clock::now();
-    if (now - s_lastLog >= std::chrono::seconds(1))
-    {
-        s_lastLog = now;
-
-        RECT rc{};
-        UINT clientW = 0, clientH = 0;
-        if (hWnd && GetClientRect(hWnd, &rc))
-        {
-            clientW = (UINT)(std::max)(0L, rc.right - rc.left);
-            clientH = (UINT)(std::max)(0L, rc.bottom - rc.top);
-        }
-
-        DXGI_SWAP_CHAIN_DESC scDesc{};
-        UINT scW = (UINT)screenWidth;
-        UINT scH = (UINT)screenHeight;
-        if (SUCCEEDED(swapChain->GetDesc(&scDesc)))
-        {
-            if (scDesc.BufferDesc.Width != 0) scW = scDesc.BufferDesc.Width;
-            if (scDesc.BufferDesc.Height != 0) scH = scDesc.BufferDesc.Height;
-        }
-
-        float dpiScale = 1.0f;
-        if (hWnd)
-        {
-            const UINT dpi = GetDpiForWindow(hWnd);
-            dpiScale = (dpi > 0) ? (float)dpi / 96.0f : 1.0f;
-        }
-
-        if (ImGui::GetCurrentContext())
-        {
-            ImGuiIO& io = ImGui::GetIO();
-            Logger::Log(LogLevel::Debug, std::format(
-                "[ResizeInv] client={}x{} swapchain={}x{} cached={}x{} bbIndex={} ImGui.DisplaySize=({:.1f},{:.1f}) FBScale=({:.2f},{:.2f}) dpiScale={:.3f} src={}",
-                clientW, clientH,
-                scW, scH,
-                (UINT)screenWidth, (UINT)screenHeight,
-                currentBackBufferIndex,
-                io.DisplaySize.x, io.DisplaySize.y,
-                io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y,
-                dpiScale,
-                ResizeSourceToString(src)), "[DX12]");
-        }
-        else
-        {
-            Logger::Log(LogLevel::Debug, std::format(
-                "[ResizeInv] client={}x{} swapchain={}x{} cached={}x{} bbIndex={} dpiScale={:.3f} src={}",
-                clientW, clientH,
-                scW, scH,
-                (UINT)screenWidth, (UINT)screenHeight,
-                currentBackBufferIndex,
-                dpiScale,
-                ResizeSourceToString(src)), "[DX12]");
-        }
-    }
 
     Logger::Log(LogLevel::Info, std::format("[Resize] Applied w={} h={} source={}", newW, newH, ResizeSourceToString(src)));
 }

@@ -43,6 +43,17 @@ class Scene
 public:
     static void Render(const SceneRenderContext& ctx);
 
+    // CP9-B: CPU -> GPU instance upload contract (Graphics-owned upload; Scene-owned data).
+    static const InstanceData* GetInstancesCPU();
+    static UINT GetInstanceCount();
+    static uint64_t GetInstanceDataVersion();
+    static uint64_t GetInstanceUploadedVersion();
+    static void MarkInstancesDirty();
+    static void MarkInstancesUploaded(uint64_t version);
+
+    // CP9-B: expose DEFAULT buffer to Graphics upload path.
+    static ID3D12Resource* GetInstanceDefaultBuffer();
+
 private:
     static std::vector<InstanceData> s_Instances;
     static void EnsureInstancesInitialized();
@@ -59,4 +70,9 @@ private:
     static Microsoft::WRL::ComPtr<ID3D12Resource> s_InstanceBufferDefault;
     static UINT s_InstanceBufferCapacity;
     static void EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount);
+
+    // CP9-B: dirty tracking
+    static bool     s_InstancesDirty;
+    static uint64_t s_InstanceDataVersion;
+    static uint64_t s_InstanceUploadedVersion;
 };
