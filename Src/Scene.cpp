@@ -463,7 +463,22 @@ void Scene::EnsureInstanceBuffer(ID3D12Device* device)
     if (s_InstanceBuffer && required <= s_InstanceCapacity)
         return;
 
-    const UINT newCapacity = (std::max)(required, 32u);
+    auto NextPowerOfTwo = [](UINT v) -> UINT
+    {
+        if (v == 0)
+            return 1;
+        v--;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+        v++;
+        return v;
+    };
+
+    const UINT minCap = (std::max)(required, 32u);
+    const UINT newCapacity = NextPowerOfTwo(minCap);
     const size_t bufferSize = sizeof(InstanceData) * (size_t)newCapacity;
 
     const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
@@ -520,38 +535,69 @@ void Scene::EnsureInstanceBuffer(ID3D12Device* device)
     s_InstanceMappedPtr = reinterpret_cast<uint8_t*>(mapped);
     s_InstanceCapacity = newCapacity;
 
+#ifdef _DEBUG
+    {
+        char buf[256]{};
+        sprintf_s(buf, "InstanceBuffer Capacity=%u SizeBytes=%zu\n", s_InstanceCapacity, sizeof(InstanceData) * (size_t)s_InstanceCapacity);
+        OutputDebugStringA(buf);
+    }
+#endif
+
     Logger::Log(LogLevel::Info, std::format("[Scene] Instance buffer ready | capacity={} bytes={}", s_InstanceCapacity, bufferSize), "[Scene]");
 }
 
 void Scene::EnsureInstancesInitialized()
 {
-    if (!s_Instances.empty())
+    // Allow stress scaling via ImGui (CPU-side only).
+    static int s_targetInstanceCount = 25;
+    static int s_lastAppliedCount = -1;
+
+    if (ImGui::Begin("Instancing"))
+    {
+        ImGui::SliderInt("Instance Count", &s_targetInstanceCount, 1, 10000);
+        ImGui::Text("Current: %zu", s_Instances.size());
+    }
+    ImGui::End();
+
+    if (!s_Instances.empty() && s_lastAppliedCount == s_targetInstanceCount)
         return;
 
-    s_Instances.clear();
-    s_Instances.reserve(25);
+    s_lastAppliedCount = s_targetInstanceCount;
 
-    for (int x = -2; x <= 2; ++x)
+    s_Instances.clear();
+    s_Instances.reserve((size_t)s_targetInstanceCount);
+
+    // Deterministic grid fill.
+    // Fill a square grid of ceil(sqrt(N)) x ceil(sqrt(N)), truncating to N.
+    const int dim = (int)ceilf(sqrtf((float)s_targetInstanceCount));
+
+    for (int x = 0; x < dim; ++x)
     {
-        for (int z = -2; z <= 2; ++z)
+        for (int z = 0; z < dim; ++z)
         {
+            if ((int)s_Instances.size() >= s_targetInstanceCount)
+                break;
+
+            const int gx = x - dim / 2;
+            const int gz = z - dim / 2;
+
             InstanceData inst{};
 
             const DirectX::XMMATRIX world = DirectX::XMMatrixTranslation(
-                float(x) * 3.0f,
+                float(gx) * 3.0f,
                 0.5f,
-                float(z) * 3.0f);
+                float(gz) * 3.0f);
 
             DirectX::XMStoreFloat4x4(&inst.World, world);
 
-            inst.Color = DirectX::XMFLOAT4(
-                float(x + 2) / 4.0f,
-                0.5f,
-                float(z + 2) / 4.0f,
-                1.0f);
+            const float fx = (dim > 1) ? float(x) / float(dim - 1) : 0.5f;
+            const float fz = (dim > 1) ? float(z) / float(dim - 1) : 0.5f;
+            inst.Color = DirectX::XMFLOAT4(fx, 0.5f, fz, 1.0f);
 
             s_Instances.push_back(inst);
         }
+        if ((int)s_Instances.size() >= s_targetInstanceCount)
+            break;
     }
 }
 
