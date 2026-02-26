@@ -451,6 +451,7 @@ namespace
 
 std::vector<InstanceData> Scene::s_Instances;
 std::vector<Sphere> Scene::s_InstanceBounds;
+std::vector<UINT> Scene::s_VisibleInstanceIndices;
 
 Microsoft::WRL::ComPtr<ID3D12Resource> Scene::s_InstanceBufferDefault;
 UINT Scene::s_InstanceBufferCapacity = 0;
@@ -742,15 +743,26 @@ void Scene::Render(const SceneRenderContext& ctx)
     // CP11-A: extract frustum planes from ViewProj (CPU-only; no filtering yet).
     const Frustum fr = BuildFrustumFromViewProj(viewProjF);
 
-#ifndef NDEBUG
-    static bool s_loggedFrustumOnce = false;
-    if (!s_loggedFrustumOnce)
+    // CP11-C: build visible list (no rendering change yet)
+    s_VisibleInstanceIndices.clear();
+    s_VisibleInstanceIndices.reserve(s_InstanceBounds.size());
+
+    for (UINT i = 0; i < (UINT)s_InstanceBounds.size(); ++i)
     {
-        s_loggedFrustumOnce = true;
-        const auto& n = fr.Planes[4].Eq;
-        Logger::Log(LogLevel::Debug, std::format(
-            "[Culling] Frustum extracted (VP) | Near=({:.3f},{:.3f},{:.3f},{:.3f})",
-            n.x, n.y, n.z, n.w), "[Scene]");
+        if (SphereInsideFrustum(s_InstanceBounds[i], fr))
+            s_VisibleInstanceIndices.push_back(i);
+    }
+
+#ifndef NDEBUG
+    static auto s_lastVisibleLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    const auto nowVis = std::chrono::steady_clock::now();
+    if (nowVis - s_lastVisibleLog >= std::chrono::seconds(1))
+    {
+        s_lastVisibleLog = nowVis;
+        Logger::Log(LogLevel::Debug,
+            "[Culling] Visible instances = " + std::to_string(s_VisibleInstanceIndices.size()) +
+            " / " + std::to_string(s_InstanceBounds.size()),
+            "[Scene]");
     }
 #endif
 

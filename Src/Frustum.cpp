@@ -48,6 +48,24 @@ Frustum BuildFrustumFromViewProj(const XMFLOAT4X4& viewProj)
     return fr;
 }
 
+bool SphereInsideFrustum(const Sphere& s, const Frustum& f)
+{
+    for (int i = 0; i < 6; ++i)
+    {
+        const XMFLOAT4& p = f.Planes[i].Eq;
+        const float distance =
+            p.x * s.Center.x +
+            p.y * s.Center.y +
+            p.z * s.Center.z +
+            p.w;
+
+        if (distance < -s.Radius)
+            return false;
+    }
+
+    return true;
+}
+
 bool PointInsideFrustum(const Frustum& /*frustum*/, const XMFLOAT3& /*point*/)
 {
     // CP11-B

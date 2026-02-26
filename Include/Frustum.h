@@ -2,6 +2,8 @@
 
 #include <DirectXMath.h>
 
+#include "Bounds.h"
+
 struct Plane
 {
     DirectX::XMFLOAT4 Eq{}; // (A,B,C,D)
@@ -18,3 +20,6 @@ Frustum BuildFrustumFromViewProj(const DirectX::XMFLOAT4X4& viewProj);
 
 // Stub for CP11-B
 bool PointInsideFrustum(const Frustum& frustum, const DirectX::XMFLOAT3& point);
+
+// CP11-C
+bool SphereInsideFrustum(const Sphere& s, const Frustum& f);

@@ -62,6 +62,9 @@ private:
     // CP11-B: per-instance bounds (bounding sphere)
     static std::vector<Sphere> s_InstanceBounds;
 
+    // CP11-C: visible list (computed per frame; rendering unchanged for now)
+    static std::vector<UINT> s_VisibleInstanceIndices;
+
     static D3D12_CPU_DESCRIPTOR_HANDLE s_InstanceSRVCpu;
     static D3D12_GPU_DESCRIPTOR_HANDLE s_InstanceSRVGpu;
 
