@@ -2154,38 +2154,35 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
         return;
     }
 
-    // CP10-A: If our reusable staging buffer is still in-flight, do not overwrite it.
-    if (m_InstanceUploadInFlight && m_InstanceUploadFenceValue != 0)
+    // CP10-B: select per-backbuffer staging slot (ring) using the swapchain's actual current index.
+    const UINT bb = swapChain ? swapChain->GetCurrentBackBufferIndex() : currentBackBufferIndex;
+    InstanceUploadFrame& slot = m_InstanceUploadRing[bb % kUploadRingSize];
+
+    // CP10-B: reuse rule. If the slot is still in use by the GPU, wait (rare) rather than skipping.
+    if (slot.FenceValue != 0)
     {
         const UINT64 completed = fence->GetCompletedValue();
-        if (completed != UINT64_MAX && completed < m_InstanceUploadFenceValue)
+        if (completed != UINT64_MAX && completed < slot.FenceValue)
         {
 #ifndef NDEBUG
-            static auto s_lastSkipLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+            static auto s_lastWaitLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
             const auto now = std::chrono::steady_clock::now();
-            if (now - s_lastSkipLog >= std::chrono::milliseconds(250))
+            if (now - s_lastWaitLog >= std::chrono::milliseconds(250))
             {
-                s_lastSkipLog = now;
+                s_lastWaitLog = now;
                 Logger::Log(LogLevel::Debug, std::format(
-                    "[Upload] Instance upload skipped (staging in-flight) | completed={} need={} bytes={}",
-                    completed, m_InstanceUploadFenceValue, numBytes), "[DX12]");
+                    "[Upload] Waiting for staging ring slot | bb={} fence={}",
+                    bb, slot.FenceValue), "[DX12]");
             }
 #endif
-            return;
+            WaitForFenceValue(slot.FenceValue);
         }
-
-        // Upload completed; staging is safe to reuse.
-        m_InstanceUploadInFlight = false;
-        m_InstanceUploadFenceValue = 0;
     }
 
-    // Reusable staging buffer (UPLOAD heap)
-    static Microsoft::WRL::ComPtr<ID3D12Resource> s_UploadStaging;
-    static size_t s_UploadStagingSize = 0;
-
-    if (!s_UploadStaging || s_UploadStagingSize < numBytes)
+    // Ensure staging buffer capacity for this slot.
+    if (!slot.Staging || slot.StagingSizeBytes < numBytes)
     {
-        const size_t newSize = (std::max)(numBytes, (s_UploadStagingSize > 0 ? s_UploadStagingSize * 2ull : numBytes));
+        const size_t newSize = (std::max)(numBytes, (slot.StagingSizeBytes > 0 ? slot.StagingSizeBytes * 2ull : numBytes));
 
         const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
         const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(newSize);
@@ -2205,15 +2202,15 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
             return;
         }
 
-        s_UploadStaging = newBuf;
-        s_UploadStagingSize = newSize;
+        slot.Staging = newBuf;
+        slot.StagingSizeBytes = newSize;
     }
 
     // Map staging, write CPU data
     {
         void* mapped = nullptr;
         const CD3DX12_RANGE readRange(0, 0);
-        const HRESULT hrMap = s_UploadStaging->Map(0, &readRange, &mapped);
+        const HRESULT hrMap = slot.Staging->Map(0, &readRange, &mapped);
         if (FAILED(hrMap) || !mapped)
         {
             Logger::Log(LogLevel::Error, "❌ UploadBufferToDefault: staging Map failed.", "[DX12]");
@@ -2221,7 +2218,7 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
         }
 
         std::memcpy(mapped, srcData, numBytes);
-        s_UploadStaging->Unmap(0, nullptr);
+        slot.Staging->Unmap(0, nullptr);
     }
 
     // Record + execute upload command list
@@ -2249,7 +2246,7 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
             uploadCommandList->ResourceBarrier(1, &b);
         }
 
-        uploadCommandList->CopyBufferRegion(dstDefault, 0, s_UploadStaging.Get(), 0, numBytes);
+        uploadCommandList->CopyBufferRegion(dstDefault, 0, slot.Staging.Get(), 0, numBytes);
 
         // Transition COPY_DEST -> GENERIC_READ
         {
@@ -2290,7 +2287,10 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
         }
 #endif
 
-        // CP10-A: do NOT wait here. Track in-flight state for safe staging reuse.
+        // CP10-B: slot-local synchronization record.
+        slot.FenceValue = signalValue;
+
+        // CP10-A compatibility (removed in CP10-C)
         m_InstanceUploadFenceValue = signalValue;
         m_InstanceUploadInFlight = true;
 

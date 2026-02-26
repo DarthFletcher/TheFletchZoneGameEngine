@@ -497,6 +497,16 @@ private:
     size_t m_FrameCBSize = 0;
     size_t m_FrameCBOffset = 0;
 
+    struct InstanceUploadFrame
+    {
+        Microsoft::WRL::ComPtr<ID3D12Resource> Staging;
+        size_t StagingSizeBytes = 0;
+        UINT64 FenceValue = 0;
+    };
+
+    static constexpr UINT kUploadRingSize = kBackBufferCount; // match swapchain buffer count
+    InstanceUploadFrame m_InstanceUploadRing[kUploadRingSize] = {};
+
     // CP10-A: deferred wait for instance uploads (avoid same-frame stall)
     UINT64 m_InstanceUploadFenceValue = 0;
     bool   m_InstanceUploadInFlight = false;
