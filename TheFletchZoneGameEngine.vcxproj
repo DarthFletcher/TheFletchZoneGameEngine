@@ -170,6 +170,7 @@
     <ClInclude Include="include\Engine.h" />
     <ClInclude Include="include\Entity.h" />
     <ClInclude Include="include\framework.h" />
+    <ClInclude Include="Include\Frustum.h" />
     <ClInclude Include="include\Game.h" />
     <ClInclude Include="Include\Graphics.h" />
     <ClInclude Include="include\HintMacros.h" />
@@ -212,6 +213,7 @@
     <ClCompile Include="src\CrashDiagnostics.cpp" />
     <ClCompile Include="Src\EditorPanels.cpp" />
     <ClCompile Include="src\Engine.cpp" />
+    <ClCompile Include="Src\Frustum.cpp" />
     <ClCompile Include="src\Game.cpp" />
     <ClCompile Include="Src\Graphics.cpp" />
     <ClCompile Include="Src\Graphics_Contracts_Restore.cpp" />

@@ -5,6 +5,7 @@
 #include "CameraData.h"
 #include "Graphics.h"
 #include "Vertex.h"
+#include "Frustum.h"
 
 #include <algorithm>
 #include <array>
@@ -689,17 +690,35 @@ void Scene::Render(const SceneRenderContext& ctx)
 
     // Phase 4A.5: compute view-projection (NOT transposed).
     DirectX::XMMATRIX viewProj;
+    DirectX::XMFLOAT4X4 viewProjF{};
     {
         using namespace DirectX;
         const XMMATRIX view = XMLoadFloat4x4(&ctx.camera->view);
         const XMMATRIX proj = XMLoadFloat4x4(&ctx.camera->proj);
         viewProj = XMMatrixMultiply(view, proj);
 
+        XMStoreFloat4x4(&viewProjF, viewProj);
+
         g_scene.cbData.cameraPos[0] = ctx.camera->position.x;
         g_scene.cbData.cameraPos[1] = ctx.camera->position.y;
         g_scene.cbData.cameraPos[2] = ctx.camera->position.z;
         g_scene.cbData.gridFadeDist = 10.0f;
     }
+
+    // CP11-A: extract frustum planes from ViewProj (CPU-only; no filtering yet).
+    const Frustum fr = BuildFrustumFromViewProj(viewProjF);
+
+#ifndef NDEBUG
+    static bool s_loggedFrustumOnce = false;
+    if (!s_loggedFrustumOnce)
+    {
+        s_loggedFrustumOnce = true;
+        const auto& n = fr.Planes[4].Eq;
+        Logger::Log(LogLevel::Debug, std::format(
+            "[Culling] Frustum extracted (VP) | Near=({:.3f},{:.3f},{:.3f},{:.3f})",
+            n.x, n.y, n.z, n.w), "[Scene]");
+    }
+#endif
 
     // ====================================================================
     // Phase 4A: EXPLICIT STATE SETUP
