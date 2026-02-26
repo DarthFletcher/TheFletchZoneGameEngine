@@ -195,3 +195,28 @@ void Graphics::ProcessPendingFontReload()
     // Font reload behavior remains owned by Graphics.cpp; if the implementation was moved,
     // keep this as a no-op until consolidated.
 }
+
+// NOTE: Some builds may compile `Graphics.cpp` variants where resize implementations are excluded.
+// Provide minimal link-contract restorations here to keep the engine buildable.
+
+void Graphics::RequestResize(UINT width, UINT height)
+{
+    RequestResize(width, height, ResizeSource::Unknown);
+}
+
+void Graphics::RequestResize(UINT width, UINT height, ResizeSource source)
+{
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+
+    pendingWidth = width;
+    pendingHeight = height;
+    pendingResizeSource = source;
+    pendingResize = true;
+}
+
+void Graphics::ApplyPendingResize(HWND /*hWnd*/)
+{
+    // Minimal contract: let the main Graphics.cpp own the full swapchain resize logic.
+    // If this stub is linked, we intentionally do nothing (resize remains pending).
+}

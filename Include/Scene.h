@@ -55,6 +55,10 @@ public:
     // CP9-B: expose DEFAULT buffer to Graphics upload path.
     static ID3D12Resource* GetInstanceDefaultBuffer();
 
+    // CP11-D: visible subset upload source (Scene-owned)
+    static const InstanceData* GetVisibleInstancesCPU();
+    static UINT GetVisibleInstanceCount();
+
 private:
     static std::vector<InstanceData> s_Instances;
     static void EnsureInstancesInitialized();
@@ -64,6 +68,9 @@ private:
 
     // CP11-C: visible list (computed per frame; rendering unchanged for now)
     static std::vector<UINT> s_VisibleInstanceIndices;
+
+    // CP11-D: contiguous visible instance scratch (built per frame)
+    static std::vector<InstanceData> s_VisibleInstancesScratch;
 
     static D3D12_CPU_DESCRIPTOR_HANDLE s_InstanceSRVCpu;
     static D3D12_GPU_DESCRIPTOR_HANDLE s_InstanceSRVGpu;

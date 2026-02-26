@@ -452,6 +452,17 @@ namespace
 std::vector<InstanceData> Scene::s_Instances;
 std::vector<Sphere> Scene::s_InstanceBounds;
 std::vector<UINT> Scene::s_VisibleInstanceIndices;
+std::vector<InstanceData> Scene::s_VisibleInstancesScratch;
+
+const InstanceData* Scene::GetVisibleInstancesCPU()
+{
+    return s_VisibleInstancesScratch.empty() ? nullptr : s_VisibleInstancesScratch.data();
+}
+
+UINT Scene::GetVisibleInstanceCount()
+{
+    return (UINT)s_VisibleInstancesScratch.size();
+}
 
 Microsoft::WRL::ComPtr<ID3D12Resource> Scene::s_InstanceBufferDefault;
 UINT Scene::s_InstanceBufferCapacity = 0;
@@ -743,7 +754,7 @@ void Scene::Render(const SceneRenderContext& ctx)
     // CP11-A: extract frustum planes from ViewProj (CPU-only; no filtering yet).
     const Frustum fr = BuildFrustumFromViewProj(viewProjF);
 
-    // CP11-C: build visible list (no rendering change yet)
+    // CP11-C: build visible list
     s_VisibleInstanceIndices.clear();
     s_VisibleInstanceIndices.reserve(s_InstanceBounds.size());
 
@@ -751,6 +762,15 @@ void Scene::Render(const SceneRenderContext& ctx)
     {
         if (SphereInsideFrustum(s_InstanceBounds[i], fr))
             s_VisibleInstanceIndices.push_back(i);
+    }
+
+    // CP11-D: build contiguous visible instance buffer (CPU scratch)
+    s_VisibleInstancesScratch.clear();
+    s_VisibleInstancesScratch.reserve(s_VisibleInstanceIndices.size());
+    for (UINT idx : s_VisibleInstanceIndices)
+    {
+        if (idx < s_Instances.size())
+            s_VisibleInstancesScratch.push_back(s_Instances[idx]);
     }
 
 #ifndef NDEBUG
@@ -846,7 +866,7 @@ void Scene::Render(const SceneRenderContext& ctx)
         ctx.commandList->IASetVertexBuffers(0, 1, &cube.VBV);
         ctx.commandList->IASetIndexBuffer(&cube.IBV);
 
-        const UINT instanceCount = (UINT)s_Instances.size();
+        const UINT instanceCount = (UINT)s_VisibleInstancesScratch.size();
         if (instanceCount > 0)
             ctx.commandList->DrawIndexedInstanced(cube.IndexCount, instanceCount, 0, 0, 0);
     }
