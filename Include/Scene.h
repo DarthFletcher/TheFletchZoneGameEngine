@@ -44,6 +44,10 @@ class Scene
 public:
     static void Render(const SceneRenderContext& ctx);
 
+    // Deterministic GPU resource ownership: must be called outside Render().
+    static void InitializeResources(ID3D12Device* device);
+    static bool IsReady();
+
     // CP9-B: CPU -> GPU instance upload contract (Graphics-owned upload; Scene-owned data).
     static const InstanceData* GetInstancesCPU();
     static UINT GetInstanceCount();

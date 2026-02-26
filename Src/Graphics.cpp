@@ -454,6 +454,9 @@ bool Graphics::Initialize(HWND hWnd)
     // ✅ 3. Initialize ImGui (safe now that RTV heap is valid)
     InitializeImGui(hWnd);
 
+    // ✅ Deterministic Scene GPU resource initialization (never during Render)
+    Scene::InitializeResources(device.Get());
+
     // ✅ Patch Main Viewport with Dummy RendererUserData
     ImGuiViewport* main_viewport = ImGui::GetMainViewport();
     if (main_viewport && main_viewport->RendererUserData == nullptr)

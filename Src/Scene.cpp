@@ -658,6 +658,21 @@ void Scene::EnsureInstancesInitialized()
 #endif
 }
 
+bool Scene::IsReady()
+{
+    return !g_scene.initFailed && g_scene.rootSig && g_scene.pso && g_scene.gridPso && g_scene.gridVb;
+}
+
+void Scene::InitializeResources(ID3D12Device* device)
+{
+    Graphics::GetInstance().AssertNotInRender("Scene::InitializeResources()");
+
+    if (!device)
+        return;
+
+    EnsureSceneResources(device);
+}
+
 void Scene::Render(const SceneRenderContext& ctx)
 {
     EnsureInstancesInitialized();
@@ -730,8 +745,9 @@ void Scene::Render(const SceneRenderContext& ctx)
     const uint32_t w = (std::min)(kMax, (std::max)(kMin, ctx.viewportWidth));
     const uint32_t h = (std::min)(kMax, (std::max)(kMin, ctx.viewportHeight));
 
-    EnsureSceneResources(ctx.device);
-    if (g_scene.initFailed || !g_scene.rootSig || !g_scene.pso || !g_scene.cb || !g_scene.gridPso || !g_scene.gridVb)
+    // Never create GPU resources during the render phase.
+    // Scene resources must be created from a non-render phase (e.g. Graphics::Initialize / BeginFrame).
+    if (!IsReady())
         return;
 
     // Phase 4A.5: compute view-projection (NOT transposed).
