@@ -2290,10 +2290,6 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
         // CP10-B: slot-local synchronization record.
         slot.FenceValue = signalValue;
 
-        // CP10-A compatibility (removed in CP10-C)
-        m_InstanceUploadFenceValue = signalValue;
-        m_InstanceUploadInFlight = true;
-
         // Keep per-frame fence stamps conservative (never ahead of our global)
         for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
             frames[i].fenceValue = (std::max)(frames[i].fenceValue, signalValue);

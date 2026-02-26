@@ -506,10 +506,6 @@ private:
 
     static constexpr UINT kUploadRingSize = kBackBufferCount; // match swapchain buffer count
     InstanceUploadFrame m_InstanceUploadRing[kUploadRingSize] = {};
-
-    // CP10-A: deferred wait for instance uploads (avoid same-frame stall)
-    UINT64 m_InstanceUploadFenceValue = 0;
-    bool   m_InstanceUploadInFlight = false;
 };
 
 // Call-site tracing helper. Use everywhere instead of direct `ReloadImGuiFont()`.
