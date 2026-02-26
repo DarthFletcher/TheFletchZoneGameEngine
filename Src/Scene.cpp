@@ -6,6 +6,7 @@
 #include "Graphics.h"
 #include "Vertex.h"
 #include "Frustum.h"
+#include "Bounds.h"
 
 #include <algorithm>
 #include <array>
@@ -449,6 +450,8 @@ namespace
 }
 
 std::vector<InstanceData> Scene::s_Instances;
+std::vector<Sphere> Scene::s_InstanceBounds;
+
 Microsoft::WRL::ComPtr<ID3D12Resource> Scene::s_InstanceBufferDefault;
 UINT Scene::s_InstanceBufferCapacity = 0;
 
@@ -555,6 +558,21 @@ void Scene::EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount
     Logger::Log(LogLevel::Info, std::format("[Scene] Instance DEFAULT buffer allocated | capacity={} bytes={}", s_InstanceBufferCapacity, bufferSize), "[Scene]");
 }
 
+namespace
+{
+    static Sphere ComputeInstanceSphere(const InstanceData& inst)
+    {
+        Sphere s{};
+
+        // XMStoreFloat4x4 stores translation in _41,_42,_43 (row-major view).
+        s.Center = DirectX::XMFLOAT3(inst.World._41, inst.World._42, inst.World._43);
+
+        // Unit cube (centered) conservative bounding sphere radius.
+        s.Radius = 0.8660254f;
+        return s;
+    }
+}
+
 void Scene::EnsureInstancesInitialized()
 {
     // Allow stress scaling via ImGui (CPU-side only).
@@ -575,6 +593,9 @@ void Scene::EnsureInstancesInitialized()
 
     s_Instances.clear();
     s_Instances.reserve((size_t)s_targetInstanceCount);
+
+    s_InstanceBounds.clear();
+    s_InstanceBounds.reserve((size_t)s_targetInstanceCount);
 
     // Deterministic grid fill.
     // Fill a square grid of ceil(sqrt(N)) x ceil(sqrt(N)), truncating to N.
@@ -604,12 +625,25 @@ void Scene::EnsureInstancesInitialized()
             inst.Color = DirectX::XMFLOAT4(fx, 0.5f, fz, 1.0f);
 
             s_Instances.push_back(inst);
+            s_InstanceBounds.push_back(ComputeInstanceSphere(inst));
         }
         if ((int)s_Instances.size() >= s_targetInstanceCount)
             break;
     }
 
     MarkInstancesDirty();
+
+#ifndef NDEBUG
+    static bool s_loggedBoundsOnce = false;
+    if (!s_loggedBoundsOnce)
+    {
+        s_loggedBoundsOnce = true;
+        const float r = s_InstanceBounds.empty() ? 0.0f : s_InstanceBounds.front().Radius;
+        Logger::Log(LogLevel::Debug,
+            "[Culling] Bounds built | instances=" + std::to_string(s_Instances.size()) + " radius=" + std::to_string(r),
+            "[Scene]");
+    }
+#endif
 }
 
 void Scene::Render(const SceneRenderContext& ctx)

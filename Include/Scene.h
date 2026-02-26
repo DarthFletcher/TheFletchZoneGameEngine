@@ -6,6 +6,7 @@
 #include <d3d12.h>
 
 #include "InstanceData.h"
+#include "Bounds.h"
 
 struct ID3D12Device;
 struct ID3D12GraphicsCommandList;
@@ -57,6 +58,9 @@ public:
 private:
     static std::vector<InstanceData> s_Instances;
     static void EnsureInstancesInitialized();
+
+    // CP11-B: per-instance bounds (bounding sphere)
+    static std::vector<Sphere> s_InstanceBounds;
 
     static D3D12_CPU_DESCRIPTOR_HANDLE s_InstanceSRVCpu;
     static D3D12_GPU_DESCRIPTOR_HANDLE s_InstanceSRVGpu;

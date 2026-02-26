@@ -157,6 +157,7 @@
     <ClInclude Include="Dependencies\imgui-docking\imstb_truetype.h" />
     <ClInclude Include="include\BootDiagnostics.h" />
     <ClInclude Include="include\BootProgress.h" />
+    <ClInclude Include="Include\Bounds.h" />
     <ClInclude Include="Include\Camera.h" />
     <ClInclude Include="Include\CameraData.h" />
     <ClInclude Include="Include\CameraSystem.h" />
