@@ -1183,6 +1183,17 @@ void Graphics::BeginFrame(HWND hWnd)
 
         // Refresh for accurate diagnostics
         completedValue = fence->GetCompletedValue();
+
+        // UINT64_MAX is the documented sentinel for device removal.
+        if (completedValue == UINT64_MAX)
+        {
+            Logger::Log(LogLevel::Error, std::format(
+                "🚨 GPU wait aborted: Fence->GetCompletedValue()==UINT64_MAX after waiting | BackBuffer={} FenceToWaitFor={}",
+                currentBackBufferIndex, fenceToWaitFor), "[DX12]");
+            HandleDeviceLost(hWnd);
+            return;
+        }
+
         Logger::Log(LogLevel::Debug, std::format(
             "✅ GPU wait complete | BackBuffer={} Fence={} (Completed now={})",
             currentBackBufferIndex, fenceToWaitFor, completedValue));
