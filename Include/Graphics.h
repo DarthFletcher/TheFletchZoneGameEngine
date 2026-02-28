@@ -263,7 +263,9 @@ public:
             return;
 
         DeferredReleaseItem item;
-        const UINT64 stampedFence = (lastSignaledFenceValue != 0) ? lastSignaledFenceValue : fenceValue;
+        // Tag with a fence value that is guaranteed to be signaled *after* all currently-recorded work
+        // that might reference this object. Using `lastSignaledFenceValue` can retire too early.
+        const UINT64 stampedFence = fenceValue + 1;
         item.fenceValue = stampedFence;
         item.object = obj;
         deferredReleases.push_back(std::move(item));
@@ -285,7 +287,7 @@ public:
             return;
 
         DeferredReleaseItem item;
-        const UINT64 stampedFence = (lastSignaledFenceValue != 0) ? lastSignaledFenceValue : fenceValue;
+        const UINT64 stampedFence = fenceValue + 1;
         item.fenceValue = stampedFence;
         item.object = obj;
         item.tag = tag;

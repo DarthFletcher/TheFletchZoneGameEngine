@@ -24,9 +24,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3d12.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="Dependencies\imgui-docking\imconfig.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -85,9 +82,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\resource.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="DirectX-Headers-1.614.1\include\directx\d3dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\Downloads\imgui-docking\imgui-docking\imgui_internal.h">
@@ -168,6 +162,18 @@
     <ClInclude Include="Include\DX12Common.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Include\Bounds.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Include\Frustum.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Include\InstanceData.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Include\Vertex.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui_demo.cpp">
@@ -210,9 +216,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Dependencies\imgui-docking\imgui.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="DirectX-Headers-1.614.1\include\directx\d3d12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Dependencies\imgui-docking\imgui_widgets.cpp">
@@ -278,6 +281,9 @@
     <ClCompile Include="Src\Mesh.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Src\Frustum.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="TheFletchZoneGameEngine.rc">
@@ -311,15 +317,28 @@
     <None Include="tools\CopyDXCDlls.bat">
       <Filter>Source Files</Filter>
     </None>
-    <None Include="shaders\debug_triangle.hlsl" />
-    <None Include="shaders\imgui_vs.hlsl" />
-    <None Include="shaders\imgui_ps.hlsl" />
-    <None Include="shaders\scene_grid_ps.hlsl" />
-    <None Include="shaders\scene_grid_vs.hlsl" />
-    <None Include="shaders\scene_triangle_ps.hlsl" />
     <None Include="CHANGELOG.md" />
     <None Include="docs\CHANGELOG_0.3.0.md" />
     <None Include="docs\Phase3F_RenderGraphNotes.md" />
+    <None Include="TheFletchZoneGameEngine.vcxproj.copilot_edit" />
+    <None Include="shaders\scene_grid_ps.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="shaders\debug_triangle.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="shaders\imgui_ps.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="shaders\imgui_vs.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="shaders\scene_grid_vs.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="shaders\scene_triangle_ps.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />

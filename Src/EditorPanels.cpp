@@ -63,10 +63,32 @@ namespace EditorPanels
                 }
 
                 ImVec2 size = ImGui::GetContentRegionAvail();
-                const UINT w = (UINT)(size.x > 1.0f ? size.x : 1.0f);
-                const UINT h = (UINT)(size.y > 1.0f ? size.y : 1.0f);
 
-                gfx.RequestSceneRenderTargetResize(w, h, ResizeSource::User);
+                // Quantize to integer pixels and stabilize against 1px docking/padding jitter.
+                const int rawW = (int)std::floor(size.x);
+                const int rawH = (int)std::floor(size.y);
+
+                static int s_lastRequestedW = 0;
+                static int s_lastRequestedH = 0;
+
+                int reqW = (rawW > 1) ? rawW : 1;
+                int reqH = (rawH > 1) ? rawH : 1;
+
+                if (s_lastRequestedW != 0 && s_lastRequestedH != 0)
+                {
+                    if (std::abs(reqW - s_lastRequestedW) <= 1) reqW = s_lastRequestedW;
+                    if (std::abs(reqH - s_lastRequestedH) <= 1) reqH = s_lastRequestedH;
+                }
+
+                const UINT w = (UINT)reqW;
+                const UINT h = (UINT)reqH;
+
+                if ((int)w != s_lastRequestedW || (int)h != s_lastRequestedH)
+                {
+                    s_lastRequestedW = (int)w;
+                    s_lastRequestedH = (int)h;
+                    gfx.RequestSceneRenderTargetResize(w, h, ResizeSource::User);
+                }
 
                 ImTextureID tex = gfx.GetSceneImGuiTextureID();
                 if (tex)

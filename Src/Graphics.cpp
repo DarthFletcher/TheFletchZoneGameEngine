@@ -75,6 +75,13 @@ static ViewMode g_LastSceneGridBuiltViewMode = ViewMode::Mode3D;
 // Static variable to track the next available SRV descriptor
 static UINT g_SRVDescriptorIndex = 1; // slot 0 reserved for ImGui font
 
+// Reserve a stable SRV slot for the Scene render target to avoid descriptor leaks/overflow during resize spam.
+static constexpr UINT kSceneSrvDescriptorIndex = 1;
+static constexpr UINT kFirstDynamicSrvDescriptorIndex = kSceneSrvDescriptorIndex + 1;
+
+static void RequestScreenshot();
+static void ExportRaytraceScene();
+
 // SRV allocator callbacks (custom ImGui DX12 backend signatures)
 static void ImGui_SrvDescriptorAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu_handle);
 static void ImGui_SrvDescriptorFree(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle);
@@ -622,11 +629,23 @@ HRESULT Graphics::CreateDX12Device() {
 
     UINT dxgiFactoryFlags = 0;
 #ifdef _DEBUG
-    Microsoft::WRL::ComPtr<ID3D12Debug> debugController;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
-        debugController->EnableDebugLayer();
+    Microsoft::WRL::ComPtr<ID3D12Debug1> debug1;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug1))))
+    {
+        debug1->EnableDebugLayer();
+        debug1->SetEnableGPUBasedValidation(TRUE);
+        debug1->SetEnableSynchronizedCommandQueueValidation(TRUE);
         dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-        Logger::Log(LogLevel::Info, "✅ DirectX12 Debug Layer Enabled.", "[DX12]");
+        Logger::Log(LogLevel::Info, "✅ DirectX12 Debug Layer Enabled (GPU-based validation + synchronized queue validation).", "[DX12]");
+    }
+    else
+    {
+        Microsoft::WRL::ComPtr<ID3D12Debug> debugController;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+            debugController->EnableDebugLayer();
+            dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+            Logger::Log(LogLevel::Info, "✅ DirectX12 Debug Layer Enabled.", "[DX12]");
+        }
     }
 #endif
 
@@ -1190,6 +1209,14 @@ void Graphics::BeginFrame(HWND hWnd)
             Logger::Log(LogLevel::Error, std::format(
                 "🚨 GPU wait aborted: Fence->GetCompletedValue()==UINT64_MAX after waiting | BackBuffer={} FenceToWaitFor={}",
                 currentBackBufferIndex, fenceToWaitFor), "[DX12]");
+
+            if (device)
+            {
+                const HRESULT removed = device->GetDeviceRemovedReason();
+                Logger::Log(LogLevel::Error, std::format(
+                    "🚨 DeviceRemovedReason=0x{:08X}", (UINT)removed), "[DX12]");
+            }
+
             HandleDeviceLost(hWnd);
             return;
         }
@@ -1355,10 +1382,10 @@ void Graphics::EndFrame(HWND hWnd)
         lastSignaledFenceValue = signalValue;
 
 #ifndef NDEBUG
-        static bool s_LoggedFirstSignalOnce = false;
-        if (!s_LoggedFirstSignalOnce)
+        static bool s_loggedFirstUploadSignal = false;
+        if (!s_loggedFirstUploadSignal)
         {
-            s_LoggedFirstSignalOnce = true;
+            s_loggedFirstUploadSignal = true;
             Logger::Log(LogLevel::Debug, std::format(
                 "[DX12] First fence signal | bb={} value={}",
                 currentBackBufferIndex, signalValue));
@@ -1801,7 +1828,10 @@ static void ImGui_SrvDescriptorAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DE
 
     const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // Slot 0 reserved for the font.
+    // Slot 0 reserved for the font. Slot 1 reserved for SceneRT.
+    if (g_SRVDescriptorIndex < kFirstDynamicSrvDescriptorIndex)
+        g_SRVDescriptorIndex = kFirstDynamicSrvDescriptorIndex;
+
     const UINT index = g_SRVDescriptorIndex++;
 
     const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = heap->GetCPUDescriptorHandleForHeapStart();
@@ -2133,25 +2163,26 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
 
         if (imguiHeap)
         {
-            // Allocate a CPU descriptor from the same heap.
-            sceneSrvCpu = AllocateSRV();
+            const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-            if (sceneSrvCpu.ptr != 0)
-            {
-                const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = imguiHeap->GetCPUDescriptorHandleForHeapStart();
-                const UINT index = (UINT)((sceneSrvCpu.ptr - cpuStart.ptr) / (SIZE_T)inc);
-                const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = imguiHeap->GetGPUDescriptorHandleForHeapStart();
-                sceneSrvGpu = { gpuStart.ptr + (UINT64)index * (UINT64)inc };
-                sceneImGuiTextureID = (ImTextureID)sceneSrvGpu.ptr;
+            // Use a stable descriptor slot so we can overwrite it each resize without leaking SRVs.
+            const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = imguiHeap->GetCPUDescriptorHandleForHeapStart();
+            const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = imguiHeap->GetGPUDescriptorHandleForHeapStart();
 
-                D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-                srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-                srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-                srv.Texture2D.MipLevels = 1;
-                device->CreateShaderResourceView(sceneRenderTarget.Get(), &srv, sceneSrvCpu);
-            }
+            sceneSrvCpu.ptr = cpuStart.ptr + (SIZE_T)kSceneSrvDescriptorIndex * (SIZE_T)inc;
+            sceneSrvGpu.ptr = gpuStart.ptr + (UINT64)kSceneSrvDescriptorIndex * (UINT64)inc;
+            sceneImGuiTextureID = (ImTextureID)sceneSrvGpu.ptr;
+
+            // Ensure the monotonic allocator never hands out the reserved slot.
+            if (g_SRVDescriptorIndex <= kSceneSrvDescriptorIndex)
+                g_SRVDescriptorIndex = kSceneSrvDescriptorIndex + 1;
+
+            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srv.Texture2D.MipLevels = 1;
+            device->CreateShaderResourceView(sceneRenderTarget.Get(), &srv, sceneSrvCpu);
         }
     }
 }
@@ -2167,6 +2198,13 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
         Logger::Log(LogLevel::Error, "❌ UploadBufferToDefault: missing DX12 upload context objects.", "[DX12]");
         return;
     }
+
+    // Track assumed steady-state for buffers we upload into.
+    // Buffers ignore the supplied initial state and start in COMMON.
+    static std::unordered_map<ID3D12Resource*, D3D12_RESOURCE_STATES> s_DefaultDstStates;
+    D3D12_RESOURCE_STATES& dstState = s_DefaultDstStates[dstDefault];
+    if (dstState == (D3D12_RESOURCE_STATES)0)
+        dstState = D3D12_RESOURCE_STATE_COMMON;
 
     // CP10-B: select per-backbuffer staging slot (ring) using the swapchain's actual current index.
     const UINT bb = swapChain ? swapChain->GetCurrentBackBufferIndex() : currentBackBufferIndex;
@@ -2251,24 +2289,28 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
             return;
         }
 
-        // Transition DEFAULT -> COPY_DEST (assume GENERIC_READ steady state)
+        // Transition dst -> COPY_DEST (honor tracked state; buffers start in COMMON)
+        if (dstState != D3D12_RESOURCE_STATE_COPY_DEST)
         {
             const CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
                 dstDefault,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
+                dstState,
                 D3D12_RESOURCE_STATE_COPY_DEST);
             uploadCommandList->ResourceBarrier(1, &b);
+            dstState = D3D12_RESOURCE_STATE_COPY_DEST;
         }
 
         uploadCommandList->CopyBufferRegion(dstDefault, 0, slot.Staging.Get(), 0, numBytes);
 
         // Transition COPY_DEST -> GENERIC_READ
+        if (dstState != D3D12_RESOURCE_STATE_GENERIC_READ)
         {
             const CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
                 dstDefault,
-                D3D12_RESOURCE_STATE_COPY_DEST,
+                dstState,
                 D3D12_RESOURCE_STATE_GENERIC_READ);
             uploadCommandList->ResourceBarrier(1, &b);
+            dstState = D3D12_RESOURCE_STATE_GENERIC_READ;
         }
 
         const HRESULT hrClose = uploadCommandList->Close();
@@ -2291,6 +2333,10 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
 
         lastSignaledFenceValue = signalValue;
 
+        // IMPORTANT: We can NOT reset/reuse `uploadAllocator` until this upload has executed.
+        // Wait here to keep the current single-allocator upload path safe.
+        WaitForFenceValue(signalValue);
+
 #ifndef NDEBUG
         static bool s_loggedFirstUploadSignal = false;
         if (!s_loggedFirstUploadSignal)
@@ -2304,9 +2350,7 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
         // CP10-B: slot-local synchronization record.
         slot.FenceValue = signalValue;
 
-        // Keep per-frame fence stamps conservative (never ahead of our global)
-        for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
-            frames[i].fenceValue = (std::max)(frames[i].fenceValue, signalValue);
+        // Do NOT stamp frames[] fence values here. Frame fence ownership is EndFrame() only.
 
         // Return upload list to idle (closed) state.
         (void)uploadAllocator->Reset();
@@ -2314,7 +2358,6 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
         (void)uploadCommandList->Close();
     }
 }
-
 void Graphics::RenderSceneToTarget()
 {
     if (!commandListOpen)
@@ -2601,5 +2644,5 @@ void Graphics::Render(HWND hWnd)
         D3D12_RESOURCE_STATE_PRESENT);
     commandList->ResourceBarrier(1, &toPresent);
 
-    m_InsideRender = false;
+    m_FrameActive = false;
 }
