@@ -62,6 +62,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 const UINT clientW = (UINT)(std::max)(0L, rc.right - rc.left);
                 const UINT clientH = (UINT)(std::max)(0L, rc.bottom - rc.top);
 
+                // Contract: never request swapchain resize for 0x0.
+                if (clientW == 0 || clientH == 0)
+                    break;
+
                 static UINT lastW = 0, lastH = 0;
                 if (clientW != lastW || clientH != lastH)
                 {

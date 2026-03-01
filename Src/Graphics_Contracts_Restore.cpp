@@ -215,8 +215,82 @@ void Graphics::RequestResize(UINT width, UINT height, ResizeSource source)
     pendingResize = true;
 }
 
-void Graphics::ApplyPendingResize(HWND /*hWnd*/)
+void Graphics::ApplyPendingResize(HWND hWnd)
 {
-    // Minimal contract: let the main Graphics.cpp own the full swapchain resize logic.
-    // If this stub is linked, we intentionally do nothing (resize remains pending).
+    if (!pendingResize)
+        return;
+
+    // Contract: some drivers reject ResizeBuffers before the first successful Present.
+    // BeginFrame already gates this, but enforce it here too.
+    if (!hasPresentedOnce)
+        return;
+
+    const UINT w = pendingWidth;
+    const UINT h = pendingHeight;
+    const ResizeSource src = pendingResizeSource;
+
+    // Clear request early to avoid re-entrancy loops (we'll re-request on failure).
+    pendingResize = false;
+    pendingResizeSource = ResizeSource::Unknown;
+
+    if (!hWnd || !IsWindow(hWnd))
+        return;
+
+    if (w == 0 || h == 0)
+        return;
+
+    if (IsIconic(hWnd))
+        return;
+
+    if (!device || !swapChain || !commandQueue || !fence)
+        return;
+
+    // Never resize while recording.
+    if (commandListOpen)
+        return;
+
+    Logger::Log(LogLevel::Info, std::format(
+        "[Resize] Applying SwapChain w={} h={} source={}",
+        w, h,
+        (src == ResizeSource::Window) ? "Window" :
+        (src == ResizeSource::DPI) ? "DPI" :
+        (src == ResizeSource::User) ? "User" :
+        (src == ResizeSource::Engine) ? "Engine" : "Unknown"), "[DX12]");
+
+    // Ensure GPU idle before releasing and resizing.
+    FlushGPU();
+
+    // Release backbuffer refs and RTV heap before ResizeBuffers.
+    for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
+        backBuffers[i].Reset();
+    rtvHeap.Reset();
+
+    const UINT flags = allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u;
+    const HRESULT hr = swapChain->ResizeBuffers(
+        NUM_BACK_BUFFERS,
+        w,
+        h,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        flags);
+
+    if (FAILED(hr))
+    {
+        Logger::Log(LogLevel::Error, std::format(
+            "❌ ResizeBuffers failed HR=0x{:08X} (w={} h={})",
+            (UINT)hr, w, h), "[DX12]");
+
+        // Keep a pending request so we can retry next frame.
+        pendingWidth = w;
+        pendingHeight = h;
+        pendingResizeSource = src;
+        pendingResize = true;
+        return;
+    }
+
+    screenWidth = (int)w;
+    screenHeight = (int)h;
+
+    currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
+
+    CreateRenderTargetViews();
 }
