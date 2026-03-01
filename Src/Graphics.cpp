@@ -1577,7 +1577,11 @@ D3D12_CPU_DESCRIPTOR_HANDLE Graphics::AllocateSRV()
     const D3D12_CPU_DESCRIPTOR_HANDLE start = heap->GetCPUDescriptorHandleForHeapStart();
 
     // Slot 0 reserved for ImGui font.
-    static UINT s_srvDescriptorIndex = 1;
+    // Slot 1 reserved for SceneRT.
+    // Reserve a small fixed range for engine-owned SRVs to avoid collisions with backend allocations.
+    static constexpr UINT kEngineSrvReservationStart = 64;
+
+    static UINT s_srvDescriptorIndex = kEngineSrvReservationStart;
 
     handle.ptr = start.ptr + (SIZE_T)s_srvDescriptorIndex * (SIZE_T)inc;
     s_srvDescriptorIndex++;

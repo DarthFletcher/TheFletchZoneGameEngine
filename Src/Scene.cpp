@@ -802,6 +802,18 @@ void Scene::Render(const SceneRenderContext& ctx)
     }
 #endif
 
+#ifndef NDEBUG
+    static bool s_loggedInstanceSrvOnce = false;
+    if (!s_loggedInstanceSrvOnce)
+    {
+        s_loggedInstanceSrvOnce = true;
+        Logger::Log(LogLevel::Debug,
+            "[Instancing] Instance SRV handles | CPU=0x" + std::to_string((uint64_t)s_InstanceSRVCpu.ptr) +
+            " GPU=0x" + std::to_string((uint64_t)s_InstanceSRVGpu.ptr),
+            "[Scene]");
+    }
+#endif
+
     // ====================================================================
     // Phase 4A: EXPLICIT STATE SETUP
     // ====================================================================
@@ -869,6 +881,20 @@ void Scene::Render(const SceneRenderContext& ctx)
         std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
         ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
     }
+
+#ifndef NDEBUG
+    static auto s_lastInstancingCountsLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    const auto nowInst = std::chrono::steady_clock::now();
+    if (nowInst - s_lastInstancingCountsLog >= std::chrono::seconds(1))
+    {
+        s_lastInstancingCountsLog = nowInst;
+        Logger::Log(LogLevel::Debug,
+            "[Instancing] Counts | total=" + std::to_string(s_Instances.size()) +
+            " visible=" + std::to_string(s_VisibleInstanceIndices.size()) +
+            " scratch=" + std::to_string(s_VisibleInstancesScratch.size()),
+            "[Scene]");
+    }
+#endif
 
     // ====================================================================
     // Phase 4A: OPAQUE GEOMETRY PASS (Engine-owned cube, instanced)
