@@ -293,4 +293,8 @@ void Graphics::ApplyPendingResize(HWND hWnd)
     currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
 
     CreateRenderTargetViews();
+
+    // Phase 4A/4B: keep the scene render target in sync with the swapchain size.
+    // This is required so `RenderSceneToTarget()` can run during splash/editor.
+    EnsureSceneRenderTarget(w, h);
 }
