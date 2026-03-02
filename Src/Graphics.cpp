@@ -2483,7 +2483,18 @@ void Graphics::RenderSceneToTarget()
 
     // Phase 4A: draw scene content into the scene render target (RT currently bound).
     {
-        // CP11-D: upload only visible subset. For now, treat it as always-dirty (no version optimization).
+        SceneRenderContext sctx;
+        sctx.device = device.Get();
+        sctx.commandList = commandList.Get();
+        sctx.viewportWidth = sceneRTWidth;
+        sctx.viewportHeight = sceneRTHeight;
+        sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
+        sctx.camera = &CameraSystem::GetActiveData();
+
+        // Build visible subset and record draw calls.
+        Scene::Render(sctx);
+
+        // CP11-D: upload only visible subset (built by Scene::Render).
         {
             const UINT count = Scene::GetVisibleInstanceCount();
             ID3D12Resource* dst = Scene::GetInstanceDefaultBuffer();
@@ -2495,15 +2506,6 @@ void Graphics::RenderSceneToTarget()
                 UploadBufferToDefault(dst, cpu, bytes);
             }
         }
-
-        SceneRenderContext sctx;
-        sctx.device = device.Get();
-        sctx.commandList = commandList.Get();
-        sctx.viewportWidth = sceneRTWidth;
-        sctx.viewportHeight = sceneRTHeight;
-        sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
-        sctx.camera = &CameraSystem::GetActiveData();
-        Scene::Render(sctx);
     }
 
     // Transition RT back to shader resource (for ImGui sampling)
