@@ -407,6 +407,35 @@ namespace EditorPanels
         }
     };
 
+    static EditorPanel g_instancing{
+        "Instancing",
+        false,
+        []()
+        {
+            auto& panel = Instancing();
+            if (!panel.open)
+                return;
+
+            // Keep these statics in the panel so Scene stays render/data-only.
+            static int s_targetInstanceCount = 25;
+
+            if (ImGui::Begin(panel.name, &panel.open))
+            {
+                ImGui::SliderInt("Instance Count", &s_targetInstanceCount, 1, 10000);
+
+                // Persist the slider value for Scene: use ImGui storage as a simple cross-module bridge.
+                ImGuiStorage* store = ImGui::GetStateStorage();
+                if (store)
+                    store->SetInt(ImGui::GetID("TFZ_Instancing_TargetCount"), s_targetInstanceCount);
+
+                ImGui::Separator();
+                ImGui::Text("Visible: %u", (unsigned)Scene::GetVisibleInstanceCount());
+                ImGui::Text("Total:   %u", (unsigned)Scene::GetInstanceCount());
+            }
+            ImGui::End();
+        }
+    };
+
     EditorPanel& Scene() { return g_scene; }
     EditorPanel& Hierarchy() { return g_hierarchy; }
     EditorPanel& Inspector() { return g_inspector; }
@@ -414,6 +443,7 @@ namespace EditorPanels
     EditorPanel& DebugOverlay() { return g_debugOverlay; }
     EditorPanel& Diagnostics() { return g_diagnostics; }
     EditorPanel& LogViewer() { return g_logViewer; }
+    EditorPanel& Instancing() { return g_instancing; }
 
     void DrawAll()
     {
@@ -421,6 +451,7 @@ namespace EditorPanels
         if (g_hierarchy.open) g_hierarchy.draw();
         if (g_inspector.open) g_inspector.draw();
         if (g_assets.open) g_assets.draw();
+        if (g_instancing.open) g_instancing.draw();
         if (g_debugOverlay.open) g_debugOverlay.draw();
         if (g_diagnostics.open) g_diagnostics.draw();
         if (g_logViewer.open) g_logViewer.draw();

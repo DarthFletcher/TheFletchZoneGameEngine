@@ -591,12 +591,16 @@ void Scene::EnsureInstancesInitialized()
     static int s_targetInstanceCount = 25;
     static int s_lastAppliedCount = -1;
 
-    if (ImGui::Begin("Instancing"))
+    // Pull desired instance count from the Instancing panel (stored in ImGui state storage).
+    if (ImGui::GetCurrentContext())
     {
-        ImGui::SliderInt("Instance Count", &s_targetInstanceCount, 1, 10000);
-        ImGui::Text("Current: %zu", s_Instances.size());
+        ImGuiStorage* store = ImGui::GetStateStorage();
+        if (store)
+        {
+            const int desired = store->GetInt(ImGui::GetID("TFZ_Instancing_TargetCount"), s_targetInstanceCount);
+            s_targetInstanceCount = (std::max)(1, desired);
+        }
     }
-    ImGui::End();
 
     if (!s_Instances.empty() && s_lastAppliedCount == s_targetInstanceCount)
         return;
@@ -630,7 +634,10 @@ void Scene::EnsureInstancesInitialized()
                 0.5f,
                 float(gz) * 3.0f);
 
-            DirectX::XMStoreFloat4x4(&inst.World, world);
+            // HLSL constant/structured buffers default to column-major matrices.
+            // Store the transpose so `mul(float4(pos,1), World)` produces correct world space.
+            const DirectX::XMMATRIX worldT = DirectX::XMMatrixTranspose(world);
+            DirectX::XMStoreFloat4x4(&inst.World, worldT);
 
             const float fx = (dim > 1) ? float(x) / float(dim - 1) : 0.5f;
             const float fz = (dim > 1) ? float(z) / float(dim - 1) : 0.5f;
@@ -675,6 +682,25 @@ void Scene::InitializeResources(ID3D12Device* device)
 
 void Scene::Render(const SceneRenderContext& ctx)
 {
+#ifndef NDEBUG
+    static auto s_sceneRenderLastLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - s_sceneRenderLastLog >= std::chrono::seconds(1))
+    {
+        s_sceneRenderLastLog = now;
+        Logger::Log(LogLevel::Debug,
+            std::format("[ScenePass] Scene::Render ENTER | vp={}x{} frameIndex={} instances={} visibleIdx={} scratch={} instBuf={}",
+                ctx.viewportWidth,
+                ctx.viewportHeight,
+                (uint64_t)ctx.frameIndex,
+                (uint64_t)s_Instances.size(),
+                (uint64_t)s_VisibleInstanceIndices.size(),
+                (uint64_t)s_VisibleInstancesScratch.size(),
+                s_InstanceBufferDefault ? 1 : 0),
+            "[Scene]");
+    }
+#endif
+
     EnsureInstancesInitialized();
     EnsureInstanceBufferDefault(ctx.device, (UINT)s_Instances.size());
 

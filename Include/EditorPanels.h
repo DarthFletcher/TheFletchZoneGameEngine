@@ -19,6 +19,7 @@ namespace EditorPanels
 
     EditorPanel& Diagnostics();
     EditorPanel& LogViewer();
+    EditorPanel& Instancing();
 
     void DrawAll();
 }

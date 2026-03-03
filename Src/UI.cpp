@@ -703,6 +703,7 @@ namespace UI {
                  auto& hierarchy = EditorPanels::Hierarchy();
                  auto& inspector = EditorPanels::Inspector();
                  auto& assets = EditorPanels::Assets();
+                 auto& instancing = EditorPanels::Instancing();
                  auto& debugOverlay = EditorPanels::DebugOverlay();
                  auto& diagnostics = EditorPanels::Diagnostics();
                  auto& logViewer = EditorPanels::LogViewer();
@@ -711,6 +712,7 @@ namespace UI {
                  ImGui::MenuItem(hierarchy.name, nullptr, &hierarchy.open);
                  ImGui::MenuItem(inspector.name, nullptr, &inspector.open);
                  ImGui::MenuItem(assets.name, nullptr, &assets.open);
+                 ImGui::MenuItem(instancing.name, nullptr, &instancing.open);
                  ImGui::Separator();
                  ImGui::MenuItem(debugOverlay.name, nullptr, &debugOverlay.open);
                  ImGui::MenuItem(diagnostics.name, nullptr, &diagnostics.open);

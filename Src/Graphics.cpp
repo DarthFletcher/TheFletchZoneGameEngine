@@ -2364,6 +2364,23 @@ void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* src
 }
 void Graphics::RenderSceneToTarget()
 {
+#ifndef NDEBUG
+    static auto s_scenePassLastLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - s_scenePassLastLog >= std::chrono::seconds(1))
+    {
+        s_scenePassLastLog = now;
+        Logger::Log(LogLevel::Debug,
+            std::format("[ScenePass] RenderSceneToTarget ENTER | commandListOpen={} sceneRT={} rtv=0x{:X} size={}x{}",
+                commandListOpen ? 1 : 0,
+                sceneRenderTarget ? 1 : 0,
+                (uint64_t)sceneRtvHandle.ptr,
+                sceneRTWidth,
+                sceneRTHeight),
+            "[Graphics]");
+    }
+#endif
+
     if (!commandListOpen)
         return;
 
@@ -2483,18 +2500,7 @@ void Graphics::RenderSceneToTarget()
 
     // Phase 4A: draw scene content into the scene render target (RT currently bound).
     {
-        SceneRenderContext sctx;
-        sctx.device = device.Get();
-        sctx.commandList = commandList.Get();
-        sctx.viewportWidth = sceneRTWidth;
-        sctx.viewportHeight = sceneRTHeight;
-        sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
-        sctx.camera = &CameraSystem::GetActiveData();
-
-        // Build visible subset and record draw calls.
-        Scene::Render(sctx);
-
-        // CP11-D: upload only visible subset (built by Scene::Render).
+        // CP11-D: upload visible subset BEFORE Scene draw so the instanced draw consumes current-frame data.
         {
             const UINT count = Scene::GetVisibleInstanceCount();
             ID3D12Resource* dst = Scene::GetInstanceDefaultBuffer();
@@ -2506,6 +2512,17 @@ void Graphics::RenderSceneToTarget()
                 UploadBufferToDefault(dst, cpu, bytes);
             }
         }
+
+        SceneRenderContext sctx;
+        sctx.device = device.Get();
+        sctx.commandList = commandList.Get();
+        sctx.viewportWidth = sceneRTWidth;
+        sctx.viewportHeight = sceneRTHeight;
+        sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
+        sctx.camera = &CameraSystem::GetActiveData();
+
+        // Build visible subset and record draw calls.
+        Scene::Render(sctx);
     }
 
     // Transition RT back to shader resource (for ImGui sampling)
@@ -2540,6 +2557,21 @@ void Graphics::RenderSceneToTarget()
 
 void Graphics::Render(HWND hWnd)
 {
+#ifndef NDEBUG
+    static auto s_renderLastLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    const auto nowR = std::chrono::steady_clock::now();
+    if (nowR - s_renderLastLog >= std::chrono::seconds(1))
+    {
+        s_renderLastLog = nowR;
+        Logger::Log(LogLevel::Debug,
+            std::format("[Render] Graphics::Render ENTER | frameStarted={} commandListOpen={} splashFinished={}",
+                frameStarted ? 1 : 0,
+                commandListOpen ? 1 : 0,
+                SplashScreen::IsFinished() ? 1 : 0),
+            "[Graphics]");
+    }
+#endif
+
     m_InsideRender = true;
 
     // Phase 2.5: Single invariant guard for the render phase.
