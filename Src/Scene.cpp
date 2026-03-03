@@ -572,15 +572,32 @@ void Scene::EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount
 
 namespace
 {
-    static Sphere ComputeInstanceSphere(const InstanceData& inst)
+    static float MaxBasisScaleFromWorld(const DirectX::XMMATRIX& W)
     {
+        using namespace DirectX;
+
+        const float sx = XMVectorGetX(XMVector3Length(W.r[0]));
+        const float sy = XMVectorGetX(XMVector3Length(W.r[1]));
+        const float sz = XMVectorGetX(XMVector3Length(W.r[2]));
+
+        float s = (std::max)(sx, (std::max)(sy, sz));
+        if (!std::isfinite(s) || s <= 0.0f)
+            s = 1.0f;
+        return s;
+    }
+
+    static Sphere ComputeInstanceSphereFromWorld(const DirectX::XMMATRIX& world)
+    {
+        // Canonical centered unit cube bounds. ([-0.5,+0.5] on each axis)
+        static constexpr float kCubeLocalRadius = 0.8660254f;
+
         Sphere s{};
 
-        // XMStoreFloat4x4 stores translation in _41,_42,_43 (row-major view).
-        s.Center = DirectX::XMFLOAT3(inst.World._41, inst.World._42, inst.World._43);
+        // Translation is in row3 for DirectXMath row-vector usage.
+        DirectX::XMStoreFloat3(&s.Center, world.r[3]);
 
-        // Unit cube (centered) conservative bounding sphere radius.
-        s.Radius = 0.8660254f;
+        const float maxScale = MaxBasisScaleFromWorld(world);
+        s.Radius = kCubeLocalRadius * maxScale;
         return s;
     }
 }
@@ -634,7 +651,10 @@ void Scene::EnsureInstancesInitialized()
                 0.5f,
                 float(gz) * 3.0f);
 
-            // HLSL constant/structured buffers default to column-major matrices.
+            // Bounds must be computed from the non-transposed CPU world matrix.
+            const Sphere bounds = ComputeInstanceSphereFromWorld(world);
+
+            // HLSL structured buffers default to column-major matrices.
             // Store the transpose so `mul(float4(pos,1), World)` produces correct world space.
             const DirectX::XMMATRIX worldT = DirectX::XMMatrixTranspose(world);
             DirectX::XMStoreFloat4x4(&inst.World, worldT);
@@ -644,7 +664,7 @@ void Scene::EnsureInstancesInitialized()
             inst.Color = DirectX::XMFLOAT4(fx, 0.5f, fz, 1.0f);
 
             s_Instances.push_back(inst);
-            s_InstanceBounds.push_back(ComputeInstanceSphere(inst));
+            s_InstanceBounds.push_back(bounds);
         }
         if ((int)s_Instances.size() >= s_targetInstanceCount)
             break;

@@ -48,13 +48,29 @@ Frustum BuildFrustumFromViewProj(const XMFLOAT4X4& viewProj)
     return fr;
 }
 
-bool SphereInsideFrustum(const Sphere& /*s*/, const Frustum& /*f*/)
+bool SphereInsideFrustum(const Sphere& s, const Frustum& f)
 {
+    using namespace DirectX;
+
+    const XMVECTOR c = XMLoadFloat3(&s.Center);
+
+    for (int i = 0; i < 6; ++i)
+    {
+        const XMFLOAT4& eq = f.Planes[i].Eq;
+        const XMVECTOR p = XMLoadFloat4(&eq);
+
+        const float d = XMVectorGetX(XMVector3Dot(c, p)) + eq.w;
+        if (d < -s.Radius)
+            return false;
+    }
+
     return true;
 }
 
-bool PointInsideFrustum(const Frustum& /*frustum*/, const XMFLOAT3& /*point*/)
+bool PointInsideFrustum(const Frustum& frustum, const XMFLOAT3& point)
 {
-    // CP11-B
-    return true;
+    Sphere s{};
+    s.Center = point;
+    s.Radius = 0.0f;
+    return SphereInsideFrustum(s, frustum);
 }
