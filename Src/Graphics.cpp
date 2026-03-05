@@ -22,17 +22,6 @@
 #include <algorithm>
 #include <format>
 #include <queue>
-#if __has_include(<pix3.h>)
-#include <pix3.h>
-#define GFX_HAS_PIX 1
-#else
-#define GFX_HAS_PIX 0
-#endif
-
-#if !GFX_HAS_PIX
-static inline void PIXBeginEvent(ID3D12GraphicsCommandList*, UINT64, const char*) {}
-static inline void PIXEndEvent(ID3D12GraphicsCommandList*) {}
-#endif
 #pragma comment(lib, "Shcore.lib")
 #include <d3d12sdklayers.h> // Required for DRED interfaces
 
@@ -75,16 +64,6 @@ static bool g_ImGuiRenderedThisFrame = false;
 
 // One-shot font upload gate: initialized true, cleared after successful upload.
 static bool g_ImGuiFontsNeedUpload = true;
-
-#ifndef NDEBUG
-// Runtime isolation toggles (debug builds only)
-bool g_r_skipScene = false;
-bool g_r_skipImGui = false;
-bool g_r_skipSplashUpload = false;
-bool g_r_skipDebugLines = false;
-bool g_r_nearlyEmptyFrame = false;
-bool g_r_postExecuteFenceWait = false;
-#endif
 
 // ENGINE RULE:
 // Present() must be called exactly once per frame, and only by Engine.
@@ -477,44 +456,7 @@ bool Graphics::Initialize(HWND hWnd)
 
     // ✅ 2. Create RTV heap and views (sets `rtvHeap`)
     CreateRenderTargetViews();
-
-    if (!rtvHeap)
-    {
-        Logger::Log(LogLevel::Error, "❌ ERROR: RTV heap is NULL after CreateRenderTargetViews()!", "[DX12]");
-        return false;
-    }
-
     currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
-
-    // ✅ 2B. Create the offscreen Scene render target BEFORE first frame.
-    // Swapchain resize may be deferred until first Present; the scene RT must still exist before RenderSceneToTarget().
-    {
-        RECT rc{};
-        UINT w = 1, h = 1;
-        if (GetClientRect(hWnd, &rc))
-        {
-            w = (UINT)(std::max)(1L, rc.right - rc.left);
-            h = (UINT)(std::max)(1L, rc.bottom - rc.top);
-        }
-        else
-        {
-            w = (UINT)(std::max)(1, screenWidth);
-            h = (UINT)(std::max)(1, screenHeight);
-        }
-
-        EnsureSceneRenderTarget(w, h);
-
-        if (!sceneRenderTarget || sceneRtvHandle.ptr == 0 || sceneRTWidth == 0 || sceneRTHeight == 0)
-        {
-            Logger::Log(LogLevel::Warning, std::format(
-                "[ScenePass] Scene RT not initialized during Initialize() | sceneRT={} rtv=0x{:X} size={}x{} (scene pass will be skipped until created)",
-                sceneRenderTarget ? 1 : 0,
-                (uint64_t)sceneRtvHandle.ptr,
-                sceneRTWidth,
-                sceneRTHeight),
-                "[Graphics]");
-        }
-    }
 
     // ✅ 3. Initialize ImGui (safe now that RTV heap is valid)
     InitializeImGui(hWnd);
@@ -585,16 +527,51 @@ void Graphics::Shutdown()
 
     // 2. Now free DX12 resources safely (enqueue then reset)
     EnqueueDeferredRelease(sceneRenderTarget);
+    sceneRtvHeap.Reset();
+    sceneImGuiTextureID = (ImTextureID)0;
+    sceneSrvCpu = {};
+    sceneSrvGpu = {};
+    sceneRtvHandle = {};
+    sceneRTWidth = 0;
+    sceneRTHeight = 0;
+    sceneRTState = D3D12_RESOURCE_STATE_COMMON;
 
-    // GPU timing resources
-    SafeReleaseComPtr("timestampReadbackBuffer", timestampReadbackBuffer, false);
-    SafeReleaseComPtr("timestampQueryHeap", timestampQueryHeap, false);
-    gpuTimestampFrequency = 0;
-    lastGpuFrameTimeMS = 0.0;
-    gpuTimingQueryIssued = false;
-    gpuTimingDataReady = false;
+    EnqueueDeferredRelease(sceneDepth);
+    sceneDsvHeap.Reset();
+    sceneDsvHandle = {};
+    sceneDepthState = D3D12_RESOURCE_STATE_COMMON;
 
-    // ...existing code...
+    sceneCBPtr = nullptr;
+    EnqueueDeferredRelease(sceneCB);
+    EnqueueDeferredRelease(sceneTrianglePSO);
+    EnqueueDeferredRelease(sceneGridPSO);
+    EnqueueDeferredRelease(sceneRootSignature);
+    EnqueueDeferredRelease(sceneTriangleVB);
+    EnqueueDeferredRelease(sceneGridVB);
+    EnqueueDeferredRelease(sceneAxesVB);
+
+    for (int i = 0; i < NUM_BACK_BUFFERS; i++)
+        EnqueueDeferredRelease(backBuffers[i]);
+
+    if (swapChain) swapChain.Reset();
+    SafeReleaseComPtr("rtvHeap", rtvHeap, true);
+    SafeReleaseComPtr("imguiHeap", imguiHeap, true);
+    SafeReleaseComPtr("commandQueue", commandQueue, true);
+    SafeReleaseComPtr("commandAllocator", commandAllocator, true);
+    SafeReleaseComPtr("commandList", commandList, true);
+
+    SafeReleaseComPtr("fence", fence, true);
+    SafeReleaseComPtr("dxgiFactory", dxgiFactory, true);
+    device.Reset();
+
+    if (fenceEvent)
+    {
+        CloseHandle(fenceEvent);
+        fenceEvent = nullptr;
+    }
+
+    g_SRVHeap = nullptr;
+    Logger::Log(LogLevel::Info, "✅ Graphics Shutdown Completed.", "[Core]");
 }
 
 //=================================
@@ -924,6 +901,9 @@ void Graphics::ExecuteCommandLists(std::vector<ID3D12CommandList*>& commandLists
         return;
     }
 
+    // ✅ Force GPU wait before executing new commands
+    FlushGPU();
+
     Logger::Log(LogLevel::Info, "🚀 Executing " + std::to_string(commandLists.size()) + " Command Lists...", "[DX12]");
     commandQueue->ExecuteCommandLists((UINT)commandLists.size(), commandLists.data());
 }
@@ -1005,71 +985,6 @@ void Graphics::CreateCommandInterfaces() {
     fenceValue = 1;
     Logger::Log(LogLevel::Info, "✅ Fence Created Successfully.", "[DX12]");
 
-    // GPU timing query heap + readback buffer
-    {
-        timestampQueryHeap.Reset();
-        timestampReadbackBuffer.Reset();
-        gpuTimestampFrequency = 0;
-        lastGpuFrameTimeMS = 0.0;
-        gpuTimingQueryIssued = false;
-        gpuTimingDataReady = false;
-
-        D3D12_QUERY_HEAP_DESC queryDesc{};
-        queryDesc.Count = TimestampCount;
-        queryDesc.NodeMask = 0;
-        queryDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-
-        const HRESULT hrQ = device->CreateQueryHeap(&queryDesc, IID_PPV_ARGS(&timestampQueryHeap));
-        if (FAILED(hrQ) || !timestampQueryHeap)
-        {
-            Logger::Log(LogLevel::Warning, std::format("⚠️ GPU timing disabled: CreateQueryHeap failed HR=0x{:08X}", (UINT)hrQ), "[DX12]");
-        }
-        else
-        {
-            const UINT64 bufferSize = sizeof(UINT64) * UINT64(TimestampCount);
-            D3D12_HEAP_PROPERTIES heapProps{};
-            heapProps.Type = D3D12_HEAP_TYPE_READBACK;
-
-            D3D12_RESOURCE_DESC bufferDesc{};
-            bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-            bufferDesc.Width = bufferSize;
-            bufferDesc.Height = 1;
-            bufferDesc.DepthOrArraySize = 1;
-            bufferDesc.MipLevels = 1;
-            bufferDesc.SampleDesc.Count = 1;
-            bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-            const HRESULT hrB = device->CreateCommittedResource(
-                &heapProps,
-                D3D12_HEAP_FLAG_NONE,
-                &bufferDesc,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                nullptr,
-                IID_PPV_ARGS(&timestampReadbackBuffer));
-
-            if (FAILED(hrB) || !timestampReadbackBuffer)
-            {
-                Logger::Log(LogLevel::Warning, std::format("⚠️ GPU timing disabled: readback buffer create failed HR=0x{:08X}", (UINT)hrB), "[DX12]");
-                timestampQueryHeap.Reset();
-            }
-            else if (commandQueue)
-            {
-                const HRESULT hrF = commandQueue->GetTimestampFrequency(&gpuTimestampFrequency);
-                if (FAILED(hrF) || gpuTimestampFrequency == 0)
-                {
-                    Logger::Log(LogLevel::Warning, std::format("⚠️ GPU timing disabled: GetTimestampFrequency failed HR=0x{:08X}", (UINT)hrF), "[DX12]");
-                    timestampQueryHeap.Reset();
-                    timestampReadbackBuffer.Reset();
-                    gpuTimestampFrequency = 0;
-                }
-                else
-                {
-                    Logger::Log(LogLevel::Info, std::format("GPU timestamp frequency: {}", gpuTimestampFrequency), "[DX12]");
-                }
-            }
-        }
-    }
-
     // ✅ Create Command List
     hr = device->CreateCommandList(
         0,
@@ -1114,7 +1029,7 @@ void Graphics::CreateCommandInterfaces() {
 
 //===============================================================================//
 //                        ImGui Frame Life Cycle (Corrected)                     //
-//===============================================================================4
+//===============================================================================//
 
 //---------------------------------
 // Begin Dock Space Function
@@ -1263,7 +1178,7 @@ void Graphics::BeginFrame(HWND hWnd)
     if (completedValue == UINT64_MAX)
     {
         Logger::Log(LogLevel::Error, std::format(
-            "🚨 Fence->GetCompletedValue() == UINT64_MAX (device lost sentinel) on Present()",
+            "🚨 Fence->GetCompletedValue() == UINT64_MAX (device lost sentinel). BackBuffer={} FenceToWaitFor={}",
             currentBackBufferIndex, fenceToWaitFor), "[DX12]");
 
         if (device)
@@ -1360,16 +1275,6 @@ void Graphics::BeginFrame(HWND hWnd)
 
     commandListOpen = true;
 
-    // PIX: frame scope marker
-    PIXBeginEvent(commandList.Get(), 0, "Frame");
-
-    // GPU timing: write begin timestamp as early as possible in the frame command list.
-    if (timestampQueryHeap)
-    {
-        commandList->EndQuery(timestampQueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
-        gpuTimingQueryIssued = true;
-    }
-
     // ==========================
     // Descriptor heap binding
     // ==========================
@@ -1413,18 +1318,9 @@ void Graphics::BeginFrame(HWND hWnd)
 
     if (!SplashScreen::IsFinished())
     {
-        PIXBeginEvent(commandList.Get(), 0, "Splash");
-#ifndef NDEBUG
-        // Ensure the splash texture is uploaded only if allowed.
-        // This is the highest-risk path (upload + SRV allocation) when isolating DEVICE_HUNG.
-        if (!g_r_skipSplashUpload)
-            SplashScreen::EnsureGPUTexture();
-#endif
-
         // Render ONLY the splash while booting.
         // This avoids editor chrome (dockspace/menu/toolbar) appearing behind it.
         SplashScreen::Render();
-        PIXEndEvent(commandList.Get());
     }
     else
     {
@@ -1461,24 +1357,6 @@ void Graphics::EndFrame(HWND hWnd)
         return;
     }
 
-    // GPU timing: write end timestamp + resolve into readback buffer.
-    if (timestampQueryHeap && timestampReadbackBuffer && gpuTimestampFrequency != 0 && gpuTimingQueryIssued)
-    {
-        commandList->EndQuery(timestampQueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
-        commandList->ResolveQueryData(
-            timestampQueryHeap.Get(),
-            D3D12_QUERY_TYPE_TIMESTAMP,
-            0,
-            TimestampCount,
-            timestampReadbackBuffer.Get(),
-            0);
-        gpuTimingDataReady = true;
-        gpuTimingQueryIssued = false;
-    }
-
-    // PIX: end frame scope marker (must be recorded before Close)
-    PIXEndEvent(commandList.Get());
-
     const HRESULT hrClose = commandList->Close();
     if (FAILED(hrClose))
     {
@@ -1490,29 +1368,6 @@ void Graphics::EndFrame(HWND hWnd)
 
     ID3D12CommandList* lists[] = { commandList.Get() };
     commandQueue->ExecuteCommandLists(1, lists);
-
-#ifndef NDEBUG
-    // Optional tripwire: prove a hang occurred in submitted GPU work *before* Present().
-    // This does not change engine semantics (still signals/stamps the real per-frame fence below);
-    // it adds an extra signal+wait to localize the crash.
-    if (g_r_postExecuteFenceWait && fence)
-    {
-        if (!fenceEvent)
-            fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-
-        const UINT64 tripValue = ++fenceValue;
-        const HRESULT hrTrip = commandQueue->Signal(fence.Get(), tripValue);
-        if (SUCCEEDED(hrTrip))
-        {
-            (void)fence->SetEventOnCompletion(tripValue, fenceEvent);
-            const DWORD waitRes = WaitForSingleObject(fenceEvent, 2000);
-            if (waitRes == WAIT_TIMEOUT)
-            {
-                Logger::Log(LogLevel::Error, "[Tripwire] GPU did not complete within 2000ms after ExecuteCommandLists (hung before Present)", "[DX12]");
-            }
-        }
-    }
-#endif
 
     // Signal and stamp fence for the current backbuffer.
     const UINT64 signalValue = ++fenceValue;
@@ -1592,7 +1447,7 @@ void Graphics::Present(HWND hWnd)
         s_PresentDiagLast = now;
         const UINT64 completedFence = fence->GetCompletedValue();
         Logger::Log(LogLevel::Debug, std::format(
-            "[FrameDiag] Present bb={} completedFence={} lastSignaled={} ",
+            "[FrameDiag] Present bb={} completedFence={} lastSignaled={}",
             currentBackBufferIndex, completedFence, lastSignaledFenceValue));
     }
 #endif
@@ -1604,92 +1459,21 @@ void Graphics::Present(HWND hWnd)
     if (FAILED(hr))
     {
         Logger::Log(LogLevel::Error, std::format("❌ Present failed HR=0x{:08X}", (UINT)hr), "[DX12]");
-
-        // Engine Debug Layer: capture device removal reason and DRED data when present fails.
-        if (device)
-        {
-            const HRESULT removed = device->GetDeviceRemovedReason();
-            if (removed != S_OK)
-            {
-                Logger::Log(LogLevel::Error, std::format(
-                    "🚨 DeviceRemovedReason=0x{:08X}", (UINT)removed), "[DX12]");
-
-                Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
-                if (SUCCEEDED(device.As(&dred)) && dred)
-                {
-                    auto HrMeaning = [](HRESULT h) -> const char*
-                        {
-                            switch ((UINT)h)
-                            {
-                            case (UINT)S_OK: return "S_OK";
-                            case (UINT)DXGI_ERROR_UNSUPPORTED: return "DXGI_ERROR_UNSUPPORTED";
-                            case (UINT)DXGI_ERROR_DEVICE_HUNG: return "DXGI_ERROR_DEVICE_HUNG";
-                            case (UINT)DXGI_ERROR_DEVICE_REMOVED: return "DXGI_ERROR_DEVICE_REMOVED";
-                            case (UINT)DXGI_ERROR_DEVICE_RESET: return "DXGI_ERROR_DEVICE_RESET";
-                            case (UINT)DXGI_ERROR_INVALID_CALL: return "DXGI_ERROR_INVALID_CALL";
-                            case (UINT)E_INVALIDARG: return "E_INVALIDARG";
-                            case (UINT)E_OUTOFMEMORY: return "E_OUTOFMEMORY";
-                            default: return "(unknown)";
-                            }
-                        };
-
-                    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 bc{};
-                    D3D12_DRED_PAGE_FAULT_OUTPUT1 pf{};
-                    const HRESULT hrDred = dred->GetAutoBreadcrumbsOutput1(&bc);
-                    const HRESULT hrPf = dred->GetPageFaultAllocationOutput1(&pf);
-
-                    Logger::Log(LogLevel::Error, std::format(
-                        "[DRED] GetAutoBreadcrumbsOutput1 HR=0x{:08X} ({}) GetPageFaultAllocationOutput1 HR=0x{:08X} ({})",
-                        (UINT)hrDred, HrMeaning(hrDred),
-                        (UINT)hrPf, HrMeaning(hrPf)), "[DX12]");
-
-                    if (FAILED(hrDred))
-                    {
-                        Logger::Log(LogLevel::Error, std::format(
-                            "[DRED] AutoBreadcrumbs unavailable (HRESULT=0x{:08X} {})",
-                            (UINT)hrDred, HrMeaning(hrDred)), "[DX12]");
-                    }
-
-                    if (FAILED(hrPf))
-                    {
-                        Logger::Log(LogLevel::Error, std::format(
-                            "[DRED] PageFault info unavailable (HRESULT=0x{:08X} {})",
-                            (UINT)hrPf, HrMeaning(hrPf)), "[DX12]");
-                    }
-
-                    if (SUCCEEDED(hrDred) && bc.pHeadAutoBreadcrumbNode)
-                    {
-                        const auto* node = bc.pHeadAutoBreadcrumbNode;
-                        const char* name = node->pCommandListDebugNameA ? node->pCommandListDebugNameA : "<unnamed>";
-                        Logger::Log(LogLevel::Error, std::format(
-                            "[DRED] Breadcrumb head | CL='{}' lastOp={} ",
-                            name,
-                            (UINT)(node->BreadcrumbCount > 0 ? node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0 : 0)), "[DX12]");
-                    }
-
-                    if (SUCCEEDED(hrPf) && pf.PageFaultVA != 0)
-                    {
-                        Logger::Log(LogLevel::Error, std::format(
-                            "[DRED] PageFaultVA=0x{:X}", (UINT64)pf.PageFaultVA), "[DX12]");
-                    }
-                }
-            }
-        }
-
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
-        {
-            // Reset frame lifecycle gates so the next initialization starts from a clean bring-up state.
-            hasPresentedOnce = false;
-            loggedDeferredResizeBeforeFirstPresent = false;
-            loggedDeferredFontBeforeFirstPresent = false;
-            pendingResize = false;
-            pendingSceneRTResize = false;
-            g_PresentedThisFrame = false;
-
             HandleDeviceLost(hWnd);
-        }
         return;
     }
+
+#ifndef NDEBUG
+    static bool s_LoggedFirstPresentOnce = false;
+    if (!s_LoggedFirstPresentOnce)
+    {
+        s_LoggedFirstPresentOnce = true;
+        Logger::Log(LogLevel::Debug, std::format(
+            "[DX12] First Present succeeded | syncInterval={} flags=0x{:X}",
+            syncInterval, presentFlags));
+    }
+#endif
 
     hasPresentedOnce = true;
     g_PresentedThisFrame = true;
@@ -2407,33 +2191,177 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
     }
 }
 
-namespace
+// CP9-B: staged upload (Graphics-owned) of CPU data into a DEFAULT heap buffer.
+void Graphics::UploadBufferToDefault(ID3D12Resource* dstDefault, const void* srcData, size_t numBytes)
 {
-    static bool ValidateScenePassResources(const Microsoft::WRL::ComPtr<ID3D12Resource>& rt,
-        D3D12_CPU_DESCRIPTOR_HANDLE rtv,
-        UINT w,
-        UINT h)
+    if (!dstDefault || !srcData || numBytes == 0)
+        return;
+
+    if (!device || !commandQueue || !fence || !uploadAllocator || !uploadCommandList)
     {
-        if (!rt)
+        Logger::Log(LogLevel::Error, "❌ UploadBufferToDefault: missing DX12 upload context objects.", "[DX12]");
+        return;
+    }
+
+    // Track assumed steady-state for buffers we upload into.
+    // Buffers ignore the supplied initial state and start in COMMON.
+    static std::unordered_map<ID3D12Resource*, D3D12_RESOURCE_STATES> s_DefaultDstStates;
+    D3D12_RESOURCE_STATES& dstState = s_DefaultDstStates[dstDefault];
+    if (dstState == (D3D12_RESOURCE_STATES)0)
+        dstState = D3D12_RESOURCE_STATE_COMMON;
+
+    // CP10-B: select per-backbuffer staging slot (ring) using the swapchain's actual current index.
+    const UINT bb = swapChain ? swapChain->GetCurrentBackBufferIndex() : currentBackBufferIndex;
+    InstanceUploadFrame& slot = m_InstanceUploadRing[bb % kUploadRingSize];
+
+    // CP10-B: reuse rule. If the slot is still in use by the GPU, wait (rare) rather than skipping.
+    if (slot.FenceValue != 0)
+    {
+        const UINT64 completed = fence->GetCompletedValue();
+        if (completed != UINT64_MAX && completed < slot.FenceValue)
         {
-            Logger::Log(LogLevel::Warning, "[ScenePass] Missing sceneRenderTarget. Skipping scene pass.", "[Graphics]");
-            return false;
+#ifndef NDEBUG
+            static auto s_lastWaitLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+            const auto now = std::chrono::steady_clock::now();
+            if (now - s_lastWaitLog >= std::chrono::milliseconds(250))
+            {
+                s_lastWaitLog = now;
+                Logger::Log(LogLevel::Debug, std::format(
+                    "[Upload] Waiting for staging ring slot | bb={} fence={}",
+                    bb, slot.FenceValue), "[DX12]");
+            }
+#endif
+            WaitForFenceValue(slot.FenceValue);
         }
-        if (rtv.ptr == 0)
+    }
+
+    // Ensure staging buffer capacity for this slot.
+    if (!slot.Staging || slot.StagingSizeBytes < numBytes)
+    {
+        const size_t newSize = (std::max)(numBytes, (slot.StagingSizeBytes > 0 ? slot.StagingSizeBytes * 2ull : numBytes));
+
+        const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
+        const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(newSize);
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> newBuf;
+        const HRESULT hr = device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(newBuf.ReleaseAndGetAddressOf()));
+
+        if (FAILED(hr) || !newBuf)
         {
-            Logger::Log(LogLevel::Warning, "[ScenePass] Missing scene RTV handle. Skipping scene pass.", "[Graphics]");
-            return false;
+            Logger::Log(LogLevel::Error, "❌ UploadBufferToDefault: failed to create staging UPLOAD buffer.", "[DX12]");
+            return;
         }
-        if (w == 0 || h == 0)
+
+        slot.Staging = newBuf;
+        slot.StagingSizeBytes = newSize;
+    }
+
+    // Map staging, write CPU data
+    {
+        void* mapped = nullptr;
+        const CD3DX12_RANGE readRange(0, 0);
+        const HRESULT hrMap = slot.Staging->Map(0, &readRange, &mapped);
+        if (FAILED(hrMap) || !mapped)
         {
-            Logger::Log(LogLevel::Warning, std::format(
-                "[ScenePass] Invalid scene dimensions ({}x{}). Skipping scene pass.", w, h), "[Graphics]");
-            return false;
+            Logger::Log(LogLevel::Error, "❌ UploadBufferToDefault: staging Map failed.", "[DX12]");
+            return;
         }
-        return true;
+
+        std::memcpy(mapped, srcData, numBytes);
+        slot.Staging->Unmap(0, nullptr);
+    }
+
+    // Record + execute upload command list
+    {
+        const HRESULT hrA = uploadAllocator->Reset();
+        if (FAILED(hrA))
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ UploadBufferToDefault: uploadAllocator->Reset failed HR=0x{:08X}", (UINT)hrA), "[DX12]");
+            return;
+        }
+
+        const HRESULT hrCL = uploadCommandList->Reset(uploadAllocator.Get(), nullptr);
+        if (FAILED(hrCL))
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ UploadBufferToDefault: uploadCommandList->Reset failed HR=0x{:08X}", (UINT)hrCL), "[DX12]");
+            return;
+        }
+
+        // Transition dst -> COPY_DEST (honor tracked state; buffers start in COMMON)
+        if (dstState != D3D12_RESOURCE_STATE_COPY_DEST)
+        {
+            const CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
+                dstDefault,
+                dstState,
+                D3D12_RESOURCE_STATE_COPY_DEST);
+            uploadCommandList->ResourceBarrier(1, &b);
+            dstState = D3D12_RESOURCE_STATE_COPY_DEST;
+        }
+
+        uploadCommandList->CopyBufferRegion(dstDefault, 0, slot.Staging.Get(), 0, numBytes);
+
+        // Transition COPY_DEST -> GENERIC_READ
+        if (dstState != D3D12_RESOURCE_STATE_GENERIC_READ)
+        {
+            const CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
+                dstDefault,
+                dstState,
+                D3D12_RESOURCE_STATE_GENERIC_READ);
+            uploadCommandList->ResourceBarrier(1, &b);
+            dstState = D3D12_RESOURCE_STATE_GENERIC_READ;
+        }
+
+        const HRESULT hrClose = uploadCommandList->Close();
+        if (FAILED(hrClose))
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ UploadBufferToDefault: uploadCommandList->Close failed HR=0x{:08X}", (UINT)hrClose), "[DX12]");
+            return;
+        }
+
+        ID3D12CommandList* lists[] = { uploadCommandList.Get() };
+        commandQueue->ExecuteCommandLists(1, lists);
+
+        const UINT64 signalValue = ++fenceValue;
+        const HRESULT hrSignal = commandQueue->Signal(fence.Get(), signalValue);
+        if (FAILED(hrSignal))
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ UploadBufferToDefault: commandQueue->Signal failed HR=0x{:08X}", (UINT)hrSignal), "[DX12]");
+            return;
+        }
+
+        lastSignaledFenceValue = signalValue;
+
+        // IMPORTANT: We can NOT reset/reuse `uploadAllocator` until this upload has executed.
+        // Wait here to keep the current single-allocator upload path safe.
+        WaitForFenceValue(signalValue);
+
+#ifndef NDEBUG
+        static bool s_loggedFirstUploadSignal = false;
+        if (!s_loggedFirstUploadSignal)
+        {
+            s_loggedFirstUploadSignal = true;
+            Logger::Log(LogLevel::Debug, std::format(
+                "[Upload] First instance upload signaled | fence={}", signalValue), "[DX12]");
+        }
+#endif
+
+        // CP10-B: slot-local synchronization record.
+        slot.FenceValue = signalValue;
+
+        // Do NOT stamp frames[] fence values here. Frame fence ownership is EndFrame() only.
+
+        // Return upload list to idle (closed) state.
+        (void)uploadAllocator->Reset();
+        (void)uploadCommandList->Reset(uploadAllocator.Get(), nullptr);
+        (void)uploadCommandList->Close();
     }
 }
-
 void Graphics::RenderSceneToTarget()
 {
 #ifndef NDEBUG
@@ -2443,7 +2371,7 @@ void Graphics::RenderSceneToTarget()
     {
         s_scenePassLastLog = now;
         Logger::Log(LogLevel::Debug,
-            std::format("[ScenePass] Enter | cmdListOpen={} sceneRT={} rtv=0x{:X} size={}x{}",
+            std::format("[ScenePass] RenderSceneToTarget ENTER | commandListOpen={} sceneRT={} rtv=0x{:X} size={}x{}",
                 commandListOpen ? 1 : 0,
                 sceneRenderTarget ? 1 : 0,
                 (uint64_t)sceneRtvHandle.ptr,
@@ -2456,69 +2384,242 @@ void Graphics::RenderSceneToTarget()
     if (!commandListOpen)
         return;
 
-    if (!commandList)
+    if (!commandList || !sceneRenderTarget || sceneRtvHandle.ptr == 0 || sceneRTWidth == 0 || sceneRTHeight == 0)
         return;
 
-    // Lazy-create scene RT on demand using current known dimensions.
-    if (!sceneRenderTarget || sceneRtvHandle.ptr == 0 || sceneRTWidth == 0 || sceneRTHeight == 0)
+    // Validate RT invariants (non-spammy)
     {
-        const UINT w = (UINT)(std::max)(1, screenWidth);
-        const UINT h = (UINT)(std::max)(1, screenHeight);
-        EnsureSceneRenderTarget(w, h);
+        const D3D12_RESOURCE_DESC desc = sceneRenderTarget->GetDesc();
+
+        static bool loggedFmtMismatch = false;
+        if (!loggedFmtMismatch && desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM)
+        {
+            loggedFmtMismatch = true;
+            Logger::Log(LogLevel::Error, std::format(
+                "[Scene] Scene RT format mismatch: RT={} expected={} (artifacts likely)",
+                (int)desc.Format, (int)DXGI_FORMAT_R8G8B8A8_UNORM));
+        }
+
+        static bool loggedMsaaMismatch = false;
+        if (!loggedMsaaMismatch && desc.SampleDesc.Count != 1)
+        {
+            loggedMsaaMismatch = true;
+            Logger::Log(LogLevel::Error, std::format(
+                "[Scene] Scene RT MSAA mismatch: SampleCount={} expected=1 (artifacts likely)",
+                (UINT)desc.SampleDesc.Count));
+        }
+
+        // Prefer the actual resource size for VP/scissor to avoid UI-size mismatch.
+        const UINT rtW = (UINT)desc.Width;
+        const UINT rtH = (UINT)desc.Height;
+        if (rtW != sceneRTWidth || rtH != sceneRTHeight)
+        {
+            static bool loggedSizeMismatch = false;
+            if (!loggedSizeMismatch)
+            {
+                loggedSizeMismatch = true;
+                Logger::Log(LogLevel::Warning, std::format(
+                    "[Scene] Scene RT size mismatch: tracked={}x{} resource={}x{} (using resource size)",
+                    sceneRTWidth, sceneRTHeight, rtW, rtH));
+            }
+        }
     }
 
-    if (!ValidateScenePassResources(sceneRenderTarget, sceneRtvHandle, sceneRTWidth, sceneRTHeight))
-        return;
+    const D3D12_RESOURCE_DESC desc = sceneRenderTarget->GetDesc();
+    const UINT rtW = (UINT)desc.Width;
+    const UINT rtH = (UINT)desc.Height;
 
-    // PIX: scoped event for the scene pass
-    PIXBeginEvent(commandList.Get(), 0, "ScenePass");
+    // Transition RT to render target
+    if (sceneRTState != D3D12_RESOURCE_STATE_RENDER_TARGET)
+    {
+        CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
+            sceneRenderTarget.Get(),
+            sceneRTState,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        commandList->ResourceBarrier(1, &b);
 
-    // Transition scene render target to pixel shader resource (for the duration of the scene pass)
-    CD3DX12_RESOURCE_BARRIER toPShader = CD3DX12_RESOURCE_BARRIER::Transition(
-        sceneRenderTarget.Get(),
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    commandList->ResourceBarrier(1, &toPShader);
+        if (SceneDiag_ShouldLog())
+        {
+            Logger::Log(LogLevel::Debug, std::format(
+                "[SceneDiag] Scene RT transition {} -> {}",
+                D3D12StateToString(sceneRTState),
+                D3D12StateToString(D3D12_RESOURCE_STATE_RENDER_TARGET)));
+        }
 
-    // Clear color
+        sceneRTState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    }
+    else
+    {
+        static bool loggedRedundantToRT = false;
+        if (!loggedRedundantToRT && SceneDiag_ShouldLog())
+        {
+            loggedRedundantToRT = true;
+            Logger::Log(LogLevel::Debug, "[SceneDiag] Scene RT already in RENDER_TARGET state (redundant transition skipped)");
+        }
+    }
+
+    // (Optional) cycle presets at runtime: press F9 to rotate clear colors.
+    // This is intentionally simple and engine-owned (UI hookup can come later).
+    if ((GetAsyncKeyState(VK_F9) & 1) != 0)
+        AdvanceSceneClearPreset();
+
     const float* clearColor = GetSceneClearColorRGBA();
+
+    D3D12_VIEWPORT vp{};
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = 0.0f;
+    vp.Width = (float)rtW;
+    vp.Height = (float)rtH;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+
+    D3D12_RECT sc{};
+    sc.left = 0;
+    sc.top = 0;
+    sc.right = (LONG)rtW;
+    sc.bottom = (LONG)rtH;
+
+    // Clamp scissor to RT bounds (defensive)
+    if (sc.right < sc.left) sc.right = sc.left;
+    if (sc.bottom < sc.top) sc.bottom = sc.top;
+
+    commandList->RSSetViewports(1, &vp);
+    commandList->RSSetScissorRects(1, &sc);
+
+    // Always bind the scene RTV immediately before scene draw/clear.
+    // Do not assume previous bindings (ImGui or other passes may have rebound RTVs).
+    if (sceneDsvHandle.ptr != 0)
+        commandList->OMSetRenderTargets(1, &sceneRtvHandle, FALSE, &sceneDsvHandle);
+    else
+        commandList->OMSetRenderTargets(1, &sceneRtvHandle, FALSE, nullptr);
+
     commandList->ClearRenderTargetView(sceneRtvHandle, clearColor, 0, nullptr);
 
-    // --- RECORD SCENE PASS COMMANDS HERE ---
+    if (sceneDsvHandle.ptr != 0)
+        commandList->ClearDepthStencilView(sceneDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    // Transition back to render target for ImGui
-    CD3DX12_RESOURCE_BARRIER toRenderTarget = CD3DX12_RESOURCE_BARRIER::Transition(
-        sceneRenderTarget.Get(),
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
-    commandList->ResourceBarrier(1, &toRenderTarget);
+    // Phase 4A: draw scene content into the scene render target (RT currently bound).
+    {
+        // CP11-D: upload visible subset BEFORE Scene draw so the instanced draw consumes current-frame data.
+        {
+            const UINT count = Scene::GetVisibleInstanceCount();
+            ID3D12Resource* dst = Scene::GetInstanceDefaultBuffer();
+            const InstanceData* cpu = Scene::GetVisibleInstancesCPU();
+            const size_t bytes = sizeof(InstanceData) * (size_t)count;
 
-    PIXEndEvent(commandList.Get());
+            if (dst && cpu && bytes)
+            {
+                UploadBufferToDefault(dst, cpu, bytes);
+            }
+        }
+
+        SceneRenderContext sctx;
+        sctx.device = device.Get();
+        sctx.commandList = commandList.Get();
+        sctx.viewportWidth = sceneRTWidth;
+        sctx.viewportHeight = sceneRTHeight;
+        sctx.frameIndex = static_cast<uint64_t>(currentBackBufferIndex);
+        sctx.camera = &CameraSystem::GetActiveData();
+
+        // Build visible subset and record draw calls.
+        Scene::Render(sctx);
+    }
+
+    // Transition RT back to shader resource (for ImGui sampling)
+    if (sceneRTState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+    {
+        CD3DX12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(
+            sceneRenderTarget.Get(),
+            sceneRTState,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        commandList->ResourceBarrier(1, &b);
+
+        if (SceneDiag_ShouldLog())
+        {
+            Logger::Log(LogLevel::Debug, std::format(
+                "[SceneDiag] Scene RT transition {} -> {}",
+                D3D12StateToString(sceneRTState),
+                D3D12StateToString(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)));
+        }
+
+        sceneRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+    else
+    {
+        static bool loggedRedundantToSRV = false;
+        if (!loggedRedundantToSRV && SceneDiag_ShouldLog())
+        {
+            loggedRedundantToSRV = true;
+            Logger::Log(LogLevel::Debug, "[SceneDiag] Scene RT already in PIXEL_SHADER_RESOURCE state (redundant transition skipped)");
+        }
+    }
 }
 
-// Below is the new Graphics::Render function.
 void Graphics::Render(HWND hWnd)
 {
-    // Render the Scene viewport target first (so UI can display it via ImGui::Image)
 #ifndef NDEBUG
-    if (!g_r_skipScene)
+    static auto s_renderLastLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    const auto nowR = std::chrono::steady_clock::now();
+    if (nowR - s_renderLastLog >= std::chrono::seconds(1))
     {
-        PIXBeginEvent(commandList.Get(), 0, "ScenePass");
-        RenderSceneToTarget();
-        PIXEndEvent(commandList.Get());
+        s_renderLastLog = nowR;
+        Logger::Log(LogLevel::Debug,
+            std::format("[Render] Graphics::Render ENTER | frameStarted={} commandListOpen={} splashFinished={}",
+                frameStarted ? 1 : 0,
+                commandListOpen ? 1 : 0,
+                SplashScreen::IsFinished() ? 1 : 0),
+            "[Graphics]");
     }
-#else
-    PIXBeginEvent(commandList.Get(), 0, "ScenePass");
-    RenderSceneToTarget();
-    PIXEndEvent(commandList.Get());
 #endif
+
+    m_InsideRender = true;
+
+    // Phase 2.5: Single invariant guard for the render phase.
+    // Rendering must only occur after BeginFrame() has started the frame and the command list is recording.
+    if (!frameStarted || !commandListOpen)
+    {
+        Logger::Log(LogLevel::Error,
+            std::format("❌ Render() called outside a valid frame | frameStarted={} commandListOpen={}",
+                frameStarted ? 1 : 0,
+                commandListOpen ? 1 : 0),
+            "[Core]");
+        m_InsideRender = false;
+        return;
+    }
+
+    // Keep the existing error log for closed command list (signal is still useful).
+    if (!commandListOpen)
+    {
+        Logger::Log(LogLevel::Error,
+            "❌ Render() called with closed command list!", "[DX12]");
+        m_InsideRender = false;
+        return;
+    }
+
+    if (!commandList || !ImGui::GetCurrentContext())
+    {
+        m_InsideRender = false;
+        return;
+    }
+
+    // Render the Scene viewport target first (so UI can display it via ImGui::Image)
+    RenderSceneToTarget();
 
     // ==========================
     // Main ImGui render pass
     // ==========================
+#ifndef NDEBUG
+    if (!ImGui::GetIO().Fonts->IsBuilt())
+    {
+        Logger::Log(LogLevel::Error,
+            "🚨 ImGui Fonts not built before ImGui::Render()");
+    }
+#endif
 
     ImGui::Render();
     g_ImGuiRenderedThisFrame = true;
+
+    // (Scene is rendered inside RenderSceneToTarget, into the offscreen RT.)
 
     ImDrawData* drawData = ImGui::GetDrawData();
     if (!drawData)
@@ -2541,24 +2642,38 @@ void Graphics::Render(HWND hWnd)
 
     commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
+    // Ensure viewport/scissor match the actual backbuffer dimensions every frame.
+    if (backBuffers[currentBackBufferIndex])
+    {
+        const D3D12_RESOURCE_DESC bbDesc = backBuffers[currentBackBufferIndex]->GetDesc();
+        const UINT bbW = (UINT)bbDesc.Width;
+        const UINT bbH = bbDesc.Height;
+
+        D3D12_VIEWPORT vp{};
+        vp.TopLeftX = 0.0f;
+        vp.TopLeftY = 0.0f;
+        vp.Width = (float)bbW;
+        vp.Height = (float)bbH;
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+
+        D3D12_RECT sc{};
+        sc.left = 0;
+        sc.top = 0;
+        sc.right = (LONG)bbW;
+        sc.bottom = (LONG)bbH;
+
+        commandList->RSSetViewports(1, &vp);
+        commandList->RSSetScissorRects(1, &sc);
+    }
+
     // Clear
     const ImVec4 clear = UI::GetClearColor();
     const float clearColor[4] = { clear.x, clear.y, clear.z, clear.w };
     commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
     // Draw ImGui
-#ifndef NDEBUG
-    if (!g_r_skipImGui)
-    {
-        PIXBeginEvent(commandList.Get(), 0, "ImGui");
-        ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
-        PIXEndEvent(commandList.Get());
-    }
-#else
-    PIXBeginEvent(commandList.Get(), 0, "ImGui");
     ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
-    PIXEndEvent(commandList.Get());
-#endif
 
     // Transition backbuffer back to present
     CD3DX12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(
