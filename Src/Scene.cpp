@@ -454,6 +454,88 @@ std::vector<Sphere> Scene::s_InstanceBounds;
 std::vector<UINT> Scene::s_VisibleInstanceIndices;
 std::vector<InstanceData> Scene::s_VisibleInstancesScratch;
 
+// CP13 debug viz toggles/knobs (editor-controlled)
+bool Scene::g_ShowFrustum = true;
+bool Scene::g_ShowBounds = true;
+bool Scene::g_FreezeCulling = false;
+int  Scene::g_BoundsSegments = 24;
+
+namespace
+{
+    struct DebugLineVertex
+    {
+        DirectX::XMFLOAT3 Pos{};
+        uint32_t ColorRGBA = 0;
+    };
+
+    static std::vector<DebugLineVertex> g_DebugLineVerts;
+
+    static void DebugAddLine(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, uint32_t rgba)
+    {
+        g_DebugLineVerts.push_back({ a, rgba });
+        g_DebugLineVerts.push_back({ b, rgba });
+    }
+
+    static void DebugAddWireSphere(const DirectX::XMFLOAT3& c, float r, uint32_t rgba, int segs)
+    {
+        segs = (std::max)(segs, 8);
+
+        auto addCircle = [&](int axisA, int axisB)
+        {
+            for (int i = 0; i < segs; ++i)
+            {
+                const float t0 = (DirectX::XM_2PI * float(i + 0)) / float(segs);
+                const float t1 = (DirectX::XM_2PI * float(i + 1)) / float(segs);
+
+                DirectX::XMFLOAT3 p0 = c;
+                DirectX::XMFLOAT3 p1 = c;
+
+                const float cs0 = cosf(t0), sn0 = sinf(t0);
+                const float cs1 = cosf(t1), sn1 = sinf(t1);
+
+                float* fp0[3] = { &p0.x, &p0.y, &p0.z };
+                float* fp1[3] = { &p1.x, &p1.y, &p1.z };
+
+                *fp0[axisA] += r * cs0; *fp0[axisB] += r * sn0;
+                *fp1[axisA] += r * cs1; *fp1[axisB] += r * sn1;
+
+                DebugAddLine(p0, p1, rgba);
+            }
+        };
+
+        addCircle(0, 1); // XY
+        addCircle(0, 2); // XZ
+        addCircle(1, 2); // YZ
+    }
+
+    static void ExtractFrustumCornersWorld(const DirectX::XMMATRIX& viewProj, DirectX::XMFLOAT3 outCorners[8])
+    {
+        using namespace DirectX;
+
+        const XMMATRIX invVP = XMMatrixInverse(nullptr, viewProj);
+
+        // D3D NDC: x,y in [-1,+1], z in [0,+1]
+        const XMFLOAT3 ndc[8] = {
+            {-1,-1,0}, {+1,-1,0}, {+1,+1,0}, {-1,+1,0},
+            {-1,-1,1}, {+1,-1,1}, {+1,+1,1}, {-1,+1,1}
+        };
+
+        for (int i = 0; i < 8; ++i)
+        {
+            XMVECTOR p = XMVectorSet(ndc[i].x, ndc[i].y, ndc[i].z, 1.0f);
+            p = XMVector4Transform(p, invVP);
+            p = XMVectorScale(p, 1.0f / XMVectorGetW(p));
+            XMStoreFloat3(&outCorners[i], p);
+        }
+    }
+
+    static constexpr int kFrustumEdges[12][2] = {
+        {0,1},{1,2},{2,3},{3,0},
+        {4,5},{5,6},{6,7},{7,4},
+        {0,4},{1,5},{2,6},{3,7}
+    };
+}
+
 const InstanceData* Scene::GetVisibleInstancesCPU()
 {
     return s_VisibleInstancesScratch.empty() ? nullptr : s_VisibleInstancesScratch.data();
@@ -817,14 +899,100 @@ void Scene::Render(const SceneRenderContext& ctx)
     const Frustum fr = BuildFrustumFromViewProj(viewProjF);
 
     // CP11-C: build visible list
-    s_VisibleInstanceIndices.clear();
-    s_VisibleInstanceIndices.reserve(s_InstanceBounds.size());
-
-    for (UINT i = 0; i < (UINT)s_InstanceBounds.size(); ++i)
+    if (!Scene::g_FreezeCulling)
     {
-        if (SphereInsideFrustum(s_InstanceBounds[i], fr))
-            s_VisibleInstanceIndices.push_back(i);
+        s_VisibleInstanceIndices.clear();
+        s_VisibleInstanceIndices.reserve(s_InstanceBounds.size());
+
+        for (UINT i = 0; i < (UINT)s_InstanceBounds.size(); ++i)
+        {
+            if (SphereInsideFrustum(s_InstanceBounds[i], fr))
+                s_VisibleInstanceIndices.push_back(i);
+        }
     }
+
+    // CP13: build debug line list (CPU-side only)
+    g_DebugLineVerts.clear();
+
+    if (Scene::g_ShowFrustum)
+    {
+        DirectX::XMFLOAT3 corners[8]{};
+        ExtractFrustumCornersWorld(viewProj, corners);
+
+        constexpr uint32_t kFrustumColor = 0xFF00FFFF; // RGBA cyan
+        for (const auto& e : kFrustumEdges)
+            DebugAddLine(corners[e[0]], corners[e[1]], kFrustumColor);
+    }
+
+    if (Scene::g_ShowBounds)
+    {
+        // Visible mask for quick coloring (green = visible, red = culled)
+        std::vector<uint8_t> visibleMask(s_InstanceBounds.size(), 0);
+        for (UINT idx : s_VisibleInstanceIndices)
+            if (idx < visibleMask.size())
+                visibleMask[idx] = 1;
+
+        const int segs = Scene::g_BoundsSegments;
+        for (size_t i = 0; i < s_InstanceBounds.size(); ++i)
+        {
+            const Sphere& s = s_InstanceBounds[i];
+            const uint32_t col = visibleMask[i] ? 0xFF00FF00u : 0xFFFF0000u; // RGBA
+            DebugAddWireSphere(s.Center, s.Radius, col, segs);
+        }
+    }
+
+#ifndef NDEBUG
+    // CP12 Step 3: frustum orientation diagnostics (1Hz, logging only)
+    {
+        static auto s_lastOrientLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        const auto nowO = std::chrono::steady_clock::now();
+        if (nowO - s_lastOrientLog >= std::chrono::seconds(1))
+        {
+            s_lastOrientLog = nowO;
+
+            using namespace DirectX;
+
+            const XMVECTOR camPos = XMLoadFloat3(&ctx.camera->position);
+
+            // Approximate camera forward from the inverse view matrix (world space).
+            const XMMATRIX viewM = XMLoadFloat4x4(&ctx.camera->view);
+            const XMMATRIX invView = XMMatrixInverse(nullptr, viewM);
+            const XMVECTOR forward = XMVector3Normalize(invView.r[2]);
+
+            XMFLOAT3 camP{};
+            XMFLOAT3 fwd{};
+            XMStoreFloat3(&camP, camPos);
+            XMStoreFloat3(&fwd, forward);
+
+            // Pick a stable sample sphere (instance 0) if available.
+            float d0[6] = {};
+            bool hasSample = !s_InstanceBounds.empty();
+            if (hasSample)
+            {
+                const Sphere& s = s_InstanceBounds[0];
+                const XMVECTOR c = XMLoadFloat3(&s.Center);
+
+                for (int i = 0; i < 6; i++)
+                {
+                    const XMFLOAT4& eq = fr.Planes[i].Eq;
+                    const XMVECTOR n = XMLoadFloat3(reinterpret_cast<const XMFLOAT3*>(&eq));
+                    d0[i] = XMVectorGetX(XMVector3Dot(c, n)) + eq.w;
+                }
+            }
+
+            Logger::Log(LogLevel::Debug,
+                std::format("[FrustumDiag] camPos=({:.2f},{:.2f},{:.2f}) fwd=({:.3f},{:.3f},{:.3f}) total={} visible={} sampleR={:.3f} dists(L,R,B,T,N,F)=({:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f}) dbgLineVerts={}",
+                    camP.x, camP.y, camP.z,
+                    fwd.x, fwd.y, fwd.z,
+                    (uint64_t)s_Instances.size(),
+                    (uint64_t)s_VisibleInstanceIndices.size(),
+                    hasSample ? s_InstanceBounds[0].Radius : 0.0f,
+                    d0[0], d0[1], d0[2], d0[3], d0[4], d0[5],
+                    (uint64_t)g_DebugLineVerts.size()),
+                "[Scene]");
+        }
+    }
+#endif
 
     // CP11-D: build contiguous visible instance buffer (CPU scratch)
     s_VisibleInstancesScratch.clear();
@@ -905,9 +1073,8 @@ void Scene::Render(const SceneRenderContext& ctx)
     // Bind shared root signature once (both PSOs compatible).
     ctx.commandList->SetGraphicsRootSignature(g_scene.rootSig.Get());
 
-    // Bind instance SRV table (t0) at root param 1.
-    if (s_InstanceSRVGpu.ptr != 0)
-        ctx.commandList->SetGraphicsRootDescriptorTable(1, s_InstanceSRVGpu);
+    // Publish Scene root signature to Graphics for Engine Debug Layer consumers.
+    Graphics::GetInstance().SetExternalSceneRootSignature(g_scene.rootSig.Get());
 
     // Fully define dynamic state that can bleed between draws.
     const float blendFactor[4] = { 0, 0, 0, 0 };
@@ -978,6 +1145,49 @@ void Scene::Render(const SceneRenderContext& ctx)
     ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
     ctx.commandList->IASetVertexBuffers(0, 1, &g_scene.gridVbv);
     ctx.commandList->DrawInstanced(g_scene.gridVbv.SizeInBytes / g_scene.gridVbv.StrideInBytes, 1, 0, 0);
+
+    // ====================================================================
+    // CP13: DEBUG LINE OVERLAY PASS (Frustum + Bounds)
+    // ====================================================================
+    if (!g_DebugLineVerts.empty())
+    {
+        Graphics& gfx = Graphics::GetInstance();
+        gfx.EnsureDebugLineResources();
+
+        ID3D12PipelineState* pso = gfx.GetDebugLinePSO();
+        ID3D12Resource* vb = gfx.GetDebugLineVB();
+        void* mapped = gfx.GetDebugLineVBMapped();
+        const UINT maxVerts = gfx.GetDebugLineVBMaxVerts();
+
+        if (pso && vb && mapped && maxVerts > 0)
+        {
+            const UINT vertCount = (UINT)(std::min<size_t>(g_DebugLineVerts.size(), (size_t)maxVerts));
+            std::memcpy(mapped, g_DebugLineVerts.data(), (size_t)vertCount * sizeof(DebugLineVertex));
+
+            D3D12_VERTEX_BUFFER_VIEW vbv{};
+            vbv.BufferLocation = vb->GetGPUVirtualAddress();
+            vbv.SizeInBytes = vertCount * (UINT)sizeof(DebugLineVertex);
+            vbv.StrideInBytes = (UINT)sizeof(DebugLineVertex);
+
+            // Debug line PSO uses the same root signature as the Scene pass.
+            ctx.commandList->SetPipelineState(pso);
+            ctx.commandList->SetGraphicsRootSignature(gfx.GetSceneRootSignature());
+
+            // Re-bind the existing per-frame scene CB (b0) for ViewProj.
+            {
+                Graphics& gfx2 = Graphics::GetInstance();
+                const auto alloc = gfx2.AllocateFrameCB(sizeof(SceneCB));
+                std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
+                ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
+            }
+
+            ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+            ctx.commandList->IASetVertexBuffers(0, 1, &vbv);
+            ctx.commandList->DrawInstanced(vertCount, 1, 0, 0);
+        }
+
+        g_DebugLineVerts.clear();
+    }
 
     (void)ctx.frameIndex;
 }
