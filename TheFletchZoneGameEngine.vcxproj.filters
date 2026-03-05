@@ -354,8 +354,4 @@
       <Filter>Fonts</Filter>
     </Font>
   </ItemGroup>
-  <ItemGroup>
-    <FxCompile Include="shaders\debug_lines_vs.hlsl" />
-    <FxCompile Include="shaders\debug_lines_ps.hlsl" />
-  </ItemGroup>
 </Project>

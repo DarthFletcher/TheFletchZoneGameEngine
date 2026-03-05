@@ -164,7 +164,6 @@
     <ClInclude Include="include\Components.h" />
     <ClInclude Include="include\Config.h" />
     <ClInclude Include="include\CrashDiagnostics.h" />
-    <ClInclude Include="Include\DebugIsolation.h" />
     <ClInclude Include="Include\DX12Common.h" />
     <ClInclude Include="Include\EditorCommon.h" />
     <ClInclude Include="Include\EditorIcons.h" />
@@ -272,8 +271,6 @@
     <None Include="shaders\debug_triangle.hlsl" />
     <None Include="shaders\imgui_vs.hlsl" />
     <None Include="shaders\imgui_ps.hlsl" />
-    <None Include="shaders\debug_lines_vs.hlsl" />
-    <None Include="shaders\debug_lines_ps.hlsl" />
     <None Include="shaders\scene_grid_ps.hlsl" />
     <None Include="shaders\scene_grid_vs.hlsl" />
     <None Include="shaders\scene_triangle_ps.hlsl" />

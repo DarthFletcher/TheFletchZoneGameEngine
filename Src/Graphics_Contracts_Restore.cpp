@@ -298,9 +298,3 @@ void Graphics::ApplyPendingResize(HWND hWnd)
     // This is required so `RenderSceneToTarget()` can run during splash/editor.
     EnsureSceneRenderTarget(w, h);
 }
-
-void Graphics::EnsureDebugLineResources()
-{
-    // Contract restoration stub: some build variants exclude the full debug line implementation.
-    // Keeping the symbol here ensures Scene can link; the real implementation should live in Graphics.cpp.
-}

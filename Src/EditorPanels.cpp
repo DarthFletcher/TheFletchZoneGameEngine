@@ -431,12 +431,6 @@ namespace EditorPanels
                 ImGui::Separator();
                 ImGui::Text("Visible: %u", (unsigned)Scene::GetVisibleInstanceCount());
                 ImGui::Text("Total:   %u", (unsigned)Scene::GetInstanceCount());
-
-                ImGui::SeparatorText("CP13 Debug Viz");
-                ImGui::Checkbox("Show Frustum", &Scene::g_ShowFrustum);
-                ImGui::Checkbox("Show Bounds (spheres)", &Scene::g_ShowBounds);
-                ImGui::Checkbox("Freeze Culling (hold visible list)", &Scene::g_FreezeCulling);
-                ImGui::SliderInt("Bounds Segments", &Scene::g_BoundsSegments, 8, 64);
             }
             ImGui::End();
         }
