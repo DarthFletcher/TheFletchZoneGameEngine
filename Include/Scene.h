@@ -63,6 +63,12 @@ public:
     static const InstanceData* GetVisibleInstancesCPU();
     static UINT GetVisibleInstanceCount();
 
+    // CP13: debug visualization toggles/knobs (editor-controlled)
+    static bool g_ShowFrustum;
+    static bool g_ShowBounds;
+    static bool g_FreezeCulling;
+    static int  g_BoundsSegments;
+
 private:
     static std::vector<InstanceData> s_Instances;
     static void EnsureInstancesInitialized();

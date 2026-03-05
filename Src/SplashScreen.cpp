@@ -8,6 +8,10 @@
 #include "Graphics.h"
 #include "BootProgress.h"
 
+#ifndef NDEBUG
+#include "DebugIsolation.h"
+#endif
+
 // --------------------------------------------------------------
 // Internal CPU-side storage
 // --------------------------------------------------------------
@@ -79,6 +83,20 @@ namespace SplashScreen
     // --------------------------------------------------------------
     void EnsureGPUTexture()
     {
+#ifdef _DEBUG
+        if (g_r_skipSplashUpload)
+        {
+            static double s_lastSkipLog = -1000.0;
+            const double now = ImGui::GetCurrentContext() ? ImGui::GetTime() : 0.0;
+            if (now - s_lastSkipLog > 1.0)
+            {
+                s_lastSkipLog = now;
+                Logger::Log(LogLevel::Info, "[Splash] GPU upload skipped via F5", "[Splash]");
+            }
+            return;
+        }
+#endif
+
         auto& gfx = Graphics::GetInstance();
 
         // Detect the common failure mode: splashTex accidentally points at the ImGui font atlas SRV.
