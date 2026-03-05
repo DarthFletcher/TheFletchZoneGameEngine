@@ -241,6 +241,12 @@ public:
     bool TryPickSceneGridY0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay) const;
     bool TryPickSceneGridZ0(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 sceneSize, DirectX::XMFLOAT3& outHitPos, PickRay* outRay) const;
 
+    // GPU timing (timestamps)
+    static constexpr UINT TimestampCount = 2;
+
+    bool IsGpuTimingAvailable() const { return timestampQueryHeap && timestampReadbackBuffer && gpuTimestampFrequency != 0; }
+    double GetLastGpuFrameTimeMS() const { return lastGpuFrameTimeMS; }
+
 #ifndef NDEBUG
     struct DeferredReleaseDebugStats
     {
@@ -309,6 +315,19 @@ public:
 
     // CP9-B: one-shot staged upload into a GPU-local DEFAULT buffer (uses uploadCommandList/uploadAllocator).
     void UploadBufferToDefault(ID3D12Resource* dstDefault, const void* srcData, size_t numBytes);
+
+    // CP13: debug line overlay (frustum + bounds)
+    void EnsureDebugLineResources();
+    ID3D12PipelineState* GetDebugLinePSO() const { return m_DebugLinePSO.Get(); }
+    ID3D12Resource* GetDebugLineVB() const { return m_DebugLineVB.Get(); }
+    void* GetDebugLineVBMapped() const { return m_DebugLineVBMapped; }
+    UINT GetDebugLineVBMaxVerts() const { return m_DebugLineVBMaxVerts; }
+
+    // Scene: expose the root signature used by the Scene pass (b0 at root param 0)
+    // NOTE: Some refactor configurations create the Scene pass root signature in `Scene.cpp`.
+    // In that case, the Scene pass can publish it here via `SetExternalSceneRootSignature()`.
+    ID3D12RootSignature* GetSceneRootSignature() const { return sceneRootSignature ? sceneRootSignature.Get() : m_ExternalSceneRootSignature; }
+    void SetExternalSceneRootSignature(ID3D12RootSignature* rs) { m_ExternalSceneRootSignature = rs; }
 
 private:
     HRESULT CreateDX12Device();
@@ -508,6 +527,22 @@ private:
 
     static constexpr UINT kUploadRingSize = kBackBufferCount; // match swapchain buffer count
     InstanceUploadFrame m_InstanceUploadRing[kUploadRingSize] = {};
+
+    // CP13 debug line overlay resources (created lazily)
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_DebugLinePSO;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_DebugLineVB;
+    void* m_DebugLineVBMapped = nullptr;
+    UINT m_DebugLineVBMaxVerts = 0;
+
+    ID3D12RootSignature* m_ExternalSceneRootSignature = nullptr;
+
+    // GPU timing
+    Microsoft::WRL::ComPtr<ID3D12QueryHeap> timestampQueryHeap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> timestampReadbackBuffer;
+    UINT64 gpuTimestampFrequency = 0;
+    double lastGpuFrameTimeMS = 0.0;
+    bool gpuTimingQueryIssued = false;
+    bool gpuTimingDataReady = false;
 };
 
 // Call-site tracing helper. Use everywhere instead of direct `ReloadImGuiFont()`.
