@@ -198,6 +198,7 @@
     <ClInclude Include="include\Utils.h" />
     <ClInclude Include="Include\Vertex.h" />
     <ClInclude Include="Include\Win32Common.h" />
+    <ClInclude Include="Src\GpuMarkers.h" />
     <ClInclude Include="Third Party\stb_image.h" />
   </ItemGroup>
   <ItemGroup>

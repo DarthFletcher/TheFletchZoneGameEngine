@@ -91,6 +91,10 @@ namespace EditorPanels
                 }
 
                 ImTextureID tex = gfx.GetSceneImGuiTextureID();
+                if (ScenePanelDiag_ShouldLog())
+                {
+                    Logger::Log(LogLevel::Debug, std::format("[ScenePanel] SceneRT TexID=0x{:X}", (UINT64)tex), "[Editor]");
+                }
                 if (tex)
                 {
                     if (ScenePanelDiag_ShouldLog())

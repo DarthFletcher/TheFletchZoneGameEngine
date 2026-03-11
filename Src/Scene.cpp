@@ -27,6 +27,12 @@ namespace
     using Microsoft::WRL::ComPtr;
 
 #ifndef NDEBUG
+    // Temporary isolation toggle for DEVICE_HUNG investigation.
+    // When true, the main cube draw uses exactly 1 instance to isolate instancing/SRV issues.
+    static bool g_DebugForceSingleInstanceDraw = true;
+#endif
+
+#ifndef NDEBUG
     static void LogVertexPCLayoutOnce()
     {
         static bool s_logged = false;
@@ -702,34 +708,10 @@ void Scene::InitializeResources(ID3D12Device* device)
 
 void Scene::Render(const SceneRenderContext& ctx)
 {
-#ifndef NDEBUG
-    static auto s_sceneRenderLastLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-    const auto now = std::chrono::steady_clock::now();
-    if (now - s_sceneRenderLastLog >= std::chrono::seconds(1))
-    {
-        s_sceneRenderLastLog = now;
-        Logger::Log(LogLevel::Debug,
-            std::format("[ScenePass] Scene::Render ENTER | vp={}x{} frameIndex={} instances={} visibleIdx={} scratch={} instBuf={}",
-                ctx.viewportWidth,
-                ctx.viewportHeight,
-                (uint64_t)ctx.frameIndex,
-                (uint64_t)s_Instances.size(),
-                (uint64_t)s_VisibleInstanceIndices.size(),
-                (uint64_t)s_VisibleInstancesScratch.size(),
-                s_InstanceBufferDefault ? 1 : 0),
-            "[Scene]");
-    }
-#endif
-
-    EnsureInstancesInitialized();
-    EnsureInstanceBufferDefault(ctx.device, (UINT)s_Instances.size());
-
-    // CP9-B: no per-frame CPU memcpy into a persistently mapped UPLOAD buffer.
-    // Graphics owns the staged upload into the DEFAULT instance buffer.
-
     // ====================================================================
     // Phase 4A: PASS BOUNDARY & OWNERSHIP NOTES
     // ====================================================================
+
     // This function is a CONSUMER of the command list, not an owner.
     // It must NOT:
     //   - Open or close the command list
@@ -769,6 +751,22 @@ void Scene::Render(const SceneRenderContext& ctx)
         }
         return;
     }
+
+    EnsureInstancesInitialized();
+
+#ifndef NDEBUG
+    {
+        static auto s_initLogLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        const auto nowInit = std::chrono::steady_clock::now();
+        if (nowInit - s_initLogLast >= std::chrono::seconds(1))
+        {
+            s_initLogLast = nowInit;
+            Logger::Log(LogLevel::Debug,
+                std::format("[Scene] EnsureInstancesInitialized | instances={} bounds={}", s_Instances.size(), s_InstanceBounds.size()),
+                "[Scene]");
+        }
+    }
+#endif
 
     EnsureSceneObjectsInitialized();
     if (!g_loggedPhase45)
@@ -826,15 +824,6 @@ void Scene::Render(const SceneRenderContext& ctx)
             s_VisibleInstanceIndices.push_back(i);
     }
 
-    // CP11-D: build contiguous visible instance buffer (CPU scratch)
-    s_VisibleInstancesScratch.clear();
-    s_VisibleInstancesScratch.reserve(s_VisibleInstanceIndices.size());
-    for (UINT idx : s_VisibleInstanceIndices)
-    {
-        if (idx < s_Instances.size())
-            s_VisibleInstancesScratch.push_back(s_Instances[idx]);
-    }
-
 #ifndef NDEBUG
     static auto s_lastVisibleLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
     const auto nowVis = std::chrono::steady_clock::now();
@@ -848,17 +837,14 @@ void Scene::Render(const SceneRenderContext& ctx)
     }
 #endif
 
-#ifndef NDEBUG
-    static bool s_loggedInstanceSrvOnce = false;
-    if (!s_loggedInstanceSrvOnce)
+    // CP11-D: build contiguous visible instance buffer (CPU scratch)
+    s_VisibleInstancesScratch.clear();
+    s_VisibleInstancesScratch.reserve(s_VisibleInstanceIndices.size());
+    for (UINT idx : s_VisibleInstanceIndices)
     {
-        s_loggedInstanceSrvOnce = true;
-        Logger::Log(LogLevel::Debug,
-            "[Instancing] Instance SRV handles | CPU=0x" + std::to_string((uint64_t)s_InstanceSRVCpu.ptr) +
-            " GPU=0x" + std::to_string((uint64_t)s_InstanceSRVGpu.ptr),
-            "[Scene]");
+        if (idx < s_Instances.size())
+            s_VisibleInstancesScratch.push_back(s_Instances[idx]);
     }
-#endif
 
     // ====================================================================
     // Phase 4A: EXPLICIT STATE SETUP
@@ -925,6 +911,22 @@ void Scene::Render(const SceneRenderContext& ctx)
 
         const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
         std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
+
+#ifndef NDEBUG
+        if ((alloc.GpuAddress & 0xFFull) != 0)
+        {
+            Logger::Log(LogLevel::Error,
+                std::format("[CBV] Misaligned CB GPU VA for b0: 0x{:X}", (uint64_t)alloc.GpuAddress),
+                "[Scene]");
+        }
+        else
+        {
+            Logger::Log(LogLevel::Debug,
+                std::format("[CBV] b0 GPU VA: 0x{:X}", (uint64_t)alloc.GpuAddress),
+                "[Scene]");
+        }
+#endif
+
         ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
     }
 
@@ -955,8 +957,26 @@ void Scene::Render(const SceneRenderContext& ctx)
         ctx.commandList->IASetIndexBuffer(&cube.IBV);
 
         const UINT instanceCount = (UINT)s_VisibleInstancesScratch.size();
+#ifndef NDEBUG
+        {
+            static auto s_drawLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+            const auto nowDraw = std::chrono::steady_clock::now();
+            if (nowDraw - s_drawLast >= std::chrono::seconds(1))
+            {
+                s_drawLast = nowDraw;
+                Logger::Log(LogLevel::Debug, std::format("[Scene] DrawIndexedInstanced | visible={}", (size_t)instanceCount), "[Scene]");
+            }
+        }
+#endif
         if (instanceCount > 0)
-            ctx.commandList->DrawIndexedInstanced(cube.IndexCount, instanceCount, 0, 0, 0);
+        {
+#ifndef NDEBUG
+            const UINT drawInstances = g_DebugForceSingleInstanceDraw ? 1u : instanceCount;
+#else
+            const UINT drawInstances = instanceCount;
+#endif
+            ctx.commandList->DrawIndexedInstanced(cube.IndexCount, drawInstances, 0, 0, 0);
+        }
     }
 
     // For subsequent passes (grid), re-bind a fresh slice.
@@ -964,20 +984,43 @@ void Scene::Render(const SceneRenderContext& ctx)
         Graphics& gfx = Graphics::GetInstance();
         const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
         std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
+
+#ifndef NDEBUG
+        if ((alloc.GpuAddress & 0xFFull) != 0)
+        {
+            Logger::Log(LogLevel::Error,
+                std::format("[CBV] Misaligned CB GPU VA for b0 (grid rebind): 0x{:X}", (uint64_t)alloc.GpuAddress),
+                "[Scene]");
+        }
+        else
+        {
+            Logger::Log(LogLevel::Debug,
+                std::format("[CBV] b0 GPU VA (grid rebind): 0x{:X}", (uint64_t)alloc.GpuAddress),
+                "[Scene]");
+        }
+#endif
+
         ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
     }
 
     // ====================================================================
     // Phase 4A: GRID OVERLAY PASS (Lines)
     // ====================================================================
-    // Draws alpha-blended grid lines over opaque geometry.
-    // PSO: alpha blend enabled, no culling (lines are double-sided)
-    // Shares same root signature + CB as opaque pass.
-    // ====================================================================
-    ctx.commandList->SetPipelineState(g_scene.gridPso.Get());
-    ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
-    ctx.commandList->IASetVertexBuffers(0, 1, &g_scene.gridVbv);
-    ctx.commandList->DrawInstanced(g_scene.gridVbv.SizeInBytes / g_scene.gridVbv.StrideInBytes, 1, 0, 0);
+    // TEMP (DEVICE_HUNG isolation): disable grid draw to verify if the device removal
+    // is caused by the grid PSO/shader/bindings rather than the instanced cube pass.
+#ifndef NDEBUG
+    constexpr bool kDisableGridOverlayForDiag = true;
+#else
+    constexpr bool kDisableGridOverlayForDiag = false;
+#endif
+
+    if (!kDisableGridOverlayForDiag)
+    {
+        ctx.commandList->SetPipelineState(g_scene.gridPso.Get());
+        ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+        ctx.commandList->IASetVertexBuffers(0, 1, &g_scene.gridVbv);
+        ctx.commandList->DrawInstanced(g_scene.gridVbv.SizeInBytes / g_scene.gridVbv.StrideInBytes, 1, 0, 0);
+    }
 
     (void)ctx.frameIndex;
 }

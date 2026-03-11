@@ -1296,11 +1296,6 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data,
         frMain = &fr_main;
         vertexBuffer = &fr_main.VertexBuffer;
         indexBuffer = &fr_main.IndexBuffer;
-
-        // IMPORTANT: keep pointers to a real size value so CreateOrResizeBufferU64 updates persist.
-        vertexBufferSizeU64Ptr = reinterpret_cast<UINT64*>(&fr_main.VertexBufferSize);
-        indexBufferSizeU64Ptr = reinterpret_cast<UINT64*>(&fr_main.IndexBufferSize);
-
         vertexCpuPtr = &fr_main.VertexCpuPtr;
         indexCpuPtr = &fr_main.IndexCpuPtr;
     }
@@ -1322,35 +1317,72 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data,
     const UINT64 requiredVB = (UINT64)draw_data->TotalVtxCount * (UINT64)sizeof(ImDrawVert);
     const UINT64 requiredIB = (UINT64)draw_data->TotalIdxCount * (UINT64)sizeof(ImDrawIdx);
 
-    const UINT64 curVBSize = vertexBufferSizeU64Ptr ? *vertexBufferSizeU64Ptr : 0;
-    const UINT64 curIBSize = indexBufferSizeU64Ptr ? *indexBufferSizeU64Ptr : 0;
-
-    if (requiredVB > curVBSize || requiredIB > curIBSize ||
-        vertexBuffer->Get() == nullptr || indexBuffer->Get() == nullptr ||
-        *vertexCpuPtr == nullptr || *indexCpuPtr == nullptr)
+    if (isMainViewport)
     {
-        ImGuiDx12_Log(LogLevel::Info, "ℹ Resizing ImGui buffers");
+        // Main viewport uses the backend's per-frame resources (size_t sizing).
+        // Avoid aliasing size_t as UINT64: it can lead to persistent "resize every frame" behavior.
+        const size_t requiredVBSt = (size_t)draw_data->TotalVtxCount * sizeof(ImDrawVert);
+        const size_t requiredIBSt = (size_t)draw_data->TotalIdxCount * sizeof(ImDrawIdx);
 
-        CreateOrResizeBufferU64(*vertexBuffer, *vertexBufferSizeU64Ptr, requiredVB, bd->Device.Get());
-        CreateOrResizeBufferU64(*indexBuffer, *indexBufferSizeU64Ptr, requiredIB, bd->Device.Get());
+        const size_t curVBSt = frMain ? frMain->VertexBufferSize : 0;
+        const size_t curIBSt = frMain ? frMain->IndexBufferSize : 0;
 
-        // If creation failed (e.g. device lost) bail before trying to map.
-        if (!vertexBuffer->Get() || !indexBuffer->Get())
+        const bool needResize =
+            (requiredVBSt > curVBSt) || (requiredIBSt > curIBSt) ||
+            (vertexBuffer->Get() == nullptr) || (indexBuffer->Get() == nullptr) ||
+            (*vertexCpuPtr == nullptr) || (*indexCpuPtr == nullptr);
+
+        if (needResize)
         {
-            Logger::Log(LogLevel::Error, "❌ ImGui buffer allocation failed (device may be lost). Skipping ImGui draw.");
-            return;
+            ImGuiDx12_Log(LogLevel::Info, std::format(
+                "Resizing ImGui buffers (Main) | VB: {} -> {} bytes | IB: {} -> {} bytes",
+                curVBSt, requiredVBSt, curIBSt, requiredIBSt));
+
+            ImGui_ImplDX12_ResizeBuffers(*frMain, requiredVBSt, requiredIBSt, bd->Device.Get());
+
+            if (!vertexBuffer->Get() || !indexBuffer->Get() || !*vertexCpuPtr || !*indexCpuPtr)
+            {
+                Logger::Log(LogLevel::Error, "❌ ImGui main-viewport buffer allocation/map failed. Skipping ImGui draw.");
+                return;
+            }
         }
+    }
+    else
+    {
+        // Secondary viewport path uses UINT64 sizing.
+        const UINT64 curVBSize = vertexBufferSizeU64Ptr ? *vertexBufferSizeU64Ptr : 0;
+        const UINT64 curIBSize = indexBufferSizeU64Ptr ? *indexBufferSizeU64Ptr : 0;
 
-        *vertexCpuPtr = nullptr;
-        *indexCpuPtr = nullptr;
-
-        DX_CHECK((*vertexBuffer)->Map(0, nullptr, reinterpret_cast<void**>(vertexCpuPtr)));
-        DX_CHECK((*indexBuffer)->Map(0, nullptr, reinterpret_cast<void**>(indexCpuPtr)));
-
-        if (!*vertexCpuPtr || !*indexCpuPtr)
+        if (requiredVB > curVBSize || requiredIB > curIBSize ||
+            vertexBuffer->Get() == nullptr || indexBuffer->Get() == nullptr ||
+            *vertexCpuPtr == nullptr || *indexCpuPtr == nullptr)
         {
-            Logger::Log(LogLevel::Error, "❌ Failed to map ImGui vertex/index buffers.");
-            return;
+            ImGuiDx12_Log(LogLevel::Info, std::format(
+                "Resizing ImGui buffers (Viewport) | VB: {} -> {} bytes | IB: {} -> {} bytes",
+                (unsigned long long)curVBSize, (unsigned long long)requiredVB,
+                (unsigned long long)curIBSize, (unsigned long long)requiredIB));
+
+            CreateOrResizeBufferU64(*vertexBuffer, *vertexBufferSizeU64Ptr, requiredVB, bd->Device.Get());
+            CreateOrResizeBufferU64(*indexBuffer, *indexBufferSizeU64Ptr, requiredIB, bd->Device.Get());
+
+            // If creation failed (e.g. device lost) bail before trying to map.
+            if (!vertexBuffer->Get() || !indexBuffer->Get())
+            {
+                Logger::Log(LogLevel::Error, "❌ ImGui buffer allocation failed (device may be lost). Skipping ImGui draw.");
+                return;
+            }
+
+            *vertexCpuPtr = nullptr;
+            *indexCpuPtr = nullptr;
+
+            DX_CHECK((*vertexBuffer)->Map(0, nullptr, reinterpret_cast<void**>(vertexCpuPtr)));
+            DX_CHECK((*indexBuffer)->Map(0, nullptr, reinterpret_cast<void**>(indexCpuPtr)));
+
+            if (!*vertexCpuPtr || !*indexCpuPtr)
+            {
+                Logger::Log(LogLevel::Error, "❌ Failed to map ImGui vertex/index buffers.");
+                return;
+            }
         }
     }
 
@@ -1876,7 +1908,7 @@ void ImGui_ImplDX12_CreateWindow(ImGuiViewport* viewport)
     // NOTE: Per-viewport persistent VB/IB are not used by this renderer path; it uses FrameResources[].
     // Avoid allocating duplicate buffers here.
 
-    // Swapchain creation for secondary viewports is currently not supported in this engine build.
+    // Secondary viewport swapchain creation is currently not supported in this engine build.
     // The engine runs with `ImGuiConfigFlags_ViewportsEnable` disabled, so we can safely early-out.
     Logger::Log(LogLevel::Warning, "⚠️ ImGui DX12: Secondary viewport swapchain creation is disabled.");
     return;

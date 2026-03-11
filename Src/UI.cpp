@@ -319,13 +319,59 @@ namespace UI {
     // 🛋️ Dockspace layout management
     namespace
     {
-        // Forward declare so BeginDockSpace can call it.
-        static void DrawCommandStripContents();
-
          ImGuiID g_dockspaceID = 0;
          bool g_dockInitialized = false;
          bool g_requestResetLayout = false;
          bool g_buildLayoutNextFrame = false;
+
+         enum class UILayoutPreset : int
+         {
+             Default = 0,
+             Debug,
+             Minimal,
+         };
+
+         static void BuildDockLayout(UILayoutPreset preset, ImGuiID dockspaceID, ImGuiViewport* viewport);
+         static void BuildDefaultDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport);
+
+         static UILayoutPreset g_layoutPreset = UILayoutPreset::Default;
+
+         static const char* LayoutPresetLabel(UILayoutPreset p)
+         {
+             switch (p)
+             {
+             case UILayoutPreset::Default: return "Default";
+             case UILayoutPreset::Debug:   return "Debug";
+             case UILayoutPreset::Minimal: return "Minimal";
+             default: return "(unknown)";
+             }
+         }
+
+         static const char* LayoutIniForPreset(UILayoutPreset p)
+         {
+             switch (p)
+             {
+             case UILayoutPreset::Default: return "imgui_default.ini";
+             case UILayoutPreset::Debug:   return "imgui_debug.ini";
+             case UILayoutPreset::Minimal: return "imgui_minimal.ini";
+             default: return "imgui.ini";
+             }
+         }
+
+         static void ApplyLayoutPreset(UILayoutPreset preset)
+         {
+             g_layoutPreset = preset;
+             ImGui::LoadIniSettingsFromMemory("");
+             g_dockInitialized = false;
+             g_buildLayoutNextFrame = true;
+         }
+
+         static void BuildDockLayout(UILayoutPreset preset, ImGuiID dockspaceID, ImGuiViewport* viewport)
+         {
+             (void)preset;
+             // For now, all presets share the same layout skeleton.
+             BuildDefaultDockLayout(dockspaceID, viewport);
+         }
 
          void BuildDefaultDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport)
          {
@@ -359,7 +405,12 @@ namespace UI {
             ImGui::DockBuilderDockWindow(EditorPanels::Scene().name, dock_main);
             ImGui::DockBuilderDockWindow(EditorPanels::Hierarchy().name, dock_left);
             ImGui::DockBuilderDockWindow(EditorPanels::Inspector().name, dock_right);
+
+            // Bottom region: tab these together by docking into the same node.
             ImGui::DockBuilderDockWindow(EditorPanels::Assets().name, dock_bottom);
+            ImGui::DockBuilderDockWindow(EditorPanels::LogViewer().name, dock_bottom);
+            ImGui::DockBuilderDockWindow(EditorPanels::Diagnostics().name, dock_bottom);
+            ImGui::DockBuilderDockWindow(EditorPanels::Instancing().name, dock_bottom);
 
             ImGui::DockBuilderFinish(dockspaceID);
          }
@@ -589,7 +640,7 @@ namespace UI {
             return;
 
         g_buildLayoutNextFrame = false;
-        BuildDefaultDockLayout(g_dockspaceID, viewport);
+        BuildDockLayout(g_layoutPreset, g_dockspaceID, viewport);
     }
 
 	// 🔄 Request layout reset on next frame

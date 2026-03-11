@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <format>
 #include <queue>
+#include <vector>
 #if __has_include(<pix3.h>)
 #include <pix3.h>
 #define GFX_HAS_PIX 1
@@ -42,6 +43,7 @@ static inline void PIXEndEvent(ID3D12GraphicsCommandList*) {}
 #include "imgui_impl_dx12_custom.h"
 #include "ImGuiUtils.h"
 #include "imgui_internal.h"
+#include "GpuMarkers.h"
 
 // Engine Headers
 #include "Graphics.h"
@@ -129,7 +131,7 @@ static const char* D3D12StateToString(D3D12_RESOURCE_STATES s)
 {
     switch (s)
     {
-    case D3D12_RESOURCE_STATE_COMMON: return "COMMON";
+    case D3D12_RESOURCE_STATE_COMMON: return "COMMON/PRESENT"; // 0 == COMMON and 0 == PRESENT
     case D3D12_RESOURCE_STATE_RENDER_TARGET: return "RENDER_TARGET";
     case D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE: return "PIXEL_SHADER_RESOURCE";
     case D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE: return "NON_PIXEL_SHADER_RESOURCE";
@@ -138,6 +140,63 @@ static const char* D3D12StateToString(D3D12_RESOURCE_STATES s)
     default: return "(other)";
     }
 }
+
+#ifndef NDEBUG
+static void DX12_ClearInfoQueue(ID3D12Device* device)
+{
+    if (!device)
+        return;
+
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> q;
+    if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&q))) && q)
+        q->ClearStoredMessages();
+}
+
+static void DX12_DumpInfoQueue(ID3D12Device* device, const char* reasonTag, uint64_t maxMessages = 50)
+{
+    if (!device)
+        return;
+
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> q;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&q))) || !q)
+        return;
+
+    const uint64_t count = q->GetNumStoredMessagesAllowedByRetrievalFilter();
+    if (count == 0)
+        return;
+
+    const uint64_t start = (count > maxMessages) ? (count - maxMessages) : 0;
+    Logger::Log(LogLevel::Error, std::format("[InfoQueue] Dumping {} message(s) ({} total) | {}",
+        (unsigned long long)(count - start), (unsigned long long)count, (reasonTag ? reasonTag : "(no tag)")), "[DX12]");
+
+    for (uint64_t i = start; i < count; ++i)
+    {
+        SIZE_T len = 0;
+        if (FAILED(q->GetMessage(i, nullptr, &len)) || len == 0)
+            continue;
+
+        std::vector<uint8_t> bytes(len);
+        auto* msg = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
+        if (FAILED(q->GetMessage(i, msg, &len)) || !msg)
+            continue;
+
+        const char* sev = "INFO";
+        switch (msg->Severity)
+        {
+        case D3D12_MESSAGE_SEVERITY_CORRUPTION: sev = "CORRUPTION"; break;
+        case D3D12_MESSAGE_SEVERITY_ERROR:      sev = "ERROR"; break;
+        case D3D12_MESSAGE_SEVERITY_WARNING:    sev = "WARN"; break;
+        case D3D12_MESSAGE_SEVERITY_INFO:       sev = "INFO"; break;
+        case D3D12_MESSAGE_SEVERITY_MESSAGE:    sev = "MSG"; break;
+        default: break;
+        }
+
+        const char* desc = msg->pDescription ? msg->pDescription : "(no description)";
+        Logger::Log(LogLevel::Error, std::format("[InfoQueue] #{} {} id={} : {}",
+            (unsigned long long)i, sev, (unsigned)msg->ID, desc), "[DX12]");
+    }
+}
+#endif
 
 // Converts a wide string (std::wstring) to a UTF-8 encoded std::string
 static std::string WStringToUTF8(const std::wstring& wstr)
@@ -372,9 +431,27 @@ bool Graphics::Initialize(HWND hWnd)
     frameCount = 0;
 
     ListAvailableGPUs();
-    CreateDX12Device();
 
-    CreateCommandInterfaces();
+    const HRESULT hrDevice = CreateDX12Device();
+    if (FAILED(hrDevice) || !device)
+    {
+        Logger::Log(LogLevel::Error,
+            std::format("❌ ERROR: CreateDX12Device failed HR=0x{:08X}. Aborting Graphics::Initialize().", (UINT)hrDevice),
+            "[DX12]");
+        return false;
+    }
+
+    try
+    {
+        CreateCommandInterfaces();
+    }
+    catch (const std::exception& e)
+    {
+        Logger::Log(LogLevel::Error,
+            std::format("❌ ERROR: CreateCommandInterfaces threw during Initialize(): {}", e.what()),
+            "[DX12]");
+        return false;
+    }
 
     // Frame constant buffer upload heap (persistently mapped)
     {
@@ -718,14 +795,16 @@ HRESULT Graphics::CreateDX12Device() {
     // =========================================================
     {
         Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dredSettings;
-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings)))) {
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings))) && dredSettings)
+        {
             dredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
             dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
             dredSettings->SetWatsonDumpEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
 
             Logger::Log(LogLevel::Info, "🩸 DRED diagnostics enabled (Breadcrumbs + Page Fault + Watson Dumps)", "[DX12]");
         }
-        else {
+        else
+        {
             Logger::Log(LogLevel::Warning, "⚠️ DRED interface not available — limited GPU crash detail.", "[DX12]");
         }
     }
@@ -1131,7 +1210,7 @@ void Graphics::BeginDockSpace()
 void Graphics::BeginFrame(HWND hWnd)
 {
 #ifndef NDEBUG
-    ++frameCounter;
+    DX12_ClearInfoQueue(device.Get());
 #endif
 
     m_FrameCBOffset = 0;
@@ -1413,7 +1492,7 @@ void Graphics::BeginFrame(HWND hWnd)
 
     if (!SplashScreen::IsFinished())
     {
-        PIXBeginEvent(commandList.Get(), 0, "Splash");
+        ScopedGpuEvent splashEv(commandList.Get(), "Splash");
 #ifndef NDEBUG
         // Ensure the splash texture is uploaded only if allowed.
         // This is the highest-risk path (upload + SRV allocation) when isolating DEVICE_HUNG.
@@ -1424,7 +1503,6 @@ void Graphics::BeginFrame(HWND hWnd)
         // Render ONLY the splash while booting.
         // This avoids editor chrome (dockspace/menu/toolbar) appearing behind it.
         SplashScreen::Render();
-        PIXEndEvent(commandList.Get());
     }
     else
     {
@@ -1604,6 +1682,10 @@ void Graphics::Present(HWND hWnd)
     if (FAILED(hr))
     {
         Logger::Log(LogLevel::Error, std::format("❌ Present failed HR=0x{:08X}", (UINT)hr), "[DX12]");
+
+#ifndef NDEBUG
+        DX12_DumpInfoQueue(device.Get(), "Present() failed");
+#endif
 
         // Engine Debug Layer: capture device removal reason and DRED data when present fails.
         if (device)
@@ -1831,7 +1913,7 @@ Graphics::CBAllocation Graphics::AllocateFrameCB(size_t size)
     if (m_FrameCBOffset + size > m_FrameCBSize)
     {
         OutputDebugStringA("❌ FrameCB overflow\n");
-        __debugbreak();
+               __debugbreak();
     }
 #endif
 
@@ -1999,6 +2081,50 @@ bool Graphics::InitializeImGui(HWND inHwnd)
         {
             Logger::Log(LogLevel::Error, "❌ InitializeImGui: ImGui_ImplDX12_Init failed.");
             return false;
+        }
+
+        // Force backend device objects creation now (RootSignature/PSO) instead of lazily during the first draw.
+        (void)ImGui_ImplDX12_CreateDeviceObjects();
+        Logger::Log(LogLevel::Info, "[ImGuiDX12] Device objects pre-created during initialization", "[ImGui]");
+
+        // Prefer uploading the font texture during initialization using the dedicated upload command list.
+        // Keep the BeginFrame() path as a fallback.
+        if (g_ImGuiFontsNeedUpload && device && commandQueue && fence && uploadAllocator && uploadCommandList)
+        {
+            HRESULT hr = uploadAllocator->Reset();
+            if (SUCCEEDED(hr))
+                hr = uploadCommandList->Reset(uploadAllocator.Get(), nullptr);
+
+            if (SUCCEEDED(hr))
+            {
+                ID3D12DescriptorHeap* heaps[] = { imguiHeap.Get() };
+                uploadCommandList->SetDescriptorHeaps(1, heaps);
+
+                Logger::Log(LogLevel::Info, "[FontDiag] Uploading ImGui font texture during initialization", "[ImGui]");
+                if (ImGui_ImplDX12_CreateFontsTexture(device.Get(), uploadCommandList.Get()))
+                {
+                    DX_CHECK(uploadCommandList->Close());
+                    ID3D12CommandList* lists[] = { uploadCommandList.Get() };
+                    commandQueue->ExecuteCommandLists(1, lists);
+
+                    const UINT64 signalValue = ++fenceValue;
+                    lastSignaledFenceValue = signalValue;
+                    (void)commandQueue->Signal(fence.Get(), signalValue);
+                    WaitForFenceValue(signalValue);
+
+                    g_ImGuiFontsNeedUpload = false;
+                    Logger::Log(LogLevel::Info, "[FontDiag] ImGui font texture uploaded during initialization", "[ImGui]");
+                }
+                else
+                {
+                    Logger::Log(LogLevel::Error, "[FontDiag] Failed to upload ImGui font texture during initialization", "[ImGui]");
+                }
+            }
+            else
+            {
+                Logger::Log(LogLevel::Warning, std::format(
+                    "[FontDiag] Skipping init font upload (upload CL reset failed HR=0x{:08X})", (UINT)hr), "[ImGui]");
+            }
         }
 
         imguiInitialized = true;
@@ -2436,29 +2562,6 @@ namespace
 
 void Graphics::RenderSceneToTarget()
 {
-#ifndef NDEBUG
-    static auto s_scenePassLastLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-    const auto now = std::chrono::steady_clock::now();
-    if (now - s_scenePassLastLog >= std::chrono::seconds(1))
-    {
-        s_scenePassLastLog = now;
-        Logger::Log(LogLevel::Debug,
-            std::format("[ScenePass] Enter | cmdListOpen={} sceneRT={} rtv=0x{:X} size={}x{}",
-                commandListOpen ? 1 : 0,
-                sceneRenderTarget ? 1 : 0,
-                (uint64_t)sceneRtvHandle.ptr,
-                sceneRTWidth,
-                sceneRTHeight),
-            "[Graphics]");
-    }
-#endif
-
-    if (!commandListOpen)
-        return;
-
-    if (!commandList)
-        return;
-
     // Lazy-create scene RT on demand using current known dimensions.
     if (!sceneRenderTarget || sceneRtvHandle.ptr == 0 || sceneRTWidth == 0 || sceneRTHeight == 0)
     {
@@ -2470,8 +2573,7 @@ void Graphics::RenderSceneToTarget()
     if (!ValidateScenePassResources(sceneRenderTarget, sceneRtvHandle, sceneRTWidth, sceneRTHeight))
         return;
 
-    // PIX: scoped event for the scene pass
-    PIXBeginEvent(commandList.Get(), 0, "ScenePass");
+    ScopedGpuEvent ev(commandList.Get(), "Scene Pass");
 
     // Transition scene render target to pixel shader resource (for the duration of the scene pass)
     CD3DX12_RESOURCE_BARRIER toPShader = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -2492,8 +2594,6 @@ void Graphics::RenderSceneToTarget()
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
         D3D12_RESOURCE_STATE_RENDER_TARGET);
     commandList->ResourceBarrier(1, &toRenderTarget);
-
-    PIXEndEvent(commandList.Get());
 }
 
 // Below is the new Graphics::Render function.
@@ -2503,14 +2603,10 @@ void Graphics::Render(HWND hWnd)
 #ifndef NDEBUG
     if (!g_r_skipScene)
     {
-        PIXBeginEvent(commandList.Get(), 0, "ScenePass");
         RenderSceneToTarget();
-        PIXEndEvent(commandList.Get());
     }
 #else
-    PIXBeginEvent(commandList.Get(), 0, "ScenePass");
     RenderSceneToTarget();
-    PIXEndEvent(commandList.Get());
 #endif
 
     // ==========================
@@ -2550,22 +2646,25 @@ void Graphics::Render(HWND hWnd)
 #ifndef NDEBUG
     if (!g_r_skipImGui)
     {
-        PIXBeginEvent(commandList.Get(), 0, "ImGui");
+        ScopedGpuEvent imguiEv(commandList.Get(), "ImGui Pass");
         ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
-        PIXEndEvent(commandList.Get());
     }
 #else
-    PIXBeginEvent(commandList.Get(), 0, "ImGui");
-    ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
-    PIXEndEvent(commandList.Get());
+    {
+        ScopedGpuEvent imguiEv(commandList.Get(), "ImGui Pass");
+        ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
+    }
 #endif
 
-    // Transition backbuffer back to present
-    CD3DX12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(
-        backBuffers[currentBackBufferIndex].Get(),
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PRESENT);
-    commandList->ResourceBarrier(1, &toPresent);
+    // Present prep (final barrier back to PRESENT)
+    {
+        ScopedGpuEvent presentEv(commandList.Get(), "Present Prep");
+        CD3DX12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(
+            backBuffers[currentBackBufferIndex].Get(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PRESENT);
+        commandList->ResourceBarrier(1, &toPresent);
+    }
 
     m_FrameActive = false;
 }

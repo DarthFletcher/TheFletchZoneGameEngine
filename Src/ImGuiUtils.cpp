@@ -409,11 +409,7 @@ ImTextureID ImGuiUtils::CreateTextureFromMemory(
         return 0;
     }
 
-    // Ensure the correct SRV heap is bound while recording (same heap that ImGui uses).
-    {
-        ID3D12DescriptorHeap* heaps[] = { srvHeap };
-        uploadList->SetDescriptorHeaps(1, heaps);
-    }
+    // NOTE: Descriptor heaps are not required for copy/UpdateSubresources/resource barrier work.
 
     D3D12_SUBRESOURCE_DATA subresource = {};
     subresource.pData = pixels;

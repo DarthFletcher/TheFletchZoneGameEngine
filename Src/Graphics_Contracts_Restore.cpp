@@ -1,5 +1,7 @@
 #include "Graphics.h"
 #include "Engine.h"
+#include <chrono>
+#include <thread>
 
 // TEMPORARY CONTRACT RESTORATION LAYER
 // Functions in this compilation unit exist only to satisfy legacy link contracts
@@ -9,10 +11,31 @@
 
 void Graphics::HandleDeviceLost(HWND hWnd)
 {
-    // RESTORE_CANDIDATE: message/category cleanup + potential migration into Graphics.cpp when stable.
     Logger::Log(LogLevel::Error, "HandleDeviceLost called. Attempting full Graphics reset.", "[DX12]");
+
     Shutdown();
-    (void)Initialize(hWnd);
+
+    // After a GPU hang/removal, the driver may take a moment to recover.
+    // Retry a few times with backoff; if it still fails, request app shutdown.
+    constexpr int kMaxAttempts = 5;
+    for (int attempt = 1; attempt <= kMaxAttempts; ++attempt)
+    {
+        const int backoffMs = 250 * attempt;
+        std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs));
+
+        Logger::Log(LogLevel::Warning,
+            std::format("[DeviceLost] Recreate attempt {}/{} (backoff={}ms)", attempt, kMaxAttempts, backoffMs),
+            "[DX12]");
+
+        if (Initialize(hWnd))
+        {
+            Logger::Log(LogLevel::Info, "[DeviceLost] Graphics successfully reinitialized.", "[DX12]");
+            return;
+        }
+    }
+
+    Logger::Log(LogLevel::Error, "[DeviceLost] Failed to recreate Graphics device after retries. Exiting.", "[DX12]");
+    PostQuitMessage(0);
 }
 
 // --- Scene / RenderTarget ownership (scene RT management candidates) -----------------

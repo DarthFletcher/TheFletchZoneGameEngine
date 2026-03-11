@@ -1,0 +1,10 @@
+ Src/EditorPanels.cpp                    |   4 [32m+[m
+ Src/Graphics.cpp                        | 201 [32m++++++++++++++++++++++++[m[31m--------[m
+ Src/Graphics_Contracts_Restore.cpp      |  27 [32m++++[m[31m-[m
+ Src/ImGuiUtils.cpp                      |   6 [32m+[m[31m-[m
+ Src/Scene.cpp                           | 147 [32m++++++++++++++[m[31m---------[m
+ Src/UI.cpp                              |  59 [32m+++++++++[m[31m-[m
+ Src/imgui_impl_dx12_custom.cpp          |  86 [32m+++++++++[m[31m-----[m
+ TheFletchZoneGameEngine.vcxproj         |   1 [32m+[m
+ TheFletchZoneGameEngine.vcxproj.filters |   3 [32m+[m
+ 9 files changed, 393 insertions(+), 141 deletions(-)
