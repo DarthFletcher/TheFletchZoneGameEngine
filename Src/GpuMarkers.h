@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d3d12.h>
+#include <cstring>
 
 #if defined(_DEBUG) && __has_include(<pix3.h>)
 #include <pix3.h>
@@ -11,22 +12,26 @@
 
 inline void BeginGpuEvent(ID3D12GraphicsCommandList* cmd, const char* name)
 {
+    if (!cmd || !name)
+        return;
+
 #if TFZ_HAS_PIX
-    if (cmd && name)
-        PIXBeginEvent(cmd, 0, name);
+    PIXBeginEvent(cmd, 0, name);
 #else
-    (void)cmd;
-    (void)name;
+    // Fallback: use native D3D12 event markers (still visible in PIX captures)
+    cmd->BeginEvent(0, name, (UINT)std::strlen(name));
 #endif
 }
 
 inline void EndGpuEvent(ID3D12GraphicsCommandList* cmd)
 {
+    if (!cmd)
+        return;
+
 #if TFZ_HAS_PIX
-    if (cmd)
-        PIXEndEvent(cmd);
+    PIXEndEvent(cmd);
 #else
-    (void)cmd;
+    cmd->EndEvent();
 #endif
 }
 
