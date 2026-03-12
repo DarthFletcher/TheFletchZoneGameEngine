@@ -341,6 +341,7 @@ void Engine::Run() {
 
     MSG msg = {};
     auto lastFrameTime = std::chrono::high_resolution_clock::now();
+    uint64_t engineFrameNumber = Logger::GetFrameNumber();
 
     while (isRunning) {
         // ✅ Handle Windows Messages
@@ -372,21 +373,24 @@ void Engine::Run() {
         lastFrameTime = currentFrameTime;
 
         // ✅ Begin Frame
-        Logger::Log(LogLevel::Debug, "🔁 BeginFrame()");
+        Logger::SetFrameNumber(++engineFrameNumber);
+        Logger::Log(LogLevel::Debug, "===== BeginFrame =====", "Core");
         graphics.BeginFrame(hWnd);
 
-		// ✅ Input Handling // Process Input
-		Logger::Log(LogLevel::Debug, "🎮 ProcessInput()");
+        // ✅ Input Handling // Process Input
+        Logger::Log(LogLevel::Debug, "ProcessInput()", "Core");
         ProcessInput();
 
         // ✅ Game Logic & Rendering
-        Logger::Log(LogLevel::Debug, "🎮 GameLoop()");
+        Logger::Log(LogLevel::Debug, "GameLoop()", "Core");
         GameLoop(hWnd);
 
         // ✅ End Frame
+        Logger::Log(LogLevel::Debug, "===== EndFrame =====", "Core");
         graphics.EndFrame(hWnd);
 
         // ✅ Present Frame
+        Logger::Log(LogLevel::Debug, "===== Present =====", "Present");
         graphics.Present(hWnd);
 
         // ✅ Frame Time Logging for Profiling

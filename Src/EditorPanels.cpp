@@ -91,21 +91,17 @@ namespace EditorPanels
                 }
 
                 ImTextureID tex = gfx.GetSceneImGuiTextureID();
-                if (ScenePanelDiag_ShouldLog())
+                const bool shouldLogSceneDiag = ScenePanelDiag_ShouldLog();
+                if (shouldLogSceneDiag)
                 {
-                    Logger::Log(LogLevel::Debug, std::format("[ScenePanel] SceneRT TexID=0x{:X}", (UINT64)tex), "[Editor]");
+                    Logger::Log(LogLevel::Debug, std::format(
+                        "[ScenePanel] SceneRT TexID=0x{:X} ViewportSize=({:.1f},{:.1f}) RTSize=({:.0f},{:.0f})",
+                        (UINT64)tex,
+                        size.x, size.y,
+                        gfx.GetSceneRenderTargetSize().x, gfx.GetSceneRenderTargetSize().y), "[Editor]");
                 }
                 if (tex)
                 {
-                    if (ScenePanelDiag_ShouldLog())
-                    {
-                        // NOTE: In this codebase ImTextureID is treated as a D3D12 CPU descriptor handle ptr.
-                        Logger::Log(LogLevel::Debug, std::format(
-                            "[SceneDiag] Scene panel ImGui::Image tex=0x{:X} size=({:.1f},{:.1f}) rtSize=({:.0f},{:.0f})",
-                            (UINT64)tex, size.x, size.y,
-                            gfx.GetSceneRenderTargetSize().x, gfx.GetSceneRenderTargetSize().y));
-                    }
-
                     // Note: UVs flipped vertically for DX12 texture coordinates
                     ImGui::Image(tex, size, ImVec2(0, 1), ImVec2(1, 0));
 
@@ -227,6 +223,10 @@ namespace EditorPanels
                 }
                 else
                 {
+                    if (shouldLogSceneDiag)
+                    {
+                        Logger::Log(LogLevel::Debug, "[ScenePanel] Scene render target not ready for ImGui::Image", "[Editor]");
+                    }
                     ImGui::TextUnformatted("Scene render target not ready...");
                 }
             }

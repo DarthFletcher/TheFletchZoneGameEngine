@@ -1221,9 +1221,9 @@ void Graphics::BeginFrame(HWND hWnd)
     // Apply deferred font reload at the very top (before allocator reset / command list open / ImGui NewFrame).
     ProcessPendingFontReload();
 
-    // Frame counter
-    static UINT64 g_FrameCounter = 0;
-    Logger::Log(LogLevel::Info, std::format("\n--- Frame {} ---", ++g_FrameCounter), "[Core]");
+    // Frame counter is owned by Engine/Logger so logs and passes share the same frame number.
+    const uint64_t frameNumber = Logger::GetFrameNumber();
+    Logger::LogFrameBanner(frameNumber);
 
     // Phase 1A: release GPU resources whose fences have completed.
     ProcessDeferredReleases();
@@ -1249,10 +1249,13 @@ void Graphics::BeginFrame(HWND hWnd)
     // Process any pending scene RT resize before we open/reset the command list for this frame.
     ProcessPendingSceneRenderTargetResize();
 
+    // Scene GPU resources must be created outside the render phase.
+    Scene::InitializeResources(device.Get());
+
     // Phase 3C: update engine-owned camera exactly once per frame, before any scene draw.
     // Use the scene render target dimensions for correct aspect (not the main window).
     CameraSystem::Update(
-        static_cast<uint64_t>(g_FrameCounter),
+        frameNumber,
         static_cast<float>(Graphics::deltaTime),
         (uint32_t)(sceneRTWidth != 0 ? sceneRTWidth : (UINT)screenWidth),
         (uint32_t)(sceneRTHeight != 0 ? sceneRTHeight : (UINT)screenHeight));
@@ -1891,7 +1894,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE Graphics::AllocateSRV()
 // Implementation of per-frame constant buffer helpers
 //===============================================
 
-// GPU buffer allocation: 256B aligned, based on requested size.
+// GPU buffer allocation:   256B aligned, based on requested size.
 namespace
 {
     static size_t Align256Size(size_t size)
@@ -2573,32 +2576,69 @@ void Graphics::RenderSceneToTarget()
     if (!ValidateScenePassResources(sceneRenderTarget, sceneRtvHandle, sceneRTWidth, sceneRTHeight))
         return;
 
-    ScopedGpuEvent ev(commandList.Get(), "Scene Pass");
+    ScopedRenderPass pass(commandList.Get(), "ScenePass");
 
-    // Transition scene render target to pixel shader resource (for the duration of the scene pass)
-    CD3DX12_RESOURCE_BARRIER toPShader = CD3DX12_RESOURCE_BARRIER::Transition(
-        sceneRenderTarget.Get(),
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    commandList->ResourceBarrier(1, &toPShader);
+    auto transitionResource = [&](ID3D12Resource* resource, D3D12_RESOURCE_STATES& currentState, D3D12_RESOURCE_STATES targetState)
+    {
+        if (!resource || currentState == targetState)
+            return;
 
-    // Clear color
+        const CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            resource,
+            currentState,
+            targetState);
+        commandList->ResourceBarrier(1, &barrier);
+        currentState = targetState;
+    };
+
+    transitionResource(sceneRenderTarget.Get(), sceneRTState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (sceneDepth)
+        transitionResource(sceneDepth.Get(), sceneDepthState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+    commandList->OMSetRenderTargets(
+        1,
+        &sceneRtvHandle,
+        FALSE,
+        sceneDsvHandle.ptr != 0 ? &sceneDsvHandle : nullptr);
+
     const float* clearColor = GetSceneClearColorRGBA();
     commandList->ClearRenderTargetView(sceneRtvHandle, clearColor, 0, nullptr);
+    if (sceneDsvHandle.ptr != 0)
+        commandList->ClearDepthStencilView(sceneDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    // --- RECORD SCENE PASS COMMANDS HERE ---
+    const CameraData& camera = CameraSystem::GetActiveData();
 
-    // Transition back to render target for ImGui
-    CD3DX12_RESOURCE_BARRIER toRenderTarget = CD3DX12_RESOURCE_BARRIER::Transition(
-        sceneRenderTarget.Get(),
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
-    commandList->ResourceBarrier(1, &toRenderTarget);
+    SceneRenderContext sceneCtx{};
+    sceneCtx.device = device.Get();
+    sceneCtx.commandList = commandList.Get();
+    sceneCtx.viewportWidth = sceneRTWidth;
+    sceneCtx.viewportHeight = sceneRTHeight;
+    sceneCtx.frameIndex = Logger::GetFrameNumber();
+    sceneCtx.camera = &camera;
+
+    Scene::Render(sceneCtx);
+
+#ifndef NDEBUG
+    {
+        static auto s_lastScenePassLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s_lastScenePassLog >= std::chrono::seconds(1))
+        {
+            s_lastScenePassLog = now;
+            Logger::Log(LogLevel::Debug, std::format(
+                "ScenePass cubes drawn = {}",
+                Scene::GetVisibleInstanceCount()), "ScenePass");
+        }
+    }
+#endif
+
+    transitionResource(sceneRenderTarget.Get(), sceneRTState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }
 
-// Below is the new Graphics::Render function.
 void Graphics::Render(HWND hWnd)
 {
+    (void)hWnd;
+
     // Render the Scene viewport target first (so UI can display it via ImGui::Image)
 #ifndef NDEBUG
     if (!g_r_skipScene)
@@ -2612,53 +2652,54 @@ void Graphics::Render(HWND hWnd)
     // ==========================
     // Main ImGui render pass
     // ==========================
-
-    ImGui::Render();
-    g_ImGuiRenderedThisFrame = true;
-
-    ImDrawData* drawData = ImGui::GetDrawData();
-    if (!drawData)
+    ImDrawData* drawData = nullptr;
     {
-        m_InsideRender = false;
-        return;
-    }
+        ScopedRenderPass imguiPass(commandList.Get(), "ImGuiPass");
+        ImGui::Render();
+        g_ImGuiRenderedThisFrame = true;
 
-    // Transition backbuffer to RT
-    CD3DX12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(
-        backBuffers[currentBackBufferIndex].Get(),
-        D3D12_RESOURCE_STATE_PRESENT,
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
-    commandList->ResourceBarrier(1, &toRT);
+        drawData = ImGui::GetDrawData();
+        if (!drawData)
+        {
+            m_InsideRender = false;
+            return;
+        }
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(
-        rtvHeap->GetCPUDescriptorHandleForHeapStart(),
-        currentBackBufferIndex,
-        device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV));
+        // Transition backbuffer to RT
+        CD3DX12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(
+            backBuffers[currentBackBufferIndex].Get(),
+            D3D12_RESOURCE_STATE_PRESENT,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        commandList->ResourceBarrier(1, &toRT);
 
-    commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(
+            rtvHeap->GetCPUDescriptorHandleForHeapStart(),
+            currentBackBufferIndex,
+            device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV));
 
-    // Clear
-    const ImVec4 clear = UI::GetClearColor();
-    const float clearColor[4] = { clear.x, clear.y, clear.z, clear.w };
-    commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+        commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
-    // Draw ImGui
+        // Clear
+        const ImVec4 clear = UI::GetClearColor();
+        const float clearColor[4] = { clear.x, clear.y, clear.z, clear.w };
+        commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+
+        // Draw ImGui
 #ifndef NDEBUG
-    if (!g_r_skipImGui)
-    {
-        ScopedGpuEvent imguiEv(commandList.Get(), "ImGui Pass");
-        ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
-    }
+        if (!g_r_skipImGui)
+        {
+            ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
+        }
 #else
-    {
-        ScopedGpuEvent imguiEv(commandList.Get(), "ImGui Pass");
-        ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
-    }
+        {
+            ImGui_ImplDX12_RenderDrawData(drawData, commandList.Get());
+        }
 #endif
+    }
 
     // Present prep (final barrier back to PRESENT)
     {
-        ScopedGpuEvent presentEv(commandList.Get(), "Present Prep");
+        ScopedRenderPass presentPrepPass(commandList.Get(), "PresentPrep");
         CD3DX12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(
             backBuffers[currentBackBufferIndex].Get(),
             D3D12_RESOURCE_STATE_RENDER_TARGET,

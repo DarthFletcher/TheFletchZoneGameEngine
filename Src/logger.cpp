@@ -4,13 +4,58 @@
 #include <chrono>
 #include <sstream>
 #include <filesystem>
+#include <algorithm>
 #include <windows.h>
 #include <psapi.h>
 #include <dxgi.h> // For DXGI_ERROR_* codes
 
+namespace
+{
+    std::string SanitizeMessage(const std::string& msg)
+    {
+        size_t i = 0;
+        while (i < msg.size() && (msg[i] == ' ' || msg[i] == '\t'))
+            ++i;
+
+        while (i < msg.size() && msg[i] == '?')
+            ++i;
+
+        while (i < msg.size() && (msg[i] == ' ' || msg[i] == '\t'))
+            ++i;
+        if (i + 1 < msg.size() && msg[i] == '-' && msg[i + 1] == '>')
+            i += 2;
+        else if (i + 1 < msg.size() && msg[i] == '=' && msg[i + 1] == '>')
+            i += 2;
+
+        while (i < msg.size() && (msg[i] == ' ' || msg[i] == '\t' || msg[i] == '-' || msg[i] == '·'))
+            ++i;
+
+        return msg.substr(i);
+    }
+
+    std::string NormalizeCategory(std::string category)
+    {
+        if (category.empty())
+            return "General";
+
+        while (!category.empty() && (category.front() == ' ' || category.front() == '\t'))
+            category.erase(category.begin());
+        while (!category.empty() && (category.back() == ' ' || category.back() == '\t'))
+            category.pop_back();
+
+        if (category.size() >= 2 && category.front() == '[' && category.back() == ']')
+            category = category.substr(1, category.size() - 2);
+
+        return category.empty() ? "General" : category;
+    }
+}
+
 // Statics Initialization
 std::ofstream Logger::logFile;
 std::mutex Logger::logMutex;
+std::atomic<uint64_t> Logger::currentFrameNumber = 0;
+std::vector<LogEntry> Logger::timelineLogs;
+std::unordered_map<std::string, std::vector<size_t>> Logger::categoryTimelineIndices;
 std::unordered_map<std::string, std::vector<std::string>> Logger::categorizedLogs;
 std::set<std::string> Logger::activeCategories;
 bool Logger::autoScroll = true;
@@ -45,56 +90,92 @@ size_t Logger::GetCurrentFileSize(const std::string& fileName) {
     return 0;
 }
 
+void Logger::SetFrameNumber(uint64_t frameNumber)
+{
+    currentFrameNumber.store(frameNumber, std::memory_order_relaxed);
+}
+
+uint64_t Logger::GetFrameNumber()
+{
+    return currentFrameNumber.load(std::memory_order_relaxed);
+}
+
+void Logger::LogFrameBanner(uint64_t frameNumber)
+{
+    Log(LogLevel::Info, std::format(
+        "\n------------------------------------\nFrame {}\n------------------------------------",
+        frameNumber), "Frame");
+}
+
+void Logger::LogPassBegin(const std::string& passName)
+{
+    const std::string category = NormalizeCategory(passName);
+    Log(LogLevel::Debug, "BEGIN", category);
+}
+
+void Logger::LogPassEnd(const std::string& passName)
+{
+    const std::string category = NormalizeCategory(passName);
+    Log(LogLevel::Debug, "END", category);
+}
+
+std::string Logger::FormatLogEntry(const LogEntry& entry)
+{
+    std::ostringstream output;
+    output << "[" << LogLevelToString(entry.level) << "] "
+           << entry.timestamp
+           << " [Frame " << entry.frame << "]"
+           << " [" << entry.category << "] : "
+           << entry.message;
+    return output.str();
+}
+
+void Logger::RebuildCategoryTimelineIndices()
+{
+    categoryTimelineIndices.clear();
+    for (size_t i = 0; i < timelineLogs.size(); ++i)
+        categoryTimelineIndices[timelineLogs[i].category].push_back(i);
+}
+
 // The main logger
 void Logger::Log(LogLevel level, const std::string& message, const std::string& category) {
     std::lock_guard<std::mutex> lock(logMutex);
 
-    auto sanitizeMessage = [](const std::string& msg) -> std::string {
-        size_t i = 0;
-        while (i < msg.size() && (msg[i] == ' ' || msg[i] == '\t'))
-            ++i;
+    const std::string cleaned = SanitizeMessage(message);
+    const std::string normalizedCategory = NormalizeCategory(category);
 
-        // Strip leading legacy markers: "?" / "??" etc.
-        while (i < msg.size() && msg[i] == '?')
-            ++i;
+    LogEntry entry;
+    entry.frame = currentFrameNumber.load(std::memory_order_relaxed);
+    entry.timestamp = GetCurrentTimestamp();
+    entry.level = level;
+    entry.category = normalizedCategory;
+    entry.message = cleaned;
 
-        // Strip common ASCII marker prefixes.
-        while (i < msg.size() && (msg[i] == ' ' || msg[i] == '\t'))
-            ++i;
-        if (i + 1 < msg.size() && msg[i] == '-' && msg[i + 1] == '>')
-            i += 2;
-        else if (i + 1 < msg.size() && msg[i] == '=' && msg[i + 1] == '>')
-            i += 2;
-
-        while (i < msg.size() && (msg[i] == ' ' || msg[i] == '\t' || msg[i] == '-' || msg[i] == '·'))
-            ++i;
-
-        // If the message already starts with an emoji, keep it (user wants emoji in message).
-        return msg.substr(i);
-    };
-
-    std::string cleaned = sanitizeMessage(message);
-
-    std::ostringstream output;
-    output << "[" << LogLevelToString(level) << "] "
-           << GetCurrentTimestamp()
-           << " [" << category << "] : "
-           << cleaned;
-
-    std::string logEntry = output.str();
+    const std::string logEntry = FormatLogEntry(entry);
     std::cout << logEntry << std::endl;
 
     if (logFile.is_open()) {
         logFile << logEntry << std::endl;
     }
 
-    auto& logVec = categorizedLogs[category];
+    const size_t timelineIndex = timelineLogs.size();
+    timelineLogs.push_back(entry);
+    categoryTimelineIndices[normalizedCategory].push_back(timelineIndex);
+
+    auto& logVec = categorizedLogs[normalizedCategory];
     logVec.push_back(logEntry);
     if (logVec.size() > maxLogBufferSize) {
-        logVec.erase(logVec.begin(), logVec.begin() + 100);
+        logVec.erase(logVec.begin(), logVec.begin() + (std::min)(size_t(100), logVec.size()));
     }
 
-    activeCategories.insert(category);
+    if (timelineLogs.size() > maxLogBufferSize)
+    {
+        const size_t trimCount = (std::min)(size_t(100), timelineLogs.size());
+        timelineLogs.erase(timelineLogs.begin(), timelineLogs.begin() + trimCount);
+        RebuildCategoryTimelineIndices();
+    }
+
+    activeCategories.insert(normalizedCategory);
 }
 
 // Shutdown logic
@@ -107,6 +188,8 @@ void Logger::Shutdown() {
 void Logger::ClearAllLogs()
 {
     std::lock_guard<std::mutex> lock(logMutex);
+    timelineLogs.clear();
+    categoryTimelineIndices.clear();
     for (auto& [_, logs] : categorizedLogs)
         logs.clear();
 }
@@ -115,32 +198,13 @@ std::vector<std::string> Logger::GetRecentLogs(size_t maxLines)
 {
     std::lock_guard<std::mutex> lock(logMutex);
 
-    // Flatten across categories (best-effort in insertion order by category vectors).
-    // Minimal-risk approach: use the default "General" first if present; then include others.
     std::vector<std::string> out;
-    out.reserve(maxLines);
+    const size_t take = (std::min)(maxLines, timelineLogs.size());
+    out.reserve(take);
 
-    auto appendTail = [&](const std::vector<std::string>& v)
-    {
-        if (out.size() >= maxLines) return;
-        const size_t take = (std::min)(maxLines - out.size(), v.size());
-        const size_t start = v.size() - take;
-        for (size_t i = start; i < v.size(); ++i)
-            out.push_back(v[i]);
-    };
-
-    auto itGeneral = categorizedLogs.find("General");
-    if (itGeneral != categorizedLogs.end())
-        appendTail(itGeneral->second);
-
-    for (const auto& [cat, logs] : categorizedLogs)
-    {
-        if (cat == "General")
-            continue;
-        appendTail(logs);
-        if (out.size() >= maxLines)
-            break;
-    }
+    const size_t start = timelineLogs.size() - take;
+    for (size_t i = start; i < timelineLogs.size(); ++i)
+        out.push_back(FormatLogEntry(timelineLogs[i]));
 
     return out;
 }
@@ -210,7 +274,7 @@ void Logger::DrawConsole() {
     ImGui::Begin("Console");
 
     if (ImGui::Button("Clear")) {
-        for (auto& [_, logs] : categorizedLogs) logs.clear();
+        ClearAllLogs();
     }
     ImGui::SameLine();
     ImGui::Checkbox("Auto-Scroll", &autoScroll);
@@ -219,8 +283,12 @@ void Logger::DrawConsole() {
     ImGui::InputText("Filter", logFilter, sizeof(logFilter));
     ImGui::Separator();
 
-    static std::string selectedCategory = "General";
+    static std::string selectedCategory = "All";
     if (ImGui::BeginCombo("Category", selectedCategory.c_str())) {
+        const bool allSelected = (selectedCategory == "All");
+        if (ImGui::Selectable("All", allSelected))
+            selectedCategory = "All";
+
         for (const auto& category : activeCategories) {
             bool selected = (selectedCategory == category);
             if (ImGui::Selectable(category.c_str(), selected))
@@ -231,24 +299,32 @@ void Logger::DrawConsole() {
 
     ImGui::Separator();
     ImGui::BeginChild("LogWindow", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
-    const auto& logs = categorizedLogs[selectedCategory];
-    for (const auto& log : logs) {
 
-        LogLevel level = LogLevel::Info;
-        if (log.find("[ERROR]") != std::string::npos) level = LogLevel::Error;
-        else if (log.find("[WARNING]") != std::string::npos) level = LogLevel::Warning;
-        else if (log.find("[DEBUG]") != std::string::npos) level = LogLevel::Debug;
-        else if (log.find("[TRACE]") != std::string::npos) level = LogLevel::Trace;
-        else if (log.find("[SUCCESS]") != std::string::npos) level = LogLevel::Success;
-        else if (log.find("[CRITICAL]") != std::string::npos) level = LogLevel::Critical;
-        else if (log.find("[VERBOSE]") != std::string::npos) level = LogLevel::Verbose;
+    std::lock_guard<std::mutex> lock(logMutex);
 
-        if (strlen(logFilter) > 0 && log.find(logFilter) == std::string::npos)
-            continue;
+    auto drawEntry = [&](const LogEntry& entry)
+    {
+        const std::string line = FormatLogEntry(entry);
+        if (strlen(logFilter) > 0 && line.find(logFilter) == std::string::npos)
+            return;
 
-        ImGui::PushStyleColor(ImGuiCol_Text, LogLevelToColor(level));
-        ImGui::TextUnformatted(log.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, LogLevelToColor(entry.level));
+        ImGui::TextUnformatted(line.c_str());
         ImGui::PopStyleColor();
+    };
+
+    if (selectedCategory == "All")
+    {
+        for (const auto& entry : timelineLogs)
+            drawEntry(entry);
+    }
+    else if (const auto it = categoryTimelineIndices.find(selectedCategory); it != categoryTimelineIndices.end())
+    {
+        for (size_t index : it->second)
+        {
+            if (index < timelineLogs.size())
+                drawEntry(timelineLogs[index]);
+        }
     }
 
     if (autoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
