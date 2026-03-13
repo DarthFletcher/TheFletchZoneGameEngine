@@ -47,6 +47,7 @@ static inline void PIXEndEvent(ID3D12GraphicsCommandList*) {}
 
 // Engine Headers
 #include "Graphics.h"
+#include "MaterialManager.h"
 #include "Mesh.h"
 #include "logger.h"
 #include "UI.h"
@@ -1926,6 +1927,26 @@ Graphics::CBAllocation Graphics::AllocateFrameCB(size_t size)
 
     m_FrameCBOffset += size;
     return alloc;
+}
+
+void Graphics::BindMaterial(Material* material)
+{
+    if (!commandList)
+        return;
+
+    MaterialCBData cb{};
+    if (material)
+    {
+        cb.metallic = material->metallic;
+        cb.roughness = material->roughness;
+    }
+
+    const auto alloc = AllocateFrameCB(sizeof(MaterialCBData));
+    std::memcpy(alloc.CpuPtr, &cb, sizeof(cb));
+    commandList->SetGraphicsRootConstantBufferView(SceneRootParamMaterialCB, alloc.GpuAddress);
+
+    if (material && material->albedo && material->albedo->srvGPU.ptr != 0)
+        commandList->SetGraphicsRootDescriptorTable(SceneRootParamMaterialAlbedoSRV, material->albedo->srvGPU);
 }
 
 Graphics& Graphics::GetInstance()

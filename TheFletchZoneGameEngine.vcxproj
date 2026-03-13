@@ -183,6 +183,7 @@
     <ClInclude Include="include\Input.h" />
     <ClInclude Include="Include\InstanceData.h" />
     <ClInclude Include="include\logger.h" />
+    <ClInclude Include="Include\MaterialManager.h" />
     <ClInclude Include="Include\Mesh.h" />
     <ClInclude Include="include\resource.h" />
     <ClInclude Include="Include\Scene.h" />
@@ -229,6 +230,7 @@
     <ClCompile Include="src\Input.cpp" />
     <ClCompile Include="src\logger.cpp" />
     <ClCompile Include="src\Main.cpp" />
+    <ClCompile Include="Src\MaterialManager.cpp" />
     <ClCompile Include="Src\Mesh.cpp" />
     <ClCompile Include="Src\Scene.cpp" />
     <ClCompile Include="Src\SceneCamera.cpp" />
@@ -260,7 +262,6 @@
     <None Include="ENGINE_CONTRACT.md" />
     <None Include="include\macros.hints" />
     <None Include="packages.config" />
-    <None Include="Src\TextureManager.cpp.replacement" />
     <None Include="TheFletchZoneGameEngine.vcxproj.copilot_edit" />
     <None Include="TheFletchZoneGameEngine.vcxproj.new" />
     <None Include="tools\CopyDXCDlls.bat" />

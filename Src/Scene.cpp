@@ -4,6 +4,7 @@
 #include "ShaderUtils.h"
 #include "CameraData.h"
 #include "Graphics.h"
+#include "MaterialManager.h"
 #include "Vertex.h"
 #include "Frustum.h"
 #include "Bounds.h"
@@ -171,16 +172,19 @@ namespace
         }
 
         // ---------------------------
-        // Root Signature (b0 + SRV t0)
+        // Root Signature (b0 + SRV t0 + b1 + SRV t1)
         // ---------------------------
         if (!g_scene.rootSig)
         {
-            CD3DX12_DESCRIPTOR_RANGE srvRange{};
-            srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0
+            CD3DX12_DESCRIPTOR_RANGE srvRanges[2]{};
+            srvRanges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0
+            srvRanges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1); // t1
 
-            CD3DX12_ROOT_PARAMETER params[2]{};
-            params[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0
-            params[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_VERTEX); // t0
+            CD3DX12_ROOT_PARAMETER params[4]{};
+            params[Graphics::SceneRootParamSceneCB].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0
+            params[Graphics::SceneRootParamInstanceSRV].InitAsDescriptorTable(1, &srvRanges[0], D3D12_SHADER_VISIBILITY_VERTEX); // t0
+            params[Graphics::SceneRootParamMaterialCB].InitAsConstantBufferView(1, 0, D3D12_SHADER_VISIBILITY_PIXEL); // b1
+            params[Graphics::SceneRootParamMaterialAlbedoSRV].InitAsDescriptorTable(1, &srvRanges[1], D3D12_SHADER_VISIBILITY_PIXEL); // t1
 
             CD3DX12_ROOT_SIGNATURE_DESC rsDesc{};
             rsDesc.Init(
@@ -924,7 +928,7 @@ void Scene::Render(const SceneRenderContext& ctx)
 
     // Bind instance SRV table (t0) at root param 1.
     if (s_InstanceSRVGpu.ptr != 0)
-        ctx.commandList->SetGraphicsRootDescriptorTable(1, s_InstanceSRVGpu);
+        ctx.commandList->SetGraphicsRootDescriptorTable(Graphics::SceneRootParamInstanceSRV, s_InstanceSRVGpu);
 
     // Fully define dynamic state that can bleed between draws.
     const float blendFactor[4] = { 0, 0, 0, 0 };
@@ -958,8 +962,13 @@ void Scene::Render(const SceneRenderContext& ctx)
         }
 #endif
 
-        ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
+        ctx.commandList->SetGraphicsRootConstantBufferView(Graphics::SceneRootParamSceneCB, alloc.GpuAddress);
     }
+
+    Material* material = MaterialManager::GetInstance().GetMaterial("DefaultSceneMaterial");
+    if (!material)
+        material = MaterialManager::GetInstance().CreateMaterial("DefaultSceneMaterial");
+    Graphics::GetInstance().BindMaterial(material);
 
 #ifndef NDEBUG
     static auto s_lastInstancingCountsLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
@@ -1032,7 +1041,7 @@ void Scene::Render(const SceneRenderContext& ctx)
         }
 #endif
 
-        ctx.commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
+        ctx.commandList->SetGraphicsRootConstantBufferView(Graphics::SceneRootParamSceneCB, alloc.GpuAddress);
     }
 
     // ====================================================================

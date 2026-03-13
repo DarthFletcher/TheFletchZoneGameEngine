@@ -52,6 +52,7 @@ struct PickRay
 };
 
 class Entity;
+struct Material;
 
 // Temporary bridge until a real Scene/World is wired into rendering.
 // Implemented in `Src/Main.cpp`.
@@ -69,6 +70,11 @@ enum class ResizeSource : uint8_t
 
 class Graphics {
 public:
+    static constexpr UINT SceneRootParamSceneCB = 0;
+    static constexpr UINT SceneRootParamInstanceSRV = 1;
+    static constexpr UINT SceneRootParamMaterialCB = 2;
+    static constexpr UINT SceneRootParamMaterialAlbedoSRV = 3;
+
     void EnsureValidCommandQueue();
     Graphics();
     ~Graphics();
@@ -79,7 +85,15 @@ public:
         uint8_t* CpuPtr = nullptr;
     };
 
+    struct alignas(256) MaterialCBData
+    {
+        float metallic = 0.0f;
+        float roughness = 1.0f;
+        float padding[62]{};
+    };
+
     CBAllocation AllocateFrameCB(size_t size);
+    void BindMaterial(Material* material);
 
     void ToggleVSync(bool enable);
     static bool lockResolutionWhenMaximized;
