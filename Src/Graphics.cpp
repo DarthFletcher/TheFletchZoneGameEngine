@@ -1799,7 +1799,7 @@ namespace
 
 static const float* GetSceneClearColorRGBA()
 {
-    static const float kEngineNeutral[4] = { 0.10f, 0.10f, 0.12f, 1.0f };
+    static const float kEngineNeutral[4] = { 0.07f, 0.09f, 0.13f, 1.0f };
     static const float kTrueNeutral[4] = { 0.08f, 0.08f, 0.08f, 1.0f };
     static const float kVoidReaper[4] = { 0.02f, 0.02f, 0.05f, 1.0f };
 

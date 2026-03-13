@@ -471,17 +471,29 @@ namespace
             {
                 const float t = -kHalf + (float)i * kStep;
 
-                const bool isAxis = (i == kDiv / 2);
-                const float c = isAxis ? 0.85f : 0.40f;
-                const float a = isAxis ? 0.95f : 0.65f;
-
                 constexpr float kGridY = -0.01f;
 
-                push(-kHalf, kGridY, t, c, c, c, a);
-                push(+kHalf, kGridY, t, c, c, c, a);
+                if (i == kDiv / 2)
+                {
+                    // X axis
+                    push(-kHalf, kGridY, t, 0.95f, 0.25f, 0.25f, 0.95f);
+                    push(+kHalf, kGridY, t, 0.95f, 0.25f, 0.25f, 0.95f);
 
-                push(t, kGridY, -kHalf, c, c, c, a);
-                push(t, kGridY, +kHalf, c, c, c, a);
+                    // Z axis
+                    push(t, kGridY, -kHalf, 0.25f, 0.45f, 0.95f, 0.95f);
+                    push(t, kGridY, +kHalf, 0.25f, 0.45f, 0.95f, 0.95f);
+                }
+                else
+                {
+                    const float c = 0.40f;
+                    const float a = 0.65f;
+
+                    push(-kHalf, kGridY, t, c, c, c, a);
+                    push(+kHalf, kGridY, t, c, c, c, a);
+
+                    push(t, kGridY, -kHalf, c, c, c, a);
+                    push(t, kGridY, +kHalf, c, c, c, a);
+                }
             }
 
             const UINT vbSize = (UINT)(sizeof(VertexPC) * verts.size());
@@ -1109,7 +1121,7 @@ void Scene::Render(const SceneRenderContext& ctx)
     // Phase 4A: GRID OVERLAY PASS (Lines)
     // ====================================================================
 #ifndef NDEBUG
-    constexpr bool kDisableGridOverlayForDiag = true;
+    constexpr bool kDisableGridOverlayForDiag = false;
 #else
     constexpr bool kDisableGridOverlayForDiag = false;
 #endif
