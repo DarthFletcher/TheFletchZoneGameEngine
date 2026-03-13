@@ -2388,12 +2388,13 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
         desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
 
+        const float* sceneClearColor = GetSceneClearColorRGBA();
         D3D12_CLEAR_VALUE clear{};
         clear.Format = desc.Format;
-        clear.Color[0] = 0.10f;
-        clear.Color[1] = 0.10f;
-        clear.Color[2] = 0.20f;
-        clear.Color[3] = 1.0f;
+        clear.Color[0] = sceneClearColor[0];
+        clear.Color[1] = sceneClearColor[1];
+        clear.Color[2] = sceneClearColor[2];
+        clear.Color[3] = sceneClearColor[3];
 
         CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
         const HRESULT hr = device->CreateCommittedResource(
@@ -2617,20 +2618,6 @@ void Graphics::RenderSceneToTarget()
     sceneCtx.camera = &camera;
 
     Scene::Render(sceneCtx);
-
-#ifndef NDEBUG
-    {
-        static auto s_lastScenePassLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-        const auto now = std::chrono::steady_clock::now();
-        if (now - s_lastScenePassLog >= std::chrono::seconds(1))
-        {
-            s_lastScenePassLog = now;
-            Logger::Log(LogLevel::Debug, std::format(
-                "ScenePass cubes drawn = {}",
-                Scene::GetVisibleInstanceCount()), "ScenePass");
-        }
-    }
-#endif
 
     transitionResource(sceneRenderTarget.Get(), sceneRTState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }

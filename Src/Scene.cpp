@@ -456,6 +456,8 @@ namespace
 }
 
 std::vector<InstanceData> Scene::s_Instances;
+SceneStats Scene::s_LastStats{};
+uint32_t Scene::s_TargetInstanceCount = 25;
 std::vector<Sphere> Scene::s_InstanceBounds;
 std::vector<UINT> Scene::s_VisibleInstanceIndices;
 std::vector<InstanceData> Scene::s_VisibleInstancesScratch;
@@ -518,7 +520,7 @@ void Scene::EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount
 
     Microsoft::WRL::ComPtr<ID3D12Resource> defaultBuf;
     {
-        const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+        const CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
         const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize, D3D12_RESOURCE_FLAG_NONE);
 
         const HRESULT hr = device->CreateCommittedResource(
@@ -531,7 +533,7 @@ void Scene::EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount
 
         if (FAILED(hr) || !defaultBuf)
         {
-            Logger::Log(LogLevel::Error, "EnsureInstanceBufferDefault: CreateCommittedResource(DEFAULT) failed", "[Scene]");
+            Logger::Log(LogLevel::Error, "EnsureInstanceBufferDefault: CreateCommittedResource(UPLOAD) failed", "[Scene]");
             return;
         }
     }
@@ -560,20 +562,20 @@ void Scene::EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount
     s_InstanceBufferDefault = defaultBuf;
     s_InstanceBufferCapacity = newCapacity;
 
-#ifdef _DEBUG
+#ifndef NDEBUG
     static bool s_LoggedDefaultInstanceCapacity = false;
     if (!s_LoggedDefaultInstanceCapacity)
     {
         s_LoggedDefaultInstanceCapacity = true;
         char buf[256];
         sprintf_s(buf,
-            "[Instancing] DEFAULT instance buffer active | capacity=%u instances\n",
+            "[Instancing] UPLOAD-backed instance buffer active | capacity=%u instances\n",
             s_InstanceBufferCapacity);
         OutputDebugStringA(buf);
     }
 #endif
 
-    Logger::Log(LogLevel::Info, std::format("[Scene] Instance DEFAULT buffer allocated | capacity={} bytes={}", s_InstanceBufferCapacity, bufferSize), "[Scene]");
+    Logger::Log(LogLevel::Info, std::format("[Scene] Instance upload buffer allocated | capacity={} bytes={}", s_InstanceBufferCapacity, bufferSize), "[Scene]");
 }
 
 namespace
@@ -610,41 +612,30 @@ namespace
 
 void Scene::EnsureInstancesInitialized()
 {
-    // Allow stress scaling via ImGui (CPU-side only).
-    static int s_targetInstanceCount = 25;
     static int s_lastAppliedCount = -1;
 
-    // Pull desired instance count from the Instancing panel (stored in ImGui state storage).
-    if (ImGui::GetCurrentContext())
-    {
-        ImGuiStorage* store = ImGui::GetStateStorage();
-        if (store)
-        {
-            const int desired = store->GetInt(ImGui::GetID("TFZ_Instancing_TargetCount"), s_targetInstanceCount);
-            s_targetInstanceCount = (std::max)(1, desired);
-        }
-    }
+    const int targetInstanceCount = (int)(std::max)(1u, s_TargetInstanceCount);
 
-    if (!s_Instances.empty() && s_lastAppliedCount == s_targetInstanceCount)
+    if (!s_Instances.empty() && s_lastAppliedCount == targetInstanceCount)
         return;
 
-    s_lastAppliedCount = s_targetInstanceCount;
+    s_lastAppliedCount = targetInstanceCount;
 
     s_Instances.clear();
-    s_Instances.reserve((size_t)s_targetInstanceCount);
+    s_Instances.reserve((size_t)targetInstanceCount);
 
     s_InstanceBounds.clear();
-    s_InstanceBounds.reserve((size_t)s_targetInstanceCount);
+    s_InstanceBounds.reserve((size_t)targetInstanceCount);
 
     // Deterministic grid fill.
     // Fill a square grid of ceil(sqrt(N)) x ceil(sqrt(N)), truncating to N.
-    const int dim = (int)ceilf(sqrtf((float)s_targetInstanceCount));
+    const int dim = (int)ceilf(sqrtf((float)targetInstanceCount));
 
     for (int x = 0; x < dim; ++x)
     {
         for (int z = 0; z < dim; ++z)
         {
-            if ((int)s_Instances.size() >= s_targetInstanceCount)
+            if ((int)s_Instances.size() >= targetInstanceCount)
                 break;
 
             const int gx = x - dim / 2;
@@ -672,7 +663,7 @@ void Scene::EnsureInstancesInitialized()
             s_Instances.push_back(inst);
             s_InstanceBounds.push_back(bounds);
         }
-        if ((int)s_Instances.size() >= s_targetInstanceCount)
+        if ((int)s_Instances.size() >= targetInstanceCount)
             break;
     }
 
@@ -696,6 +687,21 @@ bool Scene::IsReady()
     return !g_scene.initFailed && g_scene.rootSig && g_scene.pso && g_scene.gridPso && g_scene.gridVb;
 }
 
+SceneStats Scene::GetLastStats()
+{
+    return s_LastStats;
+}
+
+void Scene::SetTargetInstanceCount(uint32_t count)
+{
+    s_TargetInstanceCount = (std::max)(1u, count);
+}
+
+uint32_t Scene::GetTargetInstanceCount()
+{
+    return s_TargetInstanceCount;
+}
+
 void Scene::InitializeResources(ID3D12Device* device)
 {
     Graphics::GetInstance().AssertNotInRender("Scene::InitializeResources()");
@@ -703,11 +709,15 @@ void Scene::InitializeResources(ID3D12Device* device)
     if (!device)
         return;
 
+    EnsureInstancesInitialized();
+    EnsureInstanceBufferDefault(device, (UINT)s_Instances.size());
     EnsureSceneResources(device);
 }
 
 void Scene::Render(const SceneRenderContext& ctx)
 {
+    s_LastStats = {};
+
     // ====================================================================
     // Phase 4A: PASS BOUNDARY & OWNERSHIP NOTES
     // ====================================================================
@@ -846,6 +856,27 @@ void Scene::Render(const SceneRenderContext& ctx)
             s_VisibleInstancesScratch.push_back(s_Instances[idx]);
     }
 
+    s_LastStats.totalObjects = static_cast<uint32_t>(s_Instances.size());
+    s_LastStats.visibleObjects = static_cast<uint32_t>(s_VisibleInstancesScratch.size());
+
+    if (s_InstanceBufferDefault && !s_VisibleInstancesScratch.empty())
+    {
+        void* mapped = nullptr;
+        const HRESULT hrMap = s_InstanceBufferDefault->Map(0, nullptr, &mapped);
+        if (SUCCEEDED(hrMap) && mapped)
+        {
+            const size_t bytes = sizeof(InstanceData) * s_VisibleInstancesScratch.size();
+            std::memcpy(mapped, s_VisibleInstancesScratch.data(), bytes);
+            s_InstanceBufferDefault->Unmap(0, nullptr);
+        }
+        else
+        {
+            Logger::Log(LogLevel::Error, std::format(
+                "[Scene] Failed to map instance buffer for visible upload HR=0x{:08X}",
+                (UINT)hrMap), "[Scene]");
+        }
+    }
+
     // ====================================================================
     // Phase 4A: EXPLICIT STATE SETUP
     // ====================================================================
@@ -976,6 +1007,7 @@ void Scene::Render(const SceneRenderContext& ctx)
             const UINT drawInstances = instanceCount;
 #endif
             ctx.commandList->DrawIndexedInstanced(cube.IndexCount, drawInstances, 0, 0, 0);
+            s_LastStats.drawCalls++;
         }
     }
 
@@ -1021,6 +1053,23 @@ void Scene::Render(const SceneRenderContext& ctx)
         ctx.commandList->IASetVertexBuffers(0, 1, &g_scene.gridVbv);
         ctx.commandList->DrawInstanced(g_scene.gridVbv.SizeInBytes / g_scene.gridVbv.StrideInBytes, 1, 0, 0);
     }
+
+#ifndef NDEBUG
+    {
+        static auto s_lastSceneStatsLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        const auto nowStats = std::chrono::steady_clock::now();
+        if (nowStats - s_lastSceneStatsLog >= std::chrono::seconds(1))
+        {
+            s_lastSceneStatsLog = nowStats;
+            Logger::Log(LogLevel::Debug, std::format(
+                "SceneStats: total={} visible={} draws={}",
+                s_LastStats.totalObjects,
+                s_LastStats.visibleObjects,
+                s_LastStats.drawCalls),
+                "ScenePass");
+        }
+    }
+#endif
 
     (void)ctx.frameIndex;
 }

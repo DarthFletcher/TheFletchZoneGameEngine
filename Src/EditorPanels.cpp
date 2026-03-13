@@ -6,6 +6,7 @@
 #include "Logger.h"
 #include "EditorState.h"
 #include "Engine.h"
+#include "Scene.h"
 
 #include <format>
 #include <string>
@@ -268,6 +269,14 @@ namespace EditorPanels
 
                 ImGui::Separator();
 
+                const SceneStats stats = Scene::GetLastStats();
+                ImGui::TextUnformatted("Scene Stats");
+                ImGui::Text("Objects: %u", stats.totalObjects);
+                ImGui::Text("Visible: %u", stats.visibleObjects);
+                ImGui::Text("Draws:   %u", stats.drawCalls);
+
+                ImGui::Separator();
+
                 SceneCamera& cam = gfx.GetSceneCamera();
                 DirectX::XMFLOAT3 targ{};
                 DirectX::XMStoreFloat3(&targ, cam.GetTarget());
@@ -420,17 +429,13 @@ namespace EditorPanels
             if (!panel.open)
                 return;
 
-            // Keep these statics in the panel so Scene stays render/data-only.
-            static int s_targetInstanceCount = 25;
+            uint32_t targetInstanceCount = Scene::GetTargetInstanceCount();
+            int instanceCount = (int)targetInstanceCount;
 
             if (ImGui::Begin(panel.name, &panel.open))
             {
-                ImGui::SliderInt("Instance Count", &s_targetInstanceCount, 1, 10000);
-
-                // Persist the slider value for Scene: use ImGui storage as a simple cross-module bridge.
-                ImGuiStorage* store = ImGui::GetStateStorage();
-                if (store)
-                    store->SetInt(ImGui::GetID("TFZ_Instancing_TargetCount"), s_targetInstanceCount);
+                if (ImGui::SliderInt("Instance Count", &instanceCount, 1, 10000))
+                    Scene::SetTargetInstanceCount((uint32_t)instanceCount);
 
                 ImGui::Separator();
                 ImGui::Text("Visible: %u", (unsigned)Scene::GetVisibleInstanceCount());

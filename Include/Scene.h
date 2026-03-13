@@ -11,10 +11,14 @@
 struct ID3D12Device;
 struct ID3D12GraphicsCommandList;
 
-// Phase 3A: minimal scene render scaffolding.
-// No draw calls yet; this only validates wiring and ownership.
-
 struct CameraData;
+
+struct SceneStats
+{
+    uint32_t totalObjects = 0;
+    uint32_t visibleObjects = 0;
+    uint32_t drawCalls = 0;
+};
 
 struct SceneRenderContext
 {
@@ -47,6 +51,9 @@ public:
     // Deterministic GPU resource ownership: must be called outside Render().
     static void InitializeResources(ID3D12Device* device);
     static bool IsReady();
+    static SceneStats GetLastStats();
+    static void SetTargetInstanceCount(uint32_t count);
+    static uint32_t GetTargetInstanceCount();
 
     // CP9-B: CPU -> GPU instance upload contract (Graphics-owned upload; Scene-owned data).
     static const InstanceData* GetInstancesCPU();
@@ -65,6 +72,8 @@ public:
 
 private:
     static std::vector<InstanceData> s_Instances;
+    static SceneStats s_LastStats;
+    static uint32_t s_TargetInstanceCount;
     static void EnsureInstancesInitialized();
 
     // CP11-B: per-instance bounds (bounding sphere)
