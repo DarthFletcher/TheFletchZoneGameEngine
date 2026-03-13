@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -200,6 +200,7 @@
     <ClInclude Include="Include\Win32Common.h" />
     <ClInclude Include="Src\GpuMarkers.h" />
     <ClInclude Include="Third Party\stb_image.h" />
+    <ClInclude Include="Include\TextureManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui.cpp" />
@@ -238,6 +239,7 @@
     <ClCompile Include="src\Timer.cpp" />
     <ClCompile Include="src\UI.cpp" />
     <ClCompile Include="src\Utils.cpp" />
+    <ClCompile Include="Src\TextureManager.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="TheFletchZoneGameEngine.rc" />
@@ -258,6 +260,7 @@
     <None Include="ENGINE_CONTRACT.md" />
     <None Include="include\macros.hints" />
     <None Include="packages.config" />
+    <None Include="Src\TextureManager.cpp.replacement" />
     <None Include="TheFletchZoneGameEngine.vcxproj.copilot_edit" />
     <None Include="TheFletchZoneGameEngine.vcxproj.new" />
     <None Include="tools\CopyDXCDlls.bat" />

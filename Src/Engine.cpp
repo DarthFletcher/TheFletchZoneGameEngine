@@ -12,6 +12,7 @@
 #include <BootDiagnostics.h> // Boot diagnostics header
 #include <BootProgress.h>
 #include "UI.h"
+#include "TextureManager.h"
 #pragma comment(lib, "Shcore.lib") // Link against Shcore for DPI functions
 
 
@@ -415,6 +416,7 @@ void Engine::Shutdown() {
 	game.Shutdown(); // Shutdown game logic
 	input.Shutdown(); // Shutdown input system
 	SplashScreen::Shutdown(); // Shutdown splash screen
+    TextureManager::GetInstance().Shutdown();
     graphics.Shutdown(); // Graphics will handle ImGui shutdown internally
 	Logger::Shutdown(); // Shutdown logger last
 }
