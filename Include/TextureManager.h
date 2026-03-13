@@ -21,6 +21,7 @@ public:
     static TextureManager& GetInstance();
 
     Texture* LoadTexture(const std::string& path);
+    Texture* GetWhiteTexture();
     void Shutdown();
 
 private:
@@ -29,6 +30,8 @@ private:
         Texture texture = {};
         Microsoft::WRL::ComPtr<ID3D12Resource> resource;
     };
+
+    Texture* CreateTextureFromPixels(const std::string& key, const void* pixels, int width, int height);
 
     std::unordered_map<std::string, std::unique_ptr<TextureRecord>> m_Textures;
 };

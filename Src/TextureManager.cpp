@@ -56,40 +56,22 @@ TextureManager& TextureManager::GetInstance()
     return instance;
 }
 
-Texture* TextureManager::LoadTexture(const std::string& path)
+Texture* TextureManager::CreateTextureFromPixels(const std::string& key, const void* pixels, int width, int height)
 {
-    if (path.empty())
-    {
-        Logger::Log(LogLevel::Error, "LoadTexture called with empty path.", "Texture");
+    if (key.empty() || !pixels || width <= 0 || height <= 0)
         return nullptr;
-    }
 
-    const std::string normalizedPath = NormalizeTexturePath(path);
-    if (auto it = m_Textures.find(normalizedPath); it != m_Textures.end())
+    if (auto it = m_Textures.find(key); it != m_Textures.end())
         return &it->second->texture;
 
-    int width = 0;
-    int height = 0;
-    int channels = 0;
-    unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
-    if (!pixels)
-    {
-        const char* reason = stbi_failure_reason();
-        Logger::Log(LogLevel::Error,
-            std::format("Failed to decode texture '{}': {}", normalizedPath, reason ? reason : "unknown stb_image error"),
-            "Texture");
-        return nullptr;
-    }
-
     auto& gfx = Graphics::GetInstance();
-    gfx.AssertNotInRender("TextureManager::LoadTexture");
+    gfx.AssertNotInRender("TextureManager::CreateTextureFromPixels");
 
     ID3D12Device* device = gfx.GetDevice();
     ID3D12CommandQueue* queue = gfx.GetCommandQueue();
     ID3D12DescriptorHeap* srvHeap = gfx.GetImGuiSrvHeap();
     if (!device || !queue || !srvHeap)
     {
-        stbi_image_free(pixels);
         Logger::Log(LogLevel::Error, "TextureManager requires a valid device, command queue, and SRV heap.", "Texture");
         return nullptr;
     }
@@ -116,9 +98,8 @@ Texture* TextureManager::LoadTexture(const std::string& path)
         IID_PPV_ARGS(&textureResource));
     if (FAILED(hr) || !textureResource)
     {
-        stbi_image_free(pixels);
         Logger::Log(LogLevel::Error,
-            std::format("Failed to create GPU texture for '{}' HR=0x{:08X}", normalizedPath, static_cast<UINT>(hr)),
+            std::format("Failed to create GPU texture for '{}' HR=0x{:08X}", key, static_cast<UINT>(hr)),
             "Texture");
         return nullptr;
     }
@@ -138,9 +119,8 @@ Texture* TextureManager::LoadTexture(const std::string& path)
         IID_PPV_ARGS(&uploadResource));
     if (FAILED(hr) || !uploadResource)
     {
-        stbi_image_free(pixels);
         Logger::Log(LogLevel::Error,
-            std::format("Failed to create upload texture for '{}' HR=0x{:08X}", normalizedPath, static_cast<UINT>(hr)),
+            std::format("Failed to create upload texture for '{}' HR=0x{:08X}", key, static_cast<UINT>(hr)),
             "Texture");
         return nullptr;
     }
@@ -149,9 +129,8 @@ Texture* TextureManager::LoadTexture(const std::string& path)
     hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&uploadAllocator));
     if (FAILED(hr) || !uploadAllocator)
     {
-        stbi_image_free(pixels);
         Logger::Log(LogLevel::Error,
-            std::format("Failed to create texture upload allocator for '{}' HR=0x{:08X}", normalizedPath, static_cast<UINT>(hr)),
+            std::format("Failed to create texture upload allocator for '{}' HR=0x{:08X}", key, static_cast<UINT>(hr)),
             "Texture");
         return nullptr;
     }
@@ -160,9 +139,8 @@ Texture* TextureManager::LoadTexture(const std::string& path)
     hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, uploadAllocator.Get(), nullptr, IID_PPV_ARGS(&uploadList));
     if (FAILED(hr) || !uploadList)
     {
-        stbi_image_free(pixels);
         Logger::Log(LogLevel::Error,
-            std::format("Failed to create texture upload command list for '{}' HR=0x{:08X}", normalizedPath, static_cast<UINT>(hr)),
+            std::format("Failed to create texture upload command list for '{}' HR=0x{:08X}", key, static_cast<UINT>(hr)),
             "Texture");
         return nullptr;
     }
@@ -183,9 +161,8 @@ Texture* TextureManager::LoadTexture(const std::string& path)
     hr = uploadList->Close();
     if (FAILED(hr))
     {
-        stbi_image_free(pixels);
         Logger::Log(LogLevel::Error,
-            std::format("Failed to close texture upload list for '{}' HR=0x{:08X}", normalizedPath, static_cast<UINT>(hr)),
+            std::format("Failed to close texture upload list for '{}' HR=0x{:08X}", key, static_cast<UINT>(hr)),
             "Texture");
         return nullptr;
     }
@@ -197,9 +174,8 @@ Texture* TextureManager::LoadTexture(const std::string& path)
     hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&uploadFence));
     if (FAILED(hr) || !uploadFence)
     {
-        stbi_image_free(pixels);
         Logger::Log(LogLevel::Error,
-            std::format("Failed to create texture upload fence for '{}' HR=0x{:08X}", normalizedPath, static_cast<UINT>(hr)),
+            std::format("Failed to create texture upload fence for '{}' HR=0x{:08X}", key, static_cast<UINT>(hr)),
             "Texture");
         return nullptr;
     }
@@ -207,9 +183,8 @@ Texture* TextureManager::LoadTexture(const std::string& path)
     HANDLE uploadFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (!uploadFenceEvent)
     {
-        stbi_image_free(pixels);
         Logger::Log(LogLevel::Error,
-            std::format("Failed to create texture upload fence event for '{}'.", normalizedPath),
+            std::format("Failed to create texture upload fence event for '{}'.", key),
             "Texture");
         return nullptr;
     }
@@ -219,9 +194,8 @@ Texture* TextureManager::LoadTexture(const std::string& path)
     if (FAILED(hr))
     {
         CloseHandle(uploadFenceEvent);
-        stbi_image_free(pixels);
         Logger::Log(LogLevel::Error,
-            std::format("Failed to signal texture upload fence for '{}' HR=0x{:08X}", normalizedPath, static_cast<UINT>(hr)),
+            std::format("Failed to signal texture upload fence for '{}' HR=0x{:08X}", key, static_cast<UINT>(hr)),
             "Texture");
         return nullptr;
     }
@@ -232,9 +206,8 @@ Texture* TextureManager::LoadTexture(const std::string& path)
         if (FAILED(hr))
         {
             CloseHandle(uploadFenceEvent);
-            stbi_image_free(pixels);
             Logger::Log(LogLevel::Error,
-                std::format("Failed to wait for texture upload fence for '{}' HR=0x{:08X}", normalizedPath, static_cast<UINT>(hr)),
+                std::format("Failed to wait for texture upload fence for '{}' HR=0x{:08X}", key, static_cast<UINT>(hr)),
                 "Texture");
             return nullptr;
         }
@@ -243,13 +216,12 @@ Texture* TextureManager::LoadTexture(const std::string& path)
     }
 
     CloseHandle(uploadFenceEvent);
-    stbi_image_free(pixels);
 
     const D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = Graphics::AllocateSRV();
     if (srvCpu.ptr == 0)
     {
         Logger::Log(LogLevel::Error,
-            std::format("Failed to allocate SRV descriptor for '{}'.", normalizedPath),
+            std::format("Failed to allocate SRV descriptor for '{}'.", key),
             "Texture");
         return nullptr;
     }
@@ -259,7 +231,7 @@ Texture* TextureManager::LoadTexture(const std::string& path)
     if (srvGpu.ptr == 0)
     {
         Logger::Log(LogLevel::Error,
-            std::format("Failed to compute GPU SRV handle for '{}'.", normalizedPath),
+            std::format("Failed to compute GPU SRV handle for '{}'.", key),
             "Texture");
         return nullptr;
     }
@@ -283,13 +255,55 @@ Texture* TextureManager::LoadTexture(const std::string& path)
     record->texture.height = height;
 
     Texture* outTexture = &record->texture;
-    m_Textures.emplace(normalizedPath, std::move(record));
+    m_Textures.emplace(key, std::move(record));
+    return outTexture;
+}
+
+Texture* TextureManager::LoadTexture(const std::string& path)
+{
+    if (path.empty())
+    {
+        Logger::Log(LogLevel::Error, "LoadTexture called with empty path.", "Texture");
+        return nullptr;
+    }
+
+    const std::string normalizedPath = NormalizeTexturePath(path);
+    if (auto it = m_Textures.find(normalizedPath); it != m_Textures.end())
+        return &it->second->texture;
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+    if (!pixels)
+    {
+        const char* reason = stbi_failure_reason();
+        Logger::Log(LogLevel::Error,
+            std::format("Failed to decode texture '{}': {}", normalizedPath, reason ? reason : "unknown stb_image error"),
+            "Texture");
+        return nullptr;
+    }
+
+    Texture* texture = CreateTextureFromPixels(normalizedPath, pixels, width, height);
+    stbi_image_free(pixels);
+    if (!texture)
+        return nullptr;
+
+    const UINT increment = Graphics::GetInstance().GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = Graphics::GetInstance().GetImGuiSrvHeap()->GetCPUDescriptorHandleForHeapStart();
+    const UINT srvIndex = static_cast<UINT>((texture->srvCPU.ptr - cpuStart.ptr) / static_cast<SIZE_T>(increment));
 
     Logger::Log(LogLevel::Info,
         std::format("Loaded texture\npath={}\nsize={}x{}\nsrvIndex={}", normalizedPath, width, height, srvIndex),
         "Texture");
 
-    return outTexture;
+    return texture;
+}
+
+Texture* TextureManager::GetWhiteTexture()
+{
+    static constexpr unsigned char kWhitePixel[4] = { 255, 255, 255, 255 };
+    return CreateTextureFromPixels("__builtin__/white", kWhitePixel, 1, 1);
 }
 
 void TextureManager::Shutdown()

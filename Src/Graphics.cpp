@@ -1939,14 +1939,16 @@ void Graphics::BindMaterial(Material* material)
     {
         cb.metallic = material->metallic;
         cb.roughness = material->roughness;
+        cb.useAlbedoTexture = material->albedo ? 1.0f : 0.0f;
     }
 
     const auto alloc = AllocateFrameCB(sizeof(MaterialCBData));
     std::memcpy(alloc.CpuPtr, &cb, sizeof(cb));
     commandList->SetGraphicsRootConstantBufferView(SceneRootParamMaterialCB, alloc.GpuAddress);
 
-    if (material && material->albedo && material->albedo->srvGPU.ptr != 0)
-        commandList->SetGraphicsRootDescriptorTable(SceneRootParamMaterialAlbedoSRV, material->albedo->srvGPU);
+    Texture* boundTexture = (material && material->albedo) ? material->albedo : TextureManager::GetInstance().GetWhiteTexture();
+    if (boundTexture && boundTexture->srvGPU.ptr != 0)
+        commandList->SetGraphicsRootDescriptorTable(SceneRootParamMaterialAlbedoSRV, boundTexture->srvGPU);
 }
 
 Graphics& Graphics::GetInstance()

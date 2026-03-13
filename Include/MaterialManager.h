@@ -41,6 +41,7 @@ public:
     Material* CreateMaterial(const std::string& name);
     Material* GetMaterial(const std::string& name);
     Texture* LoadAlbedoTexture(Material* material, const std::string& texturePath);
+    void SetAlbedoTexture(Material* material, Texture* texture);
     void Shutdown();
 
 private:

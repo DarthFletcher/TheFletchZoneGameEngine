@@ -17,12 +17,14 @@ struct VSInput
 {
     float3 pos   : POSITION;
     float4 color : COLOR;
+    float2 uv    : TEXCOORD0;
 };
 
 struct VSOutput
 {
     float4 pos   : SV_POSITION;
     float4 color : COLOR;
+    float2 uv    : TEXCOORD0;
 };
 
 VSOutput main(VSInput input, uint instanceID : SV_InstanceID)
@@ -35,5 +37,6 @@ VSOutput main(VSInput input, uint instanceID : SV_InstanceID)
     VSOutput o;
     o.pos = clipPos;
     o.color = inst.Color;
+    o.uv = input.uv;
     return o;
 }

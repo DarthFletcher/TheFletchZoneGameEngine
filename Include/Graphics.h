@@ -89,7 +89,8 @@ public:
     {
         float metallic = 0.0f;
         float roughness = 1.0f;
-        float padding[62]{};
+        float useAlbedoTexture = 0.0f;
+        float padding[61]{};
     };
 
     CBAllocation AllocateFrameCB(size_t size);

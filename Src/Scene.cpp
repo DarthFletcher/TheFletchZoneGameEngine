@@ -27,10 +27,34 @@ namespace
 {
     using Microsoft::WRL::ComPtr;
 
+    static constexpr const char* kSceneTestMaterialName = "TestMaterial";
+    static constexpr const char* kSceneTestTexturePath = "Assets/Textures/crate.png";
+    static bool g_loggedTestMaterialApplied = false;
+
+    static void UpdateAnimatedInstances(
+        std::vector<InstanceData>& instances,
+        const std::vector<Sphere>& instanceBounds,
+        float timeSeconds)
+    {
+        using namespace DirectX;
+
+        for (size_t i = 0; i < instances.size() && i < instanceBounds.size(); ++i)
+        {
+            const XMFLOAT3& center = instanceBounds[i].Center;
+            const float angle = timeSeconds + static_cast<float>(i) * 0.1f;
+
+            const XMMATRIX world =
+                XMMatrixRotationY(angle) *
+                XMMatrixTranslation(center.x, center.y, center.z);
+
+            XMStoreFloat4x4(&instances[i].World, XMMatrixTranspose(world));
+        }
+    }
+
 #ifndef NDEBUG
     // Temporary isolation toggle for DEVICE_HUNG investigation.
     // When true, the main cube draw uses exactly 1 instance to isolate instancing/SRV issues.
-    static bool g_DebugForceSingleInstanceDraw = true;
+    static bool g_DebugForceSingleInstanceDraw = false;
 #endif
 
 #ifndef NDEBUG
@@ -147,6 +171,30 @@ namespace
         g_sceneObjects.push_back(SceneObject{ {3.0f, 0.5f, 3.0f}, {0.0f, 0.0f, 0.0f}, {2.0f, 1.0f, 1.0f} });
     }
 
+    static void EnsureTestSceneMaterial()
+    {
+        MaterialManager& materials = MaterialManager::GetInstance();
+        Material* material = materials.GetMaterial(kSceneTestMaterialName);
+        if (!material)
+            material = materials.CreateMaterial(kSceneTestMaterialName);
+
+        if (!material)
+            return;
+
+        if (!material->albedo)
+        {
+            Texture* texture = TextureManager::GetInstance().LoadTexture(kSceneTestTexturePath);
+            if (texture)
+                materials.SetAlbedoTexture(material, texture);
+        }
+
+        if (!g_loggedTestMaterialApplied && material->albedo)
+        {
+            g_loggedTestMaterialApplied = true;
+            Logger::Log(LogLevel::Info, "Test material applied to scene", "Material");
+        }
+    }
+
     static void EnsureSceneResources(ID3D12Device* device)
     {
         Graphics::GetInstance().AssertNotInRender("EnsureSceneResources()");
@@ -186,10 +234,24 @@ namespace
             params[Graphics::SceneRootParamMaterialCB].InitAsConstantBufferView(1, 0, D3D12_SHADER_VISIBILITY_PIXEL); // b1
             params[Graphics::SceneRootParamMaterialAlbedoSRV].InitAsDescriptorTable(1, &srvRanges[1], D3D12_SHADER_VISIBILITY_PIXEL); // t1
 
+            CD3DX12_STATIC_SAMPLER_DESC samplerDesc(
+                0,
+                D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+                D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+                D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+                D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+                0.0f,
+                16,
+                D3D12_COMPARISON_FUNC_ALWAYS,
+                D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+                0.0f,
+                D3D12_FLOAT32_MAX,
+                D3D12_SHADER_VISIBILITY_PIXEL);
+
             CD3DX12_ROOT_SIGNATURE_DESC rsDesc{};
             rsDesc.Init(
                 _countof(params), params,
-                0, nullptr,
+                1, &samplerDesc,
                 D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
                 D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
                 D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
@@ -239,6 +301,7 @@ namespace
             D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
                 { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
                 { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, (UINT)sizeof(float) * 3, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, (UINT)offsetof(VertexPC, UV), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
             };
 
             D3D12_BLEND_DESC blend{};
@@ -715,6 +778,8 @@ void Scene::InitializeResources(ID3D12Device* device)
 
     EnsureInstancesInitialized();
     EnsureInstanceBufferDefault(device, (UINT)s_Instances.size());
+    (void)TextureManager::GetInstance().GetWhiteTexture();
+    EnsureTestSceneMaterial();
     EnsureSceneResources(device);
 }
 
@@ -790,11 +855,7 @@ void Scene::Render(const SceneRenderContext& ctx)
     }
 
     const float t = static_cast<float>(ctx.frameIndex) * (1.0f / 60.0f);
-    if (g_sceneObjects.size() >= 2)
-    {
-        g_sceneObjects[0].Rotation.y = t;
-        g_sceneObjects[1].Rotation.x = t;
-    }
+    UpdateAnimatedInstances(s_Instances, s_InstanceBounds, t);
 
     // Clamp to guard against accidental invalid sizes.
     constexpr uint32_t kMin = 1u;
@@ -965,9 +1026,9 @@ void Scene::Render(const SceneRenderContext& ctx)
         ctx.commandList->SetGraphicsRootConstantBufferView(Graphics::SceneRootParamSceneCB, alloc.GpuAddress);
     }
 
-    Material* material = MaterialManager::GetInstance().GetMaterial("DefaultSceneMaterial");
+    Material* material = MaterialManager::GetInstance().GetMaterial(kSceneTestMaterialName);
     if (!material)
-        material = MaterialManager::GetInstance().CreateMaterial("DefaultSceneMaterial");
+        material = MaterialManager::GetInstance().CreateMaterial(kSceneTestMaterialName);
     Graphics::GetInstance().BindMaterial(material);
 
 #ifndef NDEBUG
@@ -1047,8 +1108,6 @@ void Scene::Render(const SceneRenderContext& ctx)
     // ====================================================================
     // Phase 4A: GRID OVERLAY PASS (Lines)
     // ====================================================================
-    // TEMP (DEVICE_HUNG isolation): disable grid draw to verify if the device removal
-    // is caused by the grid PSO/shader/bindings rather than the instanced cube pass.
 #ifndef NDEBUG
     constexpr bool kDisableGridOverlayForDiag = true;
 #else

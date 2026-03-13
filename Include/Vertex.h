@@ -6,4 +6,5 @@ struct VertexPC
 {
     DirectX::XMFLOAT3 Position;
     DirectX::XMFLOAT4 Color;
+    DirectX::XMFLOAT2 UV;
 };

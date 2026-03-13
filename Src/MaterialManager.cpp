@@ -112,6 +112,17 @@ Texture* MaterialManager::LoadAlbedoTexture(Material* material, const std::strin
     return texture;
 }
 
+void MaterialManager::SetAlbedoTexture(Material* material, Texture* texture)
+{
+    if (!material)
+    {
+        Logger::Log(LogLevel::Error, "SetAlbedoTexture called with null material.", "Material");
+        return;
+    }
+
+    material->SetTexture("albedo", texture);
+}
+
 void MaterialManager::Shutdown()
 {
     m_Materials.clear();
