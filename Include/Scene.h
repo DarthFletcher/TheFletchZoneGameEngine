@@ -1,9 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 #include <wrl.h>
 #include <d3d12.h>
+#include <DirectXMath.h>
 
 #include "InstanceData.h"
 #include "Bounds.h"
@@ -12,6 +14,17 @@ struct ID3D12Device;
 struct ID3D12GraphicsCommandList;
 
 struct CameraData;
+
+struct SceneInstance
+{
+    uint32_t instanceId = 0;
+    std::string name;
+    DirectX::XMFLOAT3 position{ 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT3 rotation{ 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT3 scale{ 1.0f, 1.0f, 1.0f };
+    bool visible = true;
+    int materialIndex = 0;
+};
 
 struct SceneStats
 {
@@ -30,8 +43,6 @@ struct SceneRenderContext
 
     uint64_t frameIndex = 0;
 
-    // Phase 3C: authoritative camera data for this scene render.
-    // Scene must not access any global camera.
     const CameraData* camera = nullptr;
 };
 
@@ -47,54 +58,64 @@ class Scene
 {
 public:
     static void Render(const SceneRenderContext& ctx);
-
-    // Deterministic GPU resource ownership: must be called outside Render().
     static void InitializeResources(ID3D12Device* device);
     static bool IsReady();
     static SceneStats GetLastStats();
     static void SetTargetInstanceCount(uint32_t count);
     static uint32_t GetTargetInstanceCount();
 
-    // CP9-B: CPU -> GPU instance upload contract (Graphics-owned upload; Scene-owned data).
+    static bool TrySelectInstanceAtViewportPoint(float mouseX, float mouseY, float viewportWidth, float viewportHeight);
+    static bool TrySelectInstanceFromRay(const DirectX::XMFLOAT3& rayOrigin, const DirectX::XMFLOAT3& rayDir);
+    static void SetSelectedInstanceIndex(int index);
+    static int GetSelectedInstanceIndex();
+    static void SetSelectedInstanceId(uint32_t instanceId);
+    static uint32_t GetSelectedInstanceId();
+    static bool GetSelectedInstanceTransform(DirectX::XMFLOAT3& outPosition, DirectX::XMFLOAT3& outRotation, DirectX::XMFLOAT3& outScale);
+    static SceneInstance* GetSelectedInstance();
+    static SceneInstance* GetInstance(size_t index);
+    static const std::vector<SceneInstance>& GetInstances();
+    static bool TryGetLastRenderCameraData(CameraData& outCamera);
+    static void RebuildRenderInstancesFromSceneData();
+    static void DeleteSelectedInstance();
+    static void DuplicateSelectedInstance();
+    static void CreateCube(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
+    static bool SaveToFile(const std::string& path);
+    static bool LoadFromFile(const std::string& path);
+
     static const InstanceData* GetInstancesCPU();
     static UINT GetInstanceCount();
     static uint64_t GetInstanceDataVersion();
     static uint64_t GetInstanceUploadedVersion();
     static void MarkInstancesDirty();
     static void MarkInstancesUploaded(uint64_t version);
-
-    // CP9-B: expose DEFAULT buffer to Graphics upload path.
     static ID3D12Resource* GetInstanceDefaultBuffer();
-
-    // CP11-D: visible subset upload source (Scene-owned)
     static const InstanceData* GetVisibleInstancesCPU();
     static UINT GetVisibleInstanceCount();
 
 private:
+    static std::vector<SceneInstance> s_SceneInstances;
     static std::vector<InstanceData> s_Instances;
     static SceneStats s_LastStats;
     static uint32_t s_TargetInstanceCount;
+    static uint32_t s_NextInstanceId;
+    static bool s_SceneLayoutDirty;
     static void EnsureInstancesInitialized();
+    static void ValidateSelection();
 
-    // CP11-B: per-instance bounds (bounding sphere)
     static std::vector<Sphere> s_InstanceBounds;
-
-    // CP11-C: visible list (computed per frame; rendering unchanged for now)
     static std::vector<UINT> s_VisibleInstanceIndices;
-
-    // CP11-D: contiguous visible instance scratch (built per frame)
     static std::vector<InstanceData> s_VisibleInstancesScratch;
+
+    static uint32_t s_SelectedInstanceId;
 
     static D3D12_CPU_DESCRIPTOR_HANDLE s_InstanceSRVCpu;
     static D3D12_GPU_DESCRIPTOR_HANDLE s_InstanceSRVGpu;
 
-    // DEFAULT heap instance storage (staged upload).
     static Microsoft::WRL::ComPtr<ID3D12Resource> s_InstanceBufferDefault;
     static UINT s_InstanceBufferCapacity;
     static void EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount);
 
-    // CP9-B: dirty tracking
-    static bool     s_InstancesDirty;
+    static bool s_InstancesDirty;
     static uint64_t s_InstanceDataVersion;
     static uint64_t s_InstanceUploadedVersion;
 };

@@ -161,6 +161,24 @@ static const char* DpiAwarenessToString(DPI_AWARENESS awareness) {
     }
 }
 
+bool Engine::IsMouseCapturedByUI()
+{
+    if (!ImGui::GetCurrentContext())
+        return false;
+
+    ImGuiIO& io = ImGui::GetIO();
+    return io.WantCaptureMouse;
+}
+
+bool Engine::IsKeyboardCapturedByUI()
+{
+    if (!ImGui::GetCurrentContext())
+        return false;
+
+    ImGuiIO& io = ImGui::GetIO();
+    return io.WantCaptureKeyboard;
+}
+
 // ==========================================
 // ✅ Log Startup Banner
 // ==========================================
@@ -499,6 +517,9 @@ void Engine::RegisterWindowClass(HINSTANCE hInstance) {
 // ==========================================
 void Engine::ProcessInput() {
     input.Update();
+
+    if (Engine::IsKeyboardCapturedByUI())
+        return;
 
     if (input.IsKeyPressed(VK_ESCAPE)) {
         Logger::Log(LogLevel::Info, "🚪 ESC pressed — exiting...");

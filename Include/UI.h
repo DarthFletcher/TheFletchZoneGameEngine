@@ -6,6 +6,10 @@
 #include <wrl.h>
 #include <dxgi1_6.h>
 
+extern ImFont* g_UIFont;
+extern ImFont* g_UIFontBold;
+extern ImFont* g_MonoFont;
+
 // ==========================
 // 🌅 UI Namespace
 // ==========================

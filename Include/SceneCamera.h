@@ -19,6 +19,10 @@ public:
     void SetNearFar(float nearZ, float farZ) { nearZ_ = nearZ; farZ_ = farZ; }
     void SetOrthoHeight(float h) { orthoHeight_ = h; }
 
+    void FocusOn(const DirectX::XMFLOAT3& position, float distance = 5.0f);
+    void FocusOnPoint(const DirectX::XMFLOAT3& position, float distance = 5.0f) { FocusOn(position, distance); }
+    void UpdateEditorNavigation(float deltaTime, bool allowInput);
+
     // Orbit camera controls (Scene view)
     void UpdateOrbit(float deltaX, float deltaY, float wheelDelta, bool orbit, bool pan, bool precision);
     DirectX::XMVECTOR GetEye() const { return eye_; }
@@ -28,6 +32,11 @@ public:
     float GetDistance() const { return distance_; }
     DirectX::XMVECTOR GetTarget() const { return target_; }
     float GetOrthoHeight() const { return orthoHeight_; }
+    bool IsFreelooking() const { return freelooking_; }
+    DirectX::XMFLOAT3 GetPosition() const;
+    DirectX::XMFLOAT3 GetForward() const;
+    DirectX::XMFLOAT3 GetRight() const;
+    DirectX::XMFLOAT3 GetUp() const;
 
 private:
     // Backing vectors used for rendering.
@@ -39,6 +48,7 @@ private:
     float yaw_ = 0.0f;
     float pitch_ = 0.35f;
     float distance_ = 5.0f;
+    bool freelooking_ = false;
 
     float fovY_ = DirectX::XMConvertToRadians(60.0f);
     float nearZ_ = 0.1f;

@@ -166,6 +166,7 @@
     <ClInclude Include="include\CrashDiagnostics.h" />
     <ClInclude Include="Include\DX12Common.h" />
     <ClInclude Include="Include\EditorCommon.h" />
+    <ClInclude Include="Include\EditorGizmo.h" />
     <ClInclude Include="Include\EditorIcons.h" />
     <ClInclude Include="include\EditorPanels.h" />
     <ClInclude Include="include\Engine.h" />
@@ -215,6 +216,7 @@
     <ClCompile Include="Src\CameraSystem.cpp" />
     <ClCompile Include="src\Config.cpp" />
     <ClCompile Include="src\CrashDiagnostics.cpp" />
+    <ClCompile Include="Src\EditorGizmo.cpp" />
     <ClCompile Include="Src\EditorPanels.cpp" />
     <ClCompile Include="src\Engine.cpp" />
     <ClCompile Include="Src\Frustum.cpp" />

@@ -10,6 +10,10 @@
 #include "EditorState.h"
 #include "EditorIcons.h"
 
+ImFont* g_UIFont = nullptr;
+ImFont* g_UIFontBold = nullptr;
+ImFont* g_MonoFont = nullptr;
+
 extern Engine* g_engineInstance;
 
 namespace UI {
@@ -668,13 +672,28 @@ namespace UI {
 
          // 📁 File
          if (ImGui::BeginMenu("File")) {
-             if (ImGui::MenuItem("Load", "Ctrl+L")) Logger::Log(LogLevel::Info, "📂 Load clicked");
-             if (ImGui::MenuItem("Save", "Ctrl+S")) Logger::Log(LogLevel::Info, "💾 Save clicked");
+             if (ImGui::MenuItem("Load Scene", "Ctrl+L")) Scene::LoadFromFile("Assets/Scenes/scene.json");
+             if (ImGui::MenuItem("Save Scene", "Ctrl+S")) Scene::SaveToFile("Assets/Scenes/scene.json");
              ImGui::Separator();
              if (ImGui::MenuItem("Exit", "Alt+F4")) PostQuitMessage(0);
              ImGui::EndMenu();
          }
 
+         if (ImGui::BeginMenu("Edit")) {
+             const bool hasSelection = (Scene::GetSelectedInstance() != nullptr);
+             if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, hasSelection))
+                 Scene::DuplicateSelectedInstance();
+             if (ImGui::MenuItem("Delete", "Delete", false, hasSelection))
+                 Scene::DeleteSelectedInstance();
+             ImGui::EndMenu();
+         }
+
+         if (ImGui::BeginMenu("Create")) {
+             if (ImGui::MenuItem("Cube"))
+                 Scene::CreateCube();
+             ImGui::EndMenu();
+         }
+ 
          // 🖥️ Graphics
          if (ImGui::BeginMenu("Graphics")) {
              ImGui::Text("Select GPU:");

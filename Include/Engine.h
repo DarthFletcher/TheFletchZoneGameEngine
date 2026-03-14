@@ -20,6 +20,9 @@ public:
         Paused
     };
 
+    static bool IsMouseCapturedByUI();
+    static bool IsKeyboardCapturedByUI();
+
     static State GetState();
     static void SetState(State s);
 

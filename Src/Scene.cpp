@@ -13,6 +13,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
+#include <filesystem>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <chrono>
@@ -30,6 +33,106 @@ namespace
     static constexpr const char* kSceneTestMaterialName = "TestMaterial";
     static constexpr const char* kSceneTestTexturePath = "Assets/Textures/crate.png";
     static bool g_loggedTestMaterialApplied = false;
+    static CameraData g_LastRenderCameraData{};
+    static bool g_HasLastRenderCameraData = false;
+
+    struct Ray
+    {
+        DirectX::XMFLOAT3 origin{};
+        DirectX::XMFLOAT3 direction{};
+    };
+
+    static DirectX::XMMATRIX BuildSceneInstanceWorld(const SceneInstance& instance)
+    {
+        using namespace DirectX;
+        return XMMatrixScaling(instance.scale.x, instance.scale.y, instance.scale.z) *
+            XMMatrixRotationRollPitchYaw(instance.rotation.x, instance.rotation.y, instance.rotation.z) *
+            XMMatrixTranslation(instance.position.x, instance.position.y, instance.position.z);
+    }
+
+    static DirectX::XMFLOAT4 ComputeInstanceColor(size_t index, size_t count)
+    {
+        const float denom = count > 1 ? float(count - 1) : 1.0f;
+        const float t = float(index) / denom;
+        return DirectX::XMFLOAT4(0.35f + 0.45f * t, 0.55f, 0.85f - 0.45f * t, 1.0f);
+    }
+
+    static std::string MakeSceneInstanceName(uint32_t instanceId)
+    {
+        return std::format("Cube_{:03}", instanceId);
+    }
+
+    static Ray ScreenPointToWorldRay(float mouseX, float mouseY, float viewportWidth, float viewportHeight, const CameraData& camera)
+    {
+        using namespace DirectX;
+
+        const float w = (std::max)(viewportWidth, 1.0f);
+        const float h = (std::max)(viewportHeight, 1.0f);
+        const float px = (2.0f * mouseX / w) - 1.0f;
+        const float py = 1.0f - (2.0f * mouseY / h);
+
+        const XMVECTOR nearClip = XMVectorSet(px, py, 0.0f, 1.0f);
+        const XMVECTOR farClip = XMVectorSet(px, py, 1.0f, 1.0f);
+
+        const XMMATRIX view = XMLoadFloat4x4(&camera.view);
+        const XMMATRIX proj = XMLoadFloat4x4(&camera.proj);
+        const XMMATRIX invViewProj = XMMatrixInverse(nullptr, XMMatrixMultiply(view, proj));
+
+        XMVECTOR nearWorld = XMVector4Transform(nearClip, invViewProj);
+        XMVECTOR farWorld = XMVector4Transform(farClip, invViewProj);
+        nearWorld = XMVectorScale(nearWorld, 1.0f / XMVectorGetW(nearWorld));
+        farWorld = XMVectorScale(farWorld, 1.0f / XMVectorGetW(farWorld));
+
+        Ray ray{};
+        XMStoreFloat3(&ray.origin, nearWorld);
+        XMStoreFloat3(&ray.direction, XMVector3Normalize(XMVectorSubtract(farWorld, nearWorld)));
+        return ray;
+    }
+
+    static bool RayIntersectsAABB(const Ray& ray, const DirectX::XMFLOAT3& mins, const DirectX::XMFLOAT3& maxs, float& outT)
+    {
+        constexpr float kEpsilon = 1e-6f;
+        float tMin = 0.0f;
+        float tMax = FLT_MAX;
+
+        const float origin[3] = { ray.origin.x, ray.origin.y, ray.origin.z };
+        const float dir[3] = { ray.direction.x, ray.direction.y, ray.direction.z };
+        const float bmin[3] = { mins.x, mins.y, mins.z };
+        const float bmax[3] = { maxs.x, maxs.y, maxs.z };
+
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            if (fabsf(dir[axis]) < kEpsilon)
+            {
+                if (origin[axis] < bmin[axis] || origin[axis] > bmax[axis])
+                    return false;
+                continue;
+            }
+
+            const float invDir = 1.0f / dir[axis];
+            float t1 = (bmin[axis] - origin[axis]) * invDir;
+            float t2 = (bmax[axis] - origin[axis]) * invDir;
+            if (t1 > t2)
+                std::swap(t1, t2);
+
+            tMin = (std::max)(tMin, t1);
+            tMax = (std::min)(tMax, t2);
+            if (tMax < tMin)
+                return false;
+        }
+
+        outT = tMin;
+        return true;
+    }
+
+    static bool TrySelectInstanceAtViewportPointInternal(float mouseX, float mouseY, float viewportWidth, float viewportHeight)
+    {
+        if (!g_HasLastRenderCameraData)
+            return false;
+
+        const Ray ray = ScreenPointToWorldRay(mouseX, mouseY, viewportWidth, viewportHeight, g_LastRenderCameraData);
+        return Scene::TrySelectInstanceFromRay(ray.origin, ray.direction);
+    }
 
     static void UpdateAnimatedInstances(
         std::vector<InstanceData>& instances,
@@ -534,12 +637,16 @@ namespace
     }
 }
 
+std::vector<SceneInstance> Scene::s_SceneInstances;
 std::vector<InstanceData> Scene::s_Instances;
 SceneStats Scene::s_LastStats{};
 uint32_t Scene::s_TargetInstanceCount = 25;
+uint32_t Scene::s_NextInstanceId = 1;
+bool Scene::s_SceneLayoutDirty = true;
 std::vector<Sphere> Scene::s_InstanceBounds;
 std::vector<UINT> Scene::s_VisibleInstanceIndices;
 std::vector<InstanceData> Scene::s_VisibleInstancesScratch;
+uint32_t Scene::s_SelectedInstanceId = 0;
 
 const InstanceData* Scene::GetVisibleInstancesCPU()
 {
@@ -563,12 +670,36 @@ uint64_t Scene::s_InstanceDataVersion = 1;
 uint64_t Scene::s_InstanceUploadedVersion = 0;
 
 const InstanceData* Scene::GetInstancesCPU() { return s_Instances.empty() ? nullptr : s_Instances.data(); }
-UINT Scene::GetInstanceCount() { return (UINT)s_Instances.size(); }
+UINT Scene::GetInstanceCount() { return (UINT)s_SceneInstances.size(); }
 uint64_t Scene::GetInstanceDataVersion() { return s_InstanceDataVersion; }
 uint64_t Scene::GetInstanceUploadedVersion() { return s_InstanceUploadedVersion; }
 void Scene::MarkInstancesDirty() { s_InstancesDirty = true; ++s_InstanceDataVersion; }
 void Scene::MarkInstancesUploaded(uint64_t version) { s_InstancesDirty = false; s_InstanceUploadedVersion = version; }
 ID3D12Resource* Scene::GetInstanceDefaultBuffer() { return s_InstanceBufferDefault.Get(); }
+const std::vector<SceneInstance>& Scene::GetInstances() { return s_SceneInstances; }
+SceneInstance* Scene::GetInstance(size_t index) { return index < s_SceneInstances.size() ? &s_SceneInstances[index] : nullptr; }
+SceneInstance* Scene::GetSelectedInstance()
+{
+    if (s_SelectedInstanceId == 0)
+        return nullptr;
+
+    for (auto& instance : s_SceneInstances)
+    {
+        if (instance.instanceId == s_SelectedInstanceId)
+            return &instance;
+    }
+
+    return nullptr;
+}
+
+bool Scene::TryGetLastRenderCameraData(CameraData& outCamera)
+{
+    if (!g_HasLastRenderCameraData)
+        return false;
+
+    outCamera = g_LastRenderCameraData;
+    return true;
+}
 
 void Scene::EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount)
 {
@@ -675,12 +806,9 @@ namespace
 
     static Sphere ComputeInstanceSphereFromWorld(const DirectX::XMMATRIX& world)
     {
-        // Canonical centered unit cube bounds. ([-0.5,+0.5] on each axis)
         static constexpr float kCubeLocalRadius = 0.8660254f;
 
         Sphere s{};
-
-        // Translation is in row3 for DirectXMath row-vector usage.
         DirectX::XMStoreFloat3(&s.Center, world.r[3]);
 
         const float maxScale = MaxBasisScaleFromWorld(world);
@@ -689,63 +817,74 @@ namespace
     }
 }
 
+void Scene::RebuildRenderInstancesFromSceneData()
+{
+    using namespace DirectX;
+
+    s_Instances.clear();
+    s_Instances.reserve(s_SceneInstances.size());
+    s_InstanceBounds.clear();
+    s_InstanceBounds.reserve(s_SceneInstances.size());
+
+    for (size_t i = 0; i < s_SceneInstances.size(); ++i)
+    {
+        const SceneInstance& sceneInstance = s_SceneInstances[i];
+        const XMMATRIX world = BuildSceneInstanceWorld(sceneInstance);
+
+        InstanceData inst{};
+        XMStoreFloat4x4(&inst.World, XMMatrixTranspose(world));
+        inst.Color = ComputeInstanceColor(i, s_SceneInstances.size());
+
+        s_Instances.push_back(inst);
+        s_InstanceBounds.push_back(ComputeInstanceSphereFromWorld(world));
+    }
+}
+
 void Scene::EnsureInstancesInitialized()
 {
-    static int s_lastAppliedCount = -1;
+    if (!s_SceneLayoutDirty)
+    {
+        ValidateSelection();
+        return;
+    }
 
     const int targetInstanceCount = (int)(std::max)(1u, s_TargetInstanceCount);
 
-    if (!s_Instances.empty() && s_lastAppliedCount == targetInstanceCount)
-        return;
-
-    s_lastAppliedCount = targetInstanceCount;
-
+    s_SceneInstances.clear();
+    s_SceneInstances.reserve((size_t)targetInstanceCount);
     s_Instances.clear();
-    s_Instances.reserve((size_t)targetInstanceCount);
-
     s_InstanceBounds.clear();
-    s_InstanceBounds.reserve((size_t)targetInstanceCount);
+    s_SelectedInstanceId = 0;
+    s_NextInstanceId = 1;
 
-    // Deterministic grid fill.
-    // Fill a square grid of ceil(sqrt(N)) x ceil(sqrt(N)), truncating to N.
     const int dim = (int)ceilf(sqrtf((float)targetInstanceCount));
 
     for (int x = 0; x < dim; ++x)
     {
         for (int z = 0; z < dim; ++z)
         {
-            if ((int)s_Instances.size() >= targetInstanceCount)
+            if ((int)s_SceneInstances.size() >= targetInstanceCount)
                 break;
 
             const int gx = x - dim / 2;
             const int gz = z - dim / 2;
 
-            InstanceData inst{};
-
-            const DirectX::XMMATRIX world = DirectX::XMMatrixTranslation(
-                float(gx) * 3.0f,
-                0.5f,
-                float(gz) * 3.0f);
-
-            // Bounds must be computed from the non-transposed CPU world matrix.
-            const Sphere bounds = ComputeInstanceSphereFromWorld(world);
-
-            // HLSL structured buffers default to column-major matrices.
-            // Store the transpose so `mul(float4(pos,1), World)` produces correct world space.
-            const DirectX::XMMATRIX worldT = DirectX::XMMatrixTranspose(world);
-            DirectX::XMStoreFloat4x4(&inst.World, worldT);
-
-            const float fx = (dim > 1) ? float(x) / float(dim - 1) : 0.5f;
-            const float fz = (dim > 1) ? float(z) / float(dim - 1) : 0.5f;
-            inst.Color = DirectX::XMFLOAT4(fx, 0.5f, fz, 1.0f);
-
-            s_Instances.push_back(inst);
-            s_InstanceBounds.push_back(bounds);
+            SceneInstance instance{};
+            instance.instanceId = s_NextInstanceId++;
+            instance.name = MakeSceneInstanceName(instance.instanceId);
+            instance.position = { float(gx) * 3.0f, 0.5f, float(gz) * 3.0f };
+            instance.rotation = { 0.0f, 0.0f, 0.0f };
+            instance.scale = { 1.0f, 1.0f, 1.0f };
+            instance.visible = true;
+            instance.materialIndex = 0;
+            s_SceneInstances.push_back(instance);
         }
-        if ((int)s_Instances.size() >= targetInstanceCount)
+        if ((int)s_SceneInstances.size() >= targetInstanceCount)
             break;
     }
 
+    s_SceneLayoutDirty = false;
+    RebuildRenderInstancesFromSceneData();
     MarkInstancesDirty();
 
 #ifndef NDEBUG
@@ -755,7 +894,7 @@ void Scene::EnsureInstancesInitialized()
         s_loggedBoundsOnce = true;
         const float r = s_InstanceBounds.empty() ? 0.0f : s_InstanceBounds.front().Radius;
         Logger::Log(LogLevel::Debug,
-            "[Culling] Bounds built | instances=" + std::to_string(s_Instances.size()) + " radius=" + std::to_string(r),
+            "[Culling] Bounds built | instances=" + std::to_string(s_SceneInstances.size()) + " radius=" + std::to_string(r),
             "[Scene]");
     }
 #endif
@@ -774,11 +913,346 @@ SceneStats Scene::GetLastStats()
 void Scene::SetTargetInstanceCount(uint32_t count)
 {
     s_TargetInstanceCount = (std::max)(1u, count);
+    s_SceneLayoutDirty = true;
 }
 
 uint32_t Scene::GetTargetInstanceCount()
 {
     return s_TargetInstanceCount;
+}
+
+void Scene::ValidateSelection()
+{
+    if (s_SelectedInstanceId == 0)
+        return;
+
+    for (const auto& instance : s_SceneInstances)
+    {
+        if (instance.instanceId == s_SelectedInstanceId)
+            return;
+    }
+
+    s_SelectedInstanceId = 0;
+}
+
+void Scene::SetSelectedInstanceIndex(int index)
+{
+    if (index < 0 || static_cast<size_t>(index) >= s_SceneInstances.size())
+    {
+        s_SelectedInstanceId = 0;
+        return;
+    }
+
+    s_SelectedInstanceId = s_SceneInstances[(size_t)index].instanceId;
+}
+
+int Scene::GetSelectedInstanceIndex()
+{
+    if (s_SelectedInstanceId == 0)
+        return -1;
+
+    for (size_t i = 0; i < s_SceneInstances.size(); ++i)
+    {
+        if (s_SceneInstances[i].instanceId == s_SelectedInstanceId)
+            return static_cast<int>(i);
+    }
+
+    return -1;
+}
+
+void Scene::SetSelectedInstanceId(uint32_t instanceId)
+{
+    s_SelectedInstanceId = instanceId;
+    ValidateSelection();
+}
+
+uint32_t Scene::GetSelectedInstanceId()
+{
+    return s_SelectedInstanceId;
+}
+
+bool Scene::TrySelectInstanceAtViewportPoint(float mouseX, float mouseY, float viewportWidth, float viewportHeight)
+{
+    return TrySelectInstanceAtViewportPointInternal(mouseX, mouseY, viewportWidth, viewportHeight);
+}
+
+bool Scene::TrySelectInstanceFromRay(const DirectX::XMFLOAT3& rayOrigin, const DirectX::XMFLOAT3& rayDir)
+{
+    Ray ray{};
+    ray.origin = rayOrigin;
+    ray.direction = rayDir;
+
+    int bestIndex = -1;
+    float bestT = FLT_MAX;
+
+    for (size_t i = 0; i < s_InstanceBounds.size() && i < s_SceneInstances.size(); ++i)
+    {
+        if (!s_SceneInstances[i].visible)
+            continue;
+
+        const Sphere& bounds = s_InstanceBounds[i];
+        const DirectX::XMFLOAT3 mins{
+            bounds.Center.x - bounds.Radius,
+            bounds.Center.y - bounds.Radius,
+            bounds.Center.z - bounds.Radius
+        };
+        const DirectX::XMFLOAT3 maxs{
+            bounds.Center.x + bounds.Radius,
+            bounds.Center.y + bounds.Radius,
+            bounds.Center.z + bounds.Radius
+        };
+
+        float t = 0.0f;
+        if (RayIntersectsAABB(ray, mins, maxs, t) && t < bestT)
+        {
+            bestT = t;
+            bestIndex = static_cast<int>(i);
+        }
+    }
+
+    SetSelectedInstanceIndex(bestIndex);
+    return s_SelectedInstanceId != 0;
+}
+
+bool Scene::GetSelectedInstanceTransform(DirectX::XMFLOAT3& outPosition, DirectX::XMFLOAT3& outRotation, DirectX::XMFLOAT3& outScale)
+{
+    SceneInstance* selected = GetSelectedInstance();
+    if (!selected)
+        return false;
+
+    outPosition = selected->position;
+    outRotation = selected->rotation;
+    outScale = selected->scale;
+    return true;
+}
+
+void Scene::DeleteSelectedInstance()
+{
+    const uint32_t selectedId = s_SelectedInstanceId;
+    if (selectedId == 0)
+        return;
+
+    const auto it = std::find_if(s_SceneInstances.begin(), s_SceneInstances.end(), [selectedId](const SceneInstance& instance)
+        {
+            return instance.instanceId == selectedId;
+        });
+    if (it == s_SceneInstances.end())
+        return;
+
+    s_SceneInstances.erase(it);
+    s_SelectedInstanceId = 0;
+    s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+}
+
+void Scene::DuplicateSelectedInstance()
+{
+    SceneInstance* selected = GetSelectedInstance();
+    if (!selected)
+        return;
+
+    SceneInstance copy = *selected;
+    copy.instanceId = s_NextInstanceId++;
+    copy.name += "_Copy";
+    copy.position.x += 0.5f;
+    copy.position.z += 0.5f;
+
+    s_SceneInstances.push_back(copy);
+    s_SelectedInstanceId = copy.instanceId;
+    s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+}
+
+void Scene::CreateCube(const DirectX::XMFLOAT3& position)
+{
+    SceneInstance instance{};
+    instance.instanceId = s_NextInstanceId++;
+    instance.name = MakeSceneInstanceName(instance.instanceId);
+    instance.position = position;
+    instance.rotation = { 0.0f, 0.0f, 0.0f };
+    instance.scale = { 1.0f, 1.0f, 1.0f };
+    instance.visible = true;
+    instance.materialIndex = 0;
+
+    s_SceneInstances.push_back(instance);
+    s_SelectedInstanceId = instance.instanceId;
+    s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+}
+
+static std::string EscapeJsonString(const std::string& value)
+{
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (char c : value)
+    {
+        switch (c)
+        {
+        case '\\': escaped += "\\\\"; break;
+        case '"': escaped += "\\\""; break;
+        case '\n': escaped += "\\n"; break;
+        case '\r': escaped += "\\r"; break;
+        case '\t': escaped += "\\t"; break;
+        default: escaped += c; break;
+        }
+    }
+    return escaped;
+}
+
+static std::string UnescapeJsonString(const std::string& value)
+{
+    std::string result;
+    result.reserve(value.size());
+    for (size_t i = 0; i < value.size(); ++i)
+    {
+        if (value[i] == '\\' && i + 1 < value.size())
+        {
+            ++i;
+            switch (value[i])
+            {
+            case '\\': result += '\\'; break;
+            case '"': result += '"'; break;
+            case 'n': result += '\n'; break;
+            case 'r': result += '\r'; break;
+            case 't': result += '\t'; break;
+            default: result += value[i]; break;
+            }
+        }
+        else
+        {
+            result += value[i];
+        }
+    }
+    return result;
+}
+
+bool Scene::SaveToFile(const std::string& path)
+{
+    std::filesystem::path outPath(path);
+    if (outPath.has_parent_path())
+        std::filesystem::create_directories(outPath.parent_path());
+
+    std::ofstream file(outPath, std::ios::trunc);
+    if (!file.is_open())
+    {
+        Logger::Log(LogLevel::Error, std::format("Failed to open scene file for save: {}", path), "[Scene]");
+        return false;
+    }
+
+    file << "{\n  \"sceneVersion\": 1,\n  \"instances\": [\n";
+    for (size_t i = 0; i < s_SceneInstances.size(); ++i)
+    {
+        const SceneInstance& inst = s_SceneInstances[i];
+        file << "    {\n";
+        file << "      \"id\": " << inst.instanceId << ",\n";
+        file << "      \"name\": \"" << EscapeJsonString(inst.name) << "\",\n";
+        file << "      \"position\": [" << inst.position.x << ", " << inst.position.y << ", " << inst.position.z << "],\n";
+        file << "      \"rotation\": [" << inst.rotation.x << ", " << inst.rotation.y << ", " << inst.rotation.z << "],\n";
+        file << "      \"scale\": [" << inst.scale.x << ", " << inst.scale.y << ", " << inst.scale.z << "],\n";
+        file << "      \"visible\": " << (inst.visible ? "true" : "false") << ",\n";
+        file << "      \"material\": " << inst.materialIndex << "\n";
+        file << "    }" << (i + 1 < s_SceneInstances.size() ? "," : "") << "\n";
+    }
+    file << "  ]\n}\n";
+
+    Logger::Log(LogLevel::Info, std::format("Saved scene: {}", path), "[Scene]");
+    return true;
+}
+
+bool Scene::LoadFromFile(const std::string& path)
+{
+    std::ifstream file(path);
+    if (!file.is_open())
+    {
+        Logger::Log(LogLevel::Error, std::format("Failed to open scene file for load: {}", path), "[Scene]");
+        return false;
+    }
+
+    const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    s_SceneInstances.clear();
+    s_SelectedInstanceId = 0;
+    size_t searchPos = 0;
+    uint32_t maxId = 0;
+
+    while ((searchPos = content.find("\"id\"", searchPos)) != std::string::npos)
+    {
+        auto readNumber = [&](const std::string& key, size_t fromPos, float& outValue) -> bool
+        {
+            const size_t keyPos = content.find(key, fromPos);
+            if (keyPos == std::string::npos) return false;
+            const size_t colon = content.find(':', keyPos);
+            if (colon == std::string::npos) return false;
+            size_t begin = content.find_first_of("-0123456789", colon);
+            if (begin == std::string::npos) return false;
+            size_t end = content.find_first_not_of("-+.0123456789eE", begin);
+            outValue = std::stof(content.substr(begin, end - begin));
+            return true;
+        };
+        auto readBool = [&](const std::string& key, size_t fromPos, bool& outValue) -> bool
+        {
+            const size_t keyPos = content.find(key, fromPos);
+            if (keyPos == std::string::npos) return false;
+            const size_t colon = content.find(':', keyPos);
+            if (colon == std::string::npos) return false;
+            const size_t begin = content.find_first_not_of(" \t\r\n", colon + 1);
+            if (begin == std::string::npos) return false;
+            outValue = content.compare(begin, 4, "true") == 0;
+            return true;
+        };
+        auto readString = [&](const std::string& key, size_t fromPos, std::string& outValue) -> bool
+        {
+            const size_t keyPos = content.find(key, fromPos);
+            if (keyPos == std::string::npos) return false;
+            const size_t colon = content.find(':', keyPos);
+            if (colon == std::string::npos) return false;
+            const size_t firstQuote = content.find('"', colon + 1);
+            if (firstQuote == std::string::npos) return false;
+            const size_t secondQuote = content.find('"', firstQuote + 1);
+            if (secondQuote == std::string::npos) return false;
+            outValue = UnescapeJsonString(content.substr(firstQuote + 1, secondQuote - firstQuote - 1));
+            return true;
+        };
+        auto readVector3 = [&](const std::string& key, size_t fromPos, DirectX::XMFLOAT3& outValue) -> bool
+        {
+            const size_t keyPos = content.find(key, fromPos);
+            if (keyPos == std::string::npos) return false;
+            const size_t open = content.find('[', keyPos);
+            const size_t close = content.find(']', open);
+            if (open == std::string::npos || close == std::string::npos) return false;
+            std::string values = content.substr(open + 1, close - open - 1);
+            std::replace(values.begin(), values.end(), ',', ' ');
+            std::istringstream stream(values);
+            stream >> outValue.x >> outValue.y >> outValue.z;
+            return !stream.fail();
+        };
+
+        SceneInstance inst{};
+        float idValue = 0.0f;
+        float materialValue = 0.0f;
+        if (!readNumber("\"id\"", searchPos, idValue)) break;
+        if (!readString("\"name\"", searchPos, inst.name)) break;
+        if (!readVector3("\"position\"", searchPos, inst.position)) break;
+        if (!readVector3("\"rotation\"", searchPos, inst.rotation)) break;
+        if (!readVector3("\"scale\"", searchPos, inst.scale)) break;
+        if (!readBool("\"visible\"", searchPos, inst.visible)) break;
+        if (!readNumber("\"material\"", searchPos, materialValue)) break;
+
+        inst.instanceId = static_cast<uint32_t>(idValue);
+        inst.materialIndex = static_cast<int>(materialValue);
+        s_SceneInstances.push_back(inst);
+        maxId = (std::max)(maxId, inst.instanceId);
+        ++searchPos;
+    }
+
+    s_NextInstanceId = maxId + 1;
+    s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
+    s_SceneLayoutDirty = false;
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+    Logger::Log(LogLevel::Info, std::format("Loaded scene: {}", path), "[Scene]");
 }
 
 void Scene::InitializeResources(ID3D12Device* device)
@@ -789,6 +1263,7 @@ void Scene::InitializeResources(ID3D12Device* device)
         return;
 
     EnsureInstancesInitialized();
+    RebuildRenderInstancesFromSceneData();
     EnsureInstanceBufferDefault(device, (UINT)s_Instances.size());
     (void)TextureManager::GetInstance().GetWhiteTexture();
     EnsureTestSceneMaterial();
@@ -843,7 +1318,11 @@ void Scene::Render(const SceneRenderContext& ctx)
         return;
     }
 
+    g_LastRenderCameraData = *ctx.camera;
+    g_HasLastRenderCameraData = true;
+
     EnsureInstancesInitialized();
+    RebuildRenderInstancesFromSceneData();
 
 #ifndef NDEBUG
     {
@@ -907,7 +1386,7 @@ void Scene::Render(const SceneRenderContext& ctx)
 
     for (UINT i = 0; i < (UINT)s_InstanceBounds.size(); ++i)
     {
-        if (SphereInsideFrustum(s_InstanceBounds[i], fr))
+        if (i < s_SceneInstances.size() && s_SceneInstances[i].visible && SphereInsideFrustum(s_InstanceBounds[i], fr))
             s_VisibleInstanceIndices.push_back(i);
     }
 
@@ -930,10 +1409,15 @@ void Scene::Render(const SceneRenderContext& ctx)
     for (UINT idx : s_VisibleInstanceIndices)
     {
         if (idx < s_Instances.size())
-            s_VisibleInstancesScratch.push_back(s_Instances[idx]);
+        {
+            InstanceData inst = s_Instances[idx];
+            if ((int)idx == GetSelectedInstanceIndex())
+                inst.Color.w = 2.0f;
+            s_VisibleInstancesScratch.push_back(inst);
+        }
     }
 
-    s_LastStats.totalObjects = static_cast<uint32_t>(s_Instances.size());
+    s_LastStats.totalObjects = static_cast<uint32_t>(s_SceneInstances.size());
     s_LastStats.visibleObjects = static_cast<uint32_t>(s_VisibleInstancesScratch.size());
 
     if (s_InstanceBufferDefault && !s_VisibleInstancesScratch.empty())

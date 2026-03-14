@@ -7,13 +7,19 @@
 #include "EditorState.h"
 #include "Engine.h"
 #include "Scene.h"
+#include "CameraData.h"
+#include "MaterialManager.h"
+#include "EditorGizmo.h"
+#include "UI.h"
 
 #include <format>
 #include <string>
 #include <chrono>
+#include <cstring>
 
 namespace EditorPanels
 {
+    static EditorGizmo g_EditorGizmo;
     static const char* ViewModeLabel(ViewMode m)
     {
         switch (m)
@@ -111,8 +117,46 @@ namespace EditorPanels
 
                     // Cache scene image rect for picking
                     const ImVec2 sceneMin = ImGui::GetItemRectMin();
+                    const ImVec2 overlayPos = { sceneMin.x + 10.0f, sceneMin.y + 10.0f };
 
-                    // Scene picking (LMB) - preserve camera-nav priority (RMB orbit / MMB pan)
+                    const char* modeText = "Translate";
+                    switch (g_EditorGizmo.GetMode())
+                    {
+                    case EditorGizmo::Mode::Rotate: modeText = "Rotate"; break;
+                    case EditorGizmo::Mode::Scale: modeText = "Scale"; break;
+                    case EditorGizmo::Mode::Translate:
+                    default: modeText = "Translate"; break;
+                    }
+
+                    const bool freelooking = gfx.GetSceneCamera().IsFreelooking();
+                    char gizmoHud[160] = {};
+                    snprintf(gizmoHud, sizeof(gizmoHud), "Mode: %s\nSnap: %s (1.0)\nCamera: %s", modeText, ImGui::GetIO().KeyCtrl ? "ON" : "OFF", freelooking ? "Fly" : "Idle");
+
+                    const ImVec2 hudSize = ImGui::CalcTextSize(gizmoHud, nullptr, false);
+                    ImDrawList* overlayDraw = ImGui::GetWindowDrawList();
+                    overlayDraw->AddRectFilled(
+                        ImVec2(overlayPos.x - 6.0f, overlayPos.y - 6.0f),
+                        ImVec2(overlayPos.x + hudSize.x + 6.0f, overlayPos.y + hudSize.y + 10.0f),
+                        IM_COL32(0, 0, 0, 160),
+                        4.0f);
+                    overlayDraw->AddText(overlayPos, IM_COL32(255, 255, 255, 255), gizmoHud);
+
+                    if (focused && !Engine::IsKeyboardCapturedByUI())
+                    {
+                        if (ImGui::IsKeyPressed(ImGuiKey_F))
+                        {
+                            if (SceneInstance* selected = Scene::GetSelectedInstance())
+                                gfx.GetSceneCamera().FocusOnPoint(selected->position, 6.0f);
+                        }
+
+                        if (ImGui::IsKeyPressed(ImGuiKey_Delete))
+                            Scene::DeleteSelectedInstance();
+
+                        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D))
+                            Scene::DuplicateSelectedInstance();
+                    }
+
+                    // Scene picking (LMB) - preserve camera-nav priority (RMB freelook)
                     if (hovered)
                     {
                         ImGuiIO& io = ImGui::GetIO();
@@ -120,105 +164,57 @@ namespace EditorPanels
                         const bool rmbDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
                         const bool mmbDown = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
 
-                        if (!io.WantCaptureMouse && lmbClicked && !rmbDown && !mmbDown)
-                        {
-                            DirectX::XMFLOAT3 hit{};
-                            PickRay ray{};
-
-                            const bool hitOk = (gfx.GetViewMode() == ViewMode::Mode2D)
-                                ? gfx.TryPickSceneGridZ0(io.MousePos, sceneMin, size, hit, &ray)
-                                : gfx.TryPickSceneGridY0(io.MousePos, sceneMin, size, hit, &ray);
-
-                            if (hitOk)
-                            {
-                                Logger::Log(LogLevel::Info, std::format(
-                                    "Pick hit: ({:.3f}, {:.3f}, {:.3f}) | ray o=({:.3f},{:.3f},{:.3f}) d=({:.3f},{:.3f},{:.3f})",
-                                    hit.x, hit.y, hit.z,
-                                    ray.origin.x, ray.origin.y, ray.origin.z,
-                                    ray.dir.x, ray.dir.y, ray.dir.z));
-                            }
-                            else
-                            {
-                                Logger::Log(LogLevel::Info, "Pick miss (no plane intersection)");
-                            }
-                        }
-                    }
-
-                    // Camera input gate: only when interacting with the Scene image OR the Scene window is focused.
-                    // (Prevents input feeling "stuck" when the image hover detection is flaky.)
-                    if (hovered || focused)
-                    {
-                        ImGuiIO& io = ImGui::GetIO();
-
-                        // Avoid fighting ImGui when it wants to capture mouse.
-                        if (!io.WantCaptureMouse)
+                        if (!Engine::IsMouseCapturedByUI() && lmbClicked && !rmbDown && !mmbDown)
                         {
                             extern Engine* g_engineInstance;
                             EditorState& editor = g_engineInstance->GetEditorState();
 
-                            const bool precision = io.KeyShift;
+                            const float localMouseX = io.MousePos.x - sceneMin.x;
+                            const float localMouseY = io.MousePos.y - sceneMin.y;
 
-                            const bool lmb = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-                            const bool rmb = ImGui::IsMouseDown(ImGuiMouseButton_Right);
-                            const bool mmb = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
-
-                            const bool alt = io.KeyAlt;
-                            const bool ctrl = io.KeyCtrl;
-
-                            float wheelDelta = 0.0f;
-                            if (io.MouseWheel != 0.0f)
-                                wheelDelta = io.MouseWheel * 120.0f; // match WM_MOUSEWHEEL units
-
-                            bool orbit = false;
-                            bool pan = false;
-                            bool dolly = false;
-
-                            // Map nav mode -> orbit/pan/dolly inputs
-                            switch (editor.cameraNavMode)
+                            if (Scene::TrySelectInstanceAtViewportPoint(localMouseX, localMouseY, size.x, size.y))
                             {
-                            case CameraNavMode::Unity_AltMouse:
-                                orbit = alt && lmb && (gfx.GetViewMode() == ViewMode::Mode3D);
-                                pan = alt && mmb;
-                                dolly = alt && rmb;
-                                break;
+                                DirectX::XMFLOAT3 pos{}, rot{}, scale{};
+                                if (Scene::GetSelectedInstanceTransform(pos, rot, scale))
+                                    editor.selection.position = pos;
 
-                            case CameraNavMode::Blender_MMB:
-                                orbit = mmb && !precision && !ctrl && (gfx.GetViewMode() == ViewMode::Mode3D);
-                                pan = mmb && precision;
-                                dolly = mmb && ctrl;
-                                break;
-
-                            case CameraNavMode::TFZ_RMB:
-                            default:
-                                orbit = rmb && !ctrl && (gfx.GetViewMode() == ViewMode::Mode3D);
-                                pan = mmb;
-                                dolly = rmb && ctrl;
-                                break;
+                                Logger::Log(LogLevel::Info, std::format("Selected instance {}", Scene::GetSelectedInstanceIndex()), "Editor");
                             }
-
-                            const bool navActive = orbit || pan || dolly || (wheelDelta != 0.0f);
-
-                            // If camera nav is active, cancel gizmo dragging and prevent starting LMB selection/drag.
-                            if (navActive)
+                            else
                             {
-                                if (editor.gizmo.dragging)
-                                    editor.gizmo.Reset();
+                                editor.selection.Clear();
+                                Logger::Log(LogLevel::Info, "Selection cleared", "Editor");
                             }
+                        }
+                    }
 
-                            // Never allow LMB picking to be interpreted as camera nav.
-                            // Also prevents accidental pan while clicking.
-                            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                                pan = false;
+                    {
+                        ImGuiIO& io = ImGui::GetIO();
+                        extern Engine* g_engineInstance;
+                        EditorState& editor = g_engineInstance->GetEditorState();
 
-                            // Dolly is implemented by converting mouse vertical delta into wheel-like zoom.
-                            // (Keeps the camera logic centralized in SceneCamera::UpdateOrbit())
-                            if (dolly)
+                        const bool allowCameraInput = hovered && focused && !g_EditorGizmo.IsDragging() && !Engine::IsKeyboardCapturedByUI();
+                        gfx.GetSceneCamera().UpdateEditorNavigation(io.DeltaTime, allowCameraInput);
+
+                        CameraData gizmoCamera{};
+                        const bool rmbDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                        const bool mmbDown = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+                        const bool allowGizmoInput = hovered && focused && !rmbDown && !mmbDown && !Engine::IsMouseCapturedByUI();
+                        if (Scene::TryGetLastRenderCameraData(gizmoCamera))
+                        {
+                            if (SceneInstance* selected = Scene::GetSelectedInstance())
                             {
-                                const float dollyScale = precision ? 0.75f : 1.5f;
-                                wheelDelta += (-io.MouseDelta.y) * dollyScale * 120.0f;
-                            }
+                                g_EditorGizmo.Update(
+                                    selected,
+                                    gizmoCamera,
+                                    ImGui::GetWindowDrawList(),
+                                    sceneMin,
+                                    size,
+                                    hovered,
+                                    allowGizmoInput);
 
-                            gfx.GetSceneCamera().UpdateOrbit(io.MouseDelta.x, io.MouseDelta.y, wheelDelta, orbit, pan, precision);
+                                editor.selection.position = selected->position;
+                            }
                         }
                     }
                 }
@@ -253,6 +249,7 @@ namespace EditorPanels
                 const float dt = (fps > 0.0f) ? (1.0f / fps) : 0.0f;
                 const float frameMs = dt * 1000.0f;
 
+                if (g_MonoFont) ImGui::PushFont(g_MonoFont);
                 ImGui::Text("FPS: %.1f", fps);
                 ImGui::Text("DeltaTime: %.4f s", dt);
                 ImGui::Text("Frame Time: %.2f ms", frameMs);
@@ -285,6 +282,10 @@ namespace EditorPanels
                 ImGui::Text("Camera Pitch: %.3f", cam.GetPitch());
                 ImGui::Text("Camera Dist:  %.3f", cam.GetDistance());
                 ImGui::Text("Camera Target: (%.2f, %.2f, %.2f)", targ.x, targ.y, targ.z);
+                ImGui::Separator();
+                ImGui::Text("UI Mouse Capture: %d", Engine::IsMouseCapturedByUI() ? 1 : 0);
+                ImGui::Text("UI Keyboard Capture: %d", Engine::IsKeyboardCapturedByUI() ? 1 : 0);
+                if (g_MonoFont) ImGui::PopFont();
             }
             ImGui::End();
         }
@@ -363,7 +364,19 @@ namespace EditorPanels
                 return;
             if (ImGui::Begin(panel.name, &panel.open))
             {
+                if (g_UIFontBold) ImGui::PushFont(g_UIFontBold);
                 ImGui::Text("\xef\x8c\xb3 Scene Hierarchy");
+                if (g_UIFontBold) ImGui::PopFont();
+
+                ImGui::Separator();
+                const auto& instances = Scene::GetInstances();
+                for (int i = 0; i < static_cast<int>(instances.size()); ++i)
+                {
+                    const SceneInstance& instance = instances[(size_t)i];
+                    const bool isSelected = (Scene::GetSelectedInstanceIndex() == i);
+                    if (ImGui::Selectable(instance.name.c_str(), isSelected))
+                        Scene::SetSelectedInstanceIndex(i);
+                }
             }
             ImGui::End();
         }
@@ -379,7 +392,40 @@ namespace EditorPanels
                 return;
             if (ImGui::Begin(panel.name, &panel.open))
             {
+                if (g_UIFontBold) ImGui::PushFont(g_UIFontBold);
                 ImGui::Text("\xef\x94\x8d Inspector");
+                if (g_UIFontBold) ImGui::PopFont();
+
+                if (SceneInstance* selected = Scene::GetSelectedInstance())
+                {
+                    char nameBuffer[128] = {};
+                    strncpy_s(nameBuffer, selected->name.c_str(), sizeof(nameBuffer) - 1);
+
+                    ImGui::Separator();
+                    ImGui::Text("Object ID: %u", selected->instanceId);
+                    if (ImGui::InputText("Name", nameBuffer, IM_ARRAYSIZE(nameBuffer)))
+                        selected->name = nameBuffer;
+
+                    ImGui::InputFloat3("Position", &selected->position.x);
+                    ImGui::InputFloat3("Rotation", &selected->rotation.x);
+                    ImGui::InputFloat3("Scale", &selected->scale.x);
+                    ImGui::Checkbox("Visible", &selected->visible);
+                    ImGui::Text("Material Index: %d", selected->materialIndex);
+
+                    if (Material* material = MaterialManager::GetInstance().GetMaterial("TestMaterial"))
+                    {
+                        ImGui::Separator();
+                        ImGui::Text("Material: %s", material->name.c_str());
+                        ImGui::Text("Albedo: %s", material->albedo ? "crate.png" : "<none>");
+                        ImGui::Text("Metallic: %.2f", material->metallic);
+                        ImGui::Text("Roughness: %.2f", material->roughness);
+                    }
+                }
+                else
+                {
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("No object selected.");
+                }
             }
             ImGui::End();
         }
@@ -395,7 +441,9 @@ namespace EditorPanels
                 return;
             if (ImGui::Begin(panel.name, &panel.open))
             {
+                if (g_UIFontBold) ImGui::PushFont(g_UIFontBold);
                 ImGui::Text("\xef\x93\xa6 Asset Browser");
+                if (g_UIFontBold) ImGui::PopFont();
             }
             ImGui::End();
         }

@@ -210,6 +210,113 @@ static std::string WStringToUTF8(const std::wstring& wstr)
     return str;
 }
 
+// Resolves the first existing font file path from a list of candidates
+namespace
+{
+    static std::string ResolveFontPath(std::initializer_list<const char*> candidates)
+    {
+        for (const char* candidate : candidates)
+        {
+            if (!candidate || !*candidate)
+                continue;
+
+            const DWORD attrs = GetFileAttributesA(candidate);
+            if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0)
+                return candidate;
+        }
+
+        return {};
+    }
+
+    static bool BuildEditorFontAtlas(float sizePx)
+    {
+        if (!ImGui::GetCurrentContext())
+            return false;
+
+        ImGuiIO& io = ImGui::GetIO();
+        if (!io.Fonts)
+            return false;
+
+        io.Fonts->Clear();
+
+        const float uiSize = (std::max)(14.0f, sizePx);
+        const float monoSize = (std::max)(13.0f, uiSize - 2.0f);
+
+        const std::string uiPath = ResolveFontPath({
+            "Fonts/Roboto-Regular.ttf",
+            "Assets/Fonts/Roboto-Regular.ttf",
+            "Assets/Fonts/Roboto-Medium.ttf",
+            "Dependencies/imgui-docking/misc/fonts/Roboto-Medium.ttf"
+        });
+
+        const std::string boldPath = ResolveFontPath({
+            "Fonts/Roboto-Bold.ttf",
+            "Assets/Fonts/Roboto-Bold.ttf",
+            "Assets/Fonts/Roboto-Medium.ttf",
+            "Dependencies/imgui-docking/misc/fonts/Roboto-Medium.ttf"
+        });
+
+        const std::string monoPath = ResolveFontPath({
+            "Fonts/JetBrainsMono-Regular.ttf",
+            "Assets/Fonts/JetBrainsMono-Regular.ttf",
+            "Fonts/JetBrainsMono.ttf",
+            "Assets/Fonts/DroidSans.ttf",
+            "Dependencies/imgui-docking/misc/fonts/DroidSans.ttf"
+        });
+
+        const std::string iconPath = ResolveFontPath({
+            "Fonts/fa-solid-900.ttf",
+            "Assets/Fonts/fa-solid-900.ttf"
+        });
+
+        g_UIFont = !uiPath.empty() ? io.Fonts->AddFontFromFileTTF(uiPath.c_str(), uiSize) : nullptr;
+        g_UIFontBold = !boldPath.empty() ? io.Fonts->AddFontFromFileTTF(boldPath.c_str(), uiSize) : nullptr;
+        g_MonoFont = !monoPath.empty() ? io.Fonts->AddFontFromFileTTF(monoPath.c_str(), monoSize) : nullptr;
+
+        if (!g_UIFont)
+            g_UIFont = io.Fonts->AddFontDefault();
+        if (!g_UIFontBold)
+            g_UIFontBold = g_UIFont;
+        if (!g_MonoFont)
+            g_MonoFont = g_UIFont;
+
+        if (!iconPath.empty())
+        {
+            static const ImWchar iconRanges[] = { 0xf000, 0xf8ff, 0 };
+
+            ImFontConfig iconCfg{};
+            iconCfg.MergeMode = true;
+            iconCfg.PixelSnapH = true;
+            iconCfg.GlyphMinAdvanceX = uiSize;
+            iconCfg.DstFont = g_UIFont;
+            io.Fonts->AddFontFromFileTTF(iconPath.c_str(), uiSize, &iconCfg, iconRanges);
+
+            if (g_UIFontBold && g_UIFontBold != g_UIFont)
+            {
+                ImFontConfig boldIconCfg = iconCfg;
+                boldIconCfg.DstFont = g_UIFontBold;
+                io.Fonts->AddFontFromFileTTF(iconPath.c_str(), uiSize, &boldIconCfg, iconRanges);
+            }
+        }
+
+        io.FontDefault = g_UIFont;
+        const bool built = io.Fonts->Build();
+
+        Logger::Log(built ? LogLevel::Info : LogLevel::Error, std::format(
+            "[UI] Font atlas {} | ui='{}' bold='{}' mono='{}' icons='{}' size={:.1f}/{:.1f}",
+            built ? "built" : "failed",
+            uiPath.empty() ? "<default>" : uiPath,
+            boldPath.empty() ? "<default>" : boldPath,
+            monoPath.empty() ? "<default>" : monoPath,
+            iconPath.empty() ? "<none>" : iconPath,
+            uiSize,
+            monoSize),
+            "UI");
+
+        return built;
+    }
+}
+
 // ✅ Validate command queue globally when needed
 void Graphics::EnsureValidCommandQueue() {
     if (!commandQueue) {
@@ -672,7 +779,28 @@ void Graphics::Shutdown()
     gpuTimingQueryIssued = false;
     gpuTimingDataReady = false;
 
-    // ...existing code...
+    // Common resources
+    SafeReleaseComPtr("commandQueue", commandQueue, false);
+    SafeReleaseComPtr("commandAllocator", commandAllocator, false);
+    SafeReleaseComPtr("commandList", commandList, false);
+    SafeReleaseComPtr("fence", fence, false);
+
+    // Dedicated upload context
+    SafeReleaseComPtr("uploadAllocator", uploadAllocator, false);
+    SafeReleaseComPtr("uploadCommandList", uploadCommandList, false);
+
+    SafeReleaseComPtr("rtvHeap", rtvHeap, false);
+    SafeReleaseComPtr("imguiHeap", imguiHeap, false);
+    SafeReleaseComPtr("sceneRtvHeap", sceneRtvHeap, false);
+    SafeReleaseComPtr("sceneDsvHeap", sceneDsvHeap, false);
+
+    // Bizarre: release swapchain last (or it may crash in Windows when exiting)
+    SafeReleaseComPtr("swapChain", swapChain, false);
+
+#ifndef NDEBUG
+    // Dump info queue on shutdown (mostly for leak tracking)
+    DX12_DumpInfoQueue(device.Get(), "Shutdown dump", 100);
+#endif
 }
 
 //=================================
@@ -2002,6 +2130,8 @@ bool Graphics::InitializeImGui(HWND inHwnd)
         io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
         io.ConfigViewportsNoAutoMerge = true;
         io.ConfigViewportsNoTaskBarIcon = false;
+
+        (void)BuildEditorFontAtlas(18.0f);
     }
 
     // ----------------------------------------------
@@ -2317,15 +2447,14 @@ void Graphics::ReloadImGuiFontImpl(float dpiScale, const char* callerFile, int c
 
     // Treat param as a pixel size (UI calls pass 14/16/18/20).
     const float sizePx = dpiScale;
-    ImFontConfig cfg{};
-    cfg.SizePixels = sizePx;
-    io.Fonts->AddFontDefault(&cfg);
-
-    // Build atlas on CPU.
-    io.Fonts->Build();
+    if (!BuildEditorFontAtlas(sizePx))
+    {
+        Logger::Log(LogLevel::Error, "🚨 ReloadImGuiFont() failed: editor font atlas build failed.");
+        return;
+    }
 
 #ifndef NDEBUG
-    if (!io.Fonts->IsBuilt() || io.Fonts->TexID == 0)
+    if (!io.Fonts->IsBuilt())
     {
         Logger::Log(LogLevel::Error,
             "🚨 ReloadImGuiFont() failed: Fonts atlas not built after Build().");

@@ -1,8 +1,43 @@
 #include "SceneCamera.h"
 
+#include "imgui.h"
+
 #include <algorithm>
+#include <cmath>
 
 using namespace DirectX;
+
+namespace
+{
+    static XMVECTOR NormalizeOrFallback(XMVECTOR v, XMVECTOR fallback)
+    {
+        if (XMVectorGetX(XMVector3LengthSq(v)) < 1e-6f)
+            return fallback;
+        return XMVector3Normalize(v);
+    }
+
+    static void SyncYawPitchFromView(XMVECTOR eye, XMVECTOR target, float& yaw, float& pitch)
+    {
+        const XMVECTOR forward = NormalizeOrFallback(target - eye, XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f));
+        const float fx = XMVectorGetX(forward);
+        const float fy = XMVectorGetY(forward);
+        const float fz = XMVectorGetZ(forward);
+        yaw = std::atan2(fx, fz);
+        pitch = std::asin((std::clamp)(fy, -1.0f, 1.0f));
+    }
+
+    static void BuildBasis(float yaw, float pitch, XMVECTOR& outForward, XMVECTOR& outRight, XMVECTOR& outUp)
+    {
+        const XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+        outForward = XMVector3Normalize(XMVectorSet(
+            std::cos(pitch) * std::sin(yaw),
+            std::sin(pitch),
+            std::cos(pitch) * std::cos(yaw),
+            0.0f));
+        outRight = NormalizeOrFallback(XMVector3Cross(worldUp, outForward), XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f));
+        outUp = NormalizeOrFallback(XMVector3Cross(outForward, outRight), worldUp);
+    }
+}
 
 XMMATRIX SceneCamera::GetView() const
 {
@@ -26,6 +61,115 @@ XMMATRIX SceneCamera::GetOrthoProj(float aspect) const
     return XMMatrixOrthographicLH(w, h, nearZ_, farZ_);
 }
 
+DirectX::XMFLOAT3 SceneCamera::GetPosition() const
+{
+    XMFLOAT3 p{};
+    XMStoreFloat3(&p, eye_);
+    return p;
+}
+
+DirectX::XMFLOAT3 SceneCamera::GetForward() const
+{
+    XMVECTOR forward{}, right{}, up{};
+    BuildBasis(yaw_, pitch_, forward, right, up);
+    XMFLOAT3 f{};
+    XMStoreFloat3(&f, forward);
+    return f;
+}
+
+DirectX::XMFLOAT3 SceneCamera::GetRight() const
+{
+    XMVECTOR forward{}, right{}, up{};
+    BuildBasis(yaw_, pitch_, forward, right, up);
+    XMFLOAT3 r{};
+    XMStoreFloat3(&r, right);
+    return r;
+}
+
+DirectX::XMFLOAT3 SceneCamera::GetUp() const
+{
+    XMVECTOR forward{}, right{}, up{};
+    BuildBasis(yaw_, pitch_, forward, right, up);
+    XMFLOAT3 u{};
+    XMStoreFloat3(&u, up);
+    return u;
+}
+
+void SceneCamera::FocusOn(const XMFLOAT3& position, float distance)
+{
+    distance_ = (std::clamp)(distance, 0.25f, 500.0f);
+
+    const XMVECTOR newTarget = XMVectorSet(position.x, position.y, position.z, 1.0f);
+    XMVECTOR forward = NormalizeOrFallback(target_ - eye_, XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f));
+
+    target_ = newTarget;
+    eye_ = target_ - forward * distance_;
+    SyncYawPitchFromView(eye_, target_, yaw_, pitch_);
+}
+
+void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput)
+{
+    if (!allowInput)
+    {
+        freelooking_ = false;
+        return;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    const bool rmbDown = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+    if (!rmbDown)
+    {
+        freelooking_ = false;
+    }
+    else if (!freelooking_)
+    {
+        SyncYawPitchFromView(eye_, target_, yaw_, pitch_);
+        freelooking_ = true;
+    }
+
+    XMVECTOR forward{}, right{}, up{};
+    BuildBasis(yaw_, pitch_, forward, right, up);
+
+    const float wheel = io.MouseWheel;
+    if (wheel != 0.0f)
+    {
+        const float wheelZoomSpeed = 2.0f;
+        const XMVECTOR zoomOffset = forward * (wheel * wheelZoomSpeed);
+        eye_ += zoomOffset;
+        target_ += zoomOffset;
+    }
+
+    if (!rmbDown)
+        return;
+
+    const float lookSpeed = 0.0035f;
+    yaw_ += io.MouseDelta.x * lookSpeed;
+    pitch_ -= io.MouseDelta.y * lookSpeed;
+
+    const float pitchLimit = XM_PIDIV2 - 0.05f;
+    pitch_ = (std::clamp)(pitch_, -pitchLimit, pitchLimit);
+
+    BuildBasis(yaw_, pitch_, forward, right, up);
+
+    float speed = 8.0f * (std::max)(deltaTime, 0.0001f);
+    if (io.KeyShift)
+        speed *= 2.5f;
+    if (io.KeyAlt)
+        speed *= 0.35f;
+
+    XMVECTOR move = XMVectorZero();
+    if (ImGui::IsKeyDown(ImGuiKey_W)) move += forward * speed;
+    if (ImGui::IsKeyDown(ImGuiKey_S)) move -= forward * speed;
+    if (ImGui::IsKeyDown(ImGuiKey_A)) move -= right * speed;
+    if (ImGui::IsKeyDown(ImGuiKey_D)) move += right * speed;
+    if (ImGui::IsKeyDown(ImGuiKey_Q)) move -= up * speed;
+    if (ImGui::IsKeyDown(ImGuiKey_E)) move += up * speed;
+
+    eye_ += move;
+    target_ = eye_ + forward * distance_;
+    up_ = up;
+}
+
 void SceneCamera::UpdateOrbit(float deltaX, float deltaY, float wheelDelta, bool orbit, bool pan, bool precision)
 {
     const float orbitSpeed = precision ? 0.0035f : 0.01f;
@@ -35,8 +179,6 @@ void SceneCamera::UpdateOrbit(float deltaX, float deltaY, float wheelDelta, bool
     {
         yaw_ += deltaX * orbitSpeed;
         pitch_ += deltaY * orbitSpeed;
-
-        // Clamp pitch to avoid gimbal flip.
         pitch_ = (std::clamp)(pitch_, -1.45f, 1.45f);
     }
 
