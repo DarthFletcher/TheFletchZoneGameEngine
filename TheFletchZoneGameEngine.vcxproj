@@ -200,6 +200,7 @@
     <ClInclude Include="include\Utils.h" />
     <ClInclude Include="Include\Vertex.h" />
     <ClInclude Include="Include\Win32Common.h" />
+    <ClInclude Include="resource.h" />
     <ClInclude Include="Src\GpuMarkers.h" />
     <ClInclude Include="Third Party\stb_image.h" />
     <ClInclude Include="Include\TextureManager.h" />
@@ -249,10 +250,6 @@
     <ResourceCompile Include="TheFletchZoneGameEngine.rc" />
   </ItemGroup>
   <ItemGroup>
-    <Image Include="small.ico" />
-    <Image Include="TheFletchZoneGameEngine.ico" />
-  </ItemGroup>
-  <ItemGroup>
     <None Include="CHANGELOG.md" />
     <None Include="cpp.hint" />
     <None Include="Directory.Build.props" />
@@ -292,6 +289,11 @@
     <Font Include="Assets\Fonts\Roboto-Medium.ttf">
       <DeploymentContent Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</DeploymentContent>
     </Font>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="icon1.ico" />
+    <Image Include="icon2.ico" />
+    <Image Include="TheFletchZoneGameEngine.ico" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

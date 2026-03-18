@@ -226,6 +226,15 @@ public:
     void RequestSceneRenderTargetResize(UINT width, UINT height, ResizeSource source);
     void ProcessPendingSceneRenderTargetResize();
     void RenderSceneToTarget();
+    void SetSceneViewportCameraInputState(bool hovered, bool focused, bool allowCameraInput)
+    {
+        sceneViewportHovered = hovered;
+        sceneViewportFocused = focused;
+        sceneViewportAllowCameraInput = allowCameraInput;
+    }
+    bool IsSceneViewportHovered() const { return sceneViewportHovered; }
+    bool IsSceneViewportFocused() const { return sceneViewportFocused; }
+    bool IsSceneViewportCameraInputAllowed() const { return sceneViewportAllowCameraInput; }
     ImTextureID GetSceneImGuiTextureID() const { return sceneImGuiTextureID; }
     ImVec2 GetSceneRenderTargetSize() const { return ImVec2((float)sceneRTWidth, (float)sceneRTHeight); }
 
@@ -416,6 +425,9 @@ private:
     ID3D12DescriptorHeap* imguiSrvHeap = nullptr;
 
     SceneCamera sceneCamera;
+    bool sceneViewportHovered = false;
+    bool sceneViewportFocused = false;
+    bool sceneViewportAllowCameraInput = false;
 
     UINT pendingWidth = 0;
     UINT pendingHeight = 0;

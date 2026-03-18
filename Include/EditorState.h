@@ -104,6 +104,15 @@ struct EditorState
     GridMode gridMode = GridMode::Infinite_CameraPivot;
     ViewMode viewMode = ViewMode::Mode3D;
 
+    // Camera feel
+    bool invertLookX = false;
+    bool invertLookY = false;
+    bool smoothLook = true;
+    float lookSmoothing = 0.22f;
+    float flyLookSpeed = 0.0018f;
+    float orbitLookSpeed = 0.0055f;
+    float flyMoveSpeed = 8.0f;
+
     // Core interaction state
     EditorSelection selection;
     GizmoInteraction gizmo;

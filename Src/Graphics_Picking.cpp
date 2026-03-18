@@ -21,10 +21,9 @@ PickRay Graphics::ComputeScenePickRay(ImVec2 mousePos, ImVec2 sceneMin, ImVec2 s
     if (sceneRTWidth > 0 && sceneRTHeight > 0)
         aspect = (float)sceneRTWidth / (float)sceneRTHeight;
 
-    const XMMATRIX view = sceneCamera.GetView();
-    const XMMATRIX proj = (GetViewMode() == ViewMode::Mode2D)
-        ? sceneCamera.GetOrthoProj(aspect)
-        : sceneCamera.GetProj(aspect);
+    const CameraData camera = sceneCamera.GetCameraData(aspect);
+    const XMMATRIX view = XMLoadFloat4x4(&camera.view);
+    const XMMATRIX proj = XMLoadFloat4x4(&camera.proj);
 
     const XMMATRIX invViewProj = XMMatrixInverse(nullptr, view * proj);
 

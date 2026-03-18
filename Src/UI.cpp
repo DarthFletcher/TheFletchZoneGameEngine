@@ -114,7 +114,6 @@ namespace UI {
         g_commandStripTouchedThisFrame = false;
 
         UI::BeginDockSpace();
-        UI::DrawToolbar();
         UI::DrawEditorPanels();
         UI::DrawOverlays();
         UI::EndDockSpaceFrame();
@@ -729,31 +728,49 @@ namespace UI {
                  if (ImGui::MenuItem("TFZ (RMB)", nullptr, isTFZ))
                      editor.cameraNavMode = CameraNavMode::TFZ_RMB;
 
+                 ImGui::Separator();
+                 ImGui::MenuItem("Invert Look X", nullptr, &editor.invertLookX);
+                 ImGui::MenuItem("Invert Look Y", nullptr, &editor.invertLookY);
+                 ImGui::MenuItem("Smooth Look", nullptr, &editor.smoothLook);
+                 ImGui::SliderFloat("Look Smoothing", &editor.lookSmoothing, 0.0f, 0.90f, "%.2f");
+                 ImGui::SliderFloat("Fly Look Speed", &editor.flyLookSpeed, 0.0005f, 0.0060f, "%.4f");
+                 ImGui::SliderFloat("Orbit Look Speed", &editor.orbitLookSpeed, 0.0010f, 0.0120f, "%.4f");
+                 ImGui::SliderFloat("Fly Move Speed", &editor.flyMoveSpeed, 1.0f, 50.0f, "%.1f");
+
                  ImGui::EndMenu();
              }
 
              if (ImGui::BeginMenu("View Mode"))
              {
-                 const bool is3D = (editor.viewMode == ViewMode::Mode3D);
-                 const bool is2D = (editor.viewMode == ViewMode::Mode2D);
+                 auto& gfx = Graphics::GetInstance();
+                 auto& sceneCamera = gfx.GetSceneCamera();
+                 const bool is3D = (gfx.GetViewMode() == ViewMode::Mode3D);
+                 const bool is2D = (gfx.GetViewMode() == ViewMode::Mode2D);
 
                  if (ImGui::MenuItem("3D", nullptr, is3D))
-                     editor.viewMode = ViewMode::Mode3D;
+                 {
+                     gfx.SetViewMode(ViewMode::Mode3D);
+                     sceneCamera.SetViewPreset(SceneCamera::ViewPreset::View3D);
+                 }
                  if (ImGui::MenuItem("2D", nullptr, is2D))
-                     editor.viewMode = ViewMode::Mode2D;
+                 {
+                     gfx.SetViewMode(ViewMode::Mode2D);
+                     sceneCamera.SetViewPreset(SceneCamera::ViewPreset::View2D);
+                 }
 
                  ImGui::EndMenu();
              }
 
-             if (ImGui::BeginMenu("Grid Mode"))
+             if (ImGui::BeginMenu("Projection"))
              {
-                 const bool isInfinite = (editor.gridMode == GridMode::Infinite_CameraPivot);
-                 const bool isFixed = (editor.gridMode == GridMode::Fixed_WorldOrigin);
+                 auto& sceneCamera = Graphics::GetInstance().GetSceneCamera();
+                 const bool isPerspective = (sceneCamera.GetProjectionMode() == SceneCamera::ProjectionMode::Perspective);
+                 const bool isOrtho = (sceneCamera.GetProjectionMode() == SceneCamera::ProjectionMode::Orthographic);
 
-                 if (ImGui::MenuItem("Infinite", nullptr, isInfinite))
-                     editor.gridMode = GridMode::Infinite_CameraPivot;
-                 if (ImGui::MenuItem("Fixed (World Origin)", nullptr, isFixed))
-                     editor.gridMode = GridMode::Fixed_WorldOrigin;
+                 if (ImGui::MenuItem("Perspective", nullptr, isPerspective, !sceneCamera.Is2DMode()))
+                    sceneCamera.SetProjectionMode(SceneCamera::ProjectionMode::Perspective);
+                 if (ImGui::MenuItem("Orthographic", nullptr, isOrtho))
+                    sceneCamera.SetProjectionMode(SceneCamera::ProjectionMode::Orthographic);
 
                  ImGui::EndMenu();
              }
@@ -928,13 +945,20 @@ namespace UI {
             if (ImGui::BeginMenu("View Mode"))
             {
                 auto& gfx = Graphics::GetInstance();
+                auto& sceneCamera = gfx.GetSceneCamera();
                 const bool is3D = (gfx.GetViewMode() == ViewMode::Mode3D);
                 const bool is2D = (gfx.GetViewMode() == ViewMode::Mode2D);
 
                 if (ImGui::MenuItem("3D", nullptr, is3D))
+                {
                     gfx.SetViewMode(ViewMode::Mode3D);
+                    sceneCamera.SetViewPreset(SceneCamera::ViewPreset::View3D);
+                }
                 if (ImGui::MenuItem("2D", nullptr, is2D))
+                {
                     gfx.SetViewMode(ViewMode::Mode2D);
+                    sceneCamera.SetViewPreset(SceneCamera::ViewPreset::View2D);
+                }
 
                 ImGui::EndMenu();
             }
@@ -943,7 +967,11 @@ namespace UI {
 
         // Lightweight indicator in the menu bar.
         ImGui::SameLine();
-        ImGui::Text("View: %s", ViewModeLabel(Graphics::GetInstance().GetViewMode()));
+        {
+            auto& gfx = Graphics::GetInstance();
+            const char* projectionText = (gfx.GetSceneCamera().GetProjectionMode() == SceneCamera::ProjectionMode::Perspective) ? "Persp" : "Ortho";
+            ImGui::Text("View: %s | %s", ViewModeLabel(gfx.GetViewMode()), projectionText);
+        }
 
         ImGui::EndMainMenuBar();
     }
@@ -957,87 +985,4 @@ namespace UI {
     {
       SplashScreen::DrawSplash();
     }
-}
-
-namespace UI {
-
-    // ...existing code...
-
-    void DrawToolbar()
-    {
-        g_commandStripTouchedThisFrame = true;
-
-        if (!g_showCommandStrip)
-            return;
-
-        ImGuiViewport* vp = ImGui::GetMainViewport();
-        if (!vp)
-            return;
-
-        const float stripH = GetCommandStripReservedHeight();
-        const ImVec2 pos = vp->WorkPos;
-        const ImVec2 size = ImVec2(vp->WorkSize.x, stripH);
-
-        ImGui::SetNextWindowPos(pos);
-        ImGui::SetNextWindowSize(size);
-
-        const ImGuiWindowFlags flags =
-            ImGuiWindowFlags_NoDocking |
-            ImGuiWindowFlags_NoTitleBar |
-            ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoScrollbar |
-            ImGuiWindowFlags_NoSavedSettings;
-
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
-
-        if (ImGui::Begin("##Toolbar", nullptr, flags))
-        {
-            const Engine::State s = Engine::GetState();
-            const bool playing = (s == Engine::State::Playing);
-            const bool paused = (s == Engine::State::Paused);
-
-            const char* playLabel = ICON_FA_PLAY "##Play";
-            const char* pauseLabel = ICON_FA_PAUSE "##Pause";
-            const char* stopLabel = ICON_FA_STOP "##Stop";
-
-            if (playing)
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.70f, 0.20f, 1.0f));
-            if (ImGui::Button(playLabel))
-                Engine::SetState(Engine::State::Playing);
-            if (playing)
-                ImGui::PopStyleColor();
-
-            ImGui::SameLine();
-
-            if (paused)
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80f, 0.70f, 0.10f, 1.0f));
-            if (ImGui::Button(pauseLabel))
-                Engine::SetState(Engine::State::Paused);
-            if (paused)
-                ImGui::PopStyleColor();
-
-            ImGui::SameLine();
-
-            if (ImGui::Button(stopLabel))
-                Engine::SetState(Engine::State::Editing);
-
-            ImGui::SameLine();
-            ImGui::Dummy(ImVec2(12.0f, 0.0f));
-            ImGui::SameLine();
-
-            const char* stateText = (s == Engine::State::Editing) ? "Editing" : (s == Engine::State::Playing) ? "Playing" : "Paused";
-            ImGui::TextUnformatted(stateText);
-        }
-        ImGui::End();
-
-        ImGui::PopStyleVar(3);
-
-        // Reserve the strip area from docking.
-        vp->WorkPos.y += stripH;
-        vp->WorkSize.y -= stripH;
-    }
-
 }

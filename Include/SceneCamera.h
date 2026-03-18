@@ -1,15 +1,31 @@
 #pragma once
 
 #include <DirectXMath.h>
+#include "CameraData.h"
+#include "EditorState.h"
 
 class SceneCamera
 {
 public:
+    enum class ProjectionMode
+    {
+        Perspective,
+        Orthographic
+    };
+
+    enum class ViewPreset
+    {
+        View3D,
+        View2D
+    };
+
     SceneCamera() = default;
 
     DirectX::XMMATRIX GetView() const;
     DirectX::XMMATRIX GetProj(float aspect) const;
     DirectX::XMMATRIX GetOrthoProj(float aspect) const;
+    CameraData GetCameraData(float aspect, bool ortho) const;
+    CameraData GetCameraData(float aspect) const;
 
     void SetEye(float x, float y, float z) { eye_ = DirectX::XMVectorSet(x, y, z, 1.0f); }
     void SetTarget(float x, float y, float z) { target_ = DirectX::XMVectorSet(x, y, z, 1.0f); }
@@ -19,9 +35,18 @@ public:
     void SetNearFar(float nearZ, float farZ) { nearZ_ = nearZ; farZ_ = farZ; }
     void SetOrthoHeight(float h) { orthoHeight_ = h; }
 
+    void SetProjectionMode(ProjectionMode mode) { projectionMode_ = mode; }
+    ProjectionMode GetProjectionMode() const { return projectionMode_; }
+    void ToggleProjectionMode() { projectionMode_ = (projectionMode_ == ProjectionMode::Perspective) ? ProjectionMode::Orthographic : ProjectionMode::Perspective; }
+    void SetNavigationTuning(bool invertX, bool invertY, bool smoothLook, float lookSmoothing, float flyLookSpeed, float orbitLookSpeed, float flyMoveSpeed);
+
+    void SetViewPreset(ViewPreset preset);
+    ViewPreset GetViewPreset() const { return viewPreset_; }
+
     void FocusOn(const DirectX::XMFLOAT3& position, float distance = 5.0f);
     void FocusOnPoint(const DirectX::XMFLOAT3& position, float distance = 5.0f) { FocusOn(position, distance); }
     void UpdateEditorNavigation(float deltaTime, bool allowInput);
+    void UpdateEditorNavigation(float deltaTime, bool allowInput, CameraNavMode navMode);
 
     // Orbit camera controls (Scene view)
     void UpdateOrbit(float deltaX, float deltaY, float wheelDelta, bool orbit, bool pan, bool precision);
@@ -37,23 +62,34 @@ public:
     DirectX::XMFLOAT3 GetForward() const;
     DirectX::XMFLOAT3 GetRight() const;
     DirectX::XMFLOAT3 GetUp() const;
+    bool Is2DMode() const { return viewPreset_ == ViewPreset::View2D; }
 
 private:
     // Backing vectors used for rendering.
     DirectX::XMVECTOR eye_ = DirectX::XMVectorSet(0.0f, 2.5f, -4.5f, 1.0f);
     DirectX::XMVECTOR target_ = DirectX::XMVectorZero();
     DirectX::XMVECTOR up_ = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    DirectX::XMVECTOR orbitPivot_ = DirectX::XMVectorZero();
 
     // Orbit state
     float yaw_ = 0.0f;
     float pitch_ = 0.35f;
     float distance_ = 5.0f;
     bool freelooking_ = false;
+    ProjectionMode projectionMode_ = ProjectionMode::Perspective;
+    ViewPreset viewPreset_ = ViewPreset::View3D;
+    bool invertLookX_ = false;
+    bool invertLookY_ = false;
+    bool smoothLook_ = true;
+    float lookSmoothing_ = 0.22f;
+    float flyLookSpeed_ = 0.0018f;
+    float orbitLookSpeed_ = 0.0055f;
+    float flyMoveSpeed_ = 8.0f;
+    bool orbitInteracting_ = false;
+    DirectX::XMFLOAT2 smoothedLookDelta_{ 0.0f, 0.0f };
 
     float fovY_ = DirectX::XMConvertToRadians(60.0f);
     float nearZ_ = 0.1f;
     float farZ_ = 100.0f;
-
-    // Ortho (2D view) zoom scale expressed as view height in world units.
     float orthoHeight_ = 10.0f;
 };

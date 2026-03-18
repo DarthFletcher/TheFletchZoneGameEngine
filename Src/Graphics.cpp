@@ -1383,11 +1383,18 @@ void Graphics::BeginFrame(HWND hWnd)
 
     // Phase 3C: update engine-owned camera exactly once per frame, before any scene draw.
     // Use the scene render target dimensions for correct aspect (not the main window).
-    CameraSystem::Update(
-        frameNumber,
-        static_cast<float>(Graphics::deltaTime),
-        (uint32_t)(sceneRTWidth != 0 ? sceneRTWidth : (UINT)screenWidth),
-        (uint32_t)(sceneRTHeight != 0 ? sceneRTHeight : (UINT)screenHeight));
+    const float aspect = (sceneRTHeight > 0) ? ((float)sceneRTWidth / (float)sceneRTHeight) : 1.0f;
+    const CameraData camera = sceneCamera.GetCameraData(aspect);
+
+    SceneRenderContext sceneCtx{};
+    sceneCtx.device = device.Get();
+    sceneCtx.commandList = commandList.Get();
+    sceneCtx.viewportWidth = sceneRTWidth;
+    sceneCtx.viewportHeight = sceneRTHeight;
+    sceneCtx.frameIndex = Logger::GetFrameNumber();
+    sceneCtx.camera = &camera;
+
+    Scene::Render(sceneCtx);
 
     // Phase 1B drift detector: per-buffer fence stamps must never exceed the last signaled fence.
     // Guard: skip until we have actually signaled at least once (Frame 0/1 bring-up).
@@ -2759,7 +2766,8 @@ void Graphics::RenderSceneToTarget()
     if (sceneDsvHandle.ptr != 0)
         commandList->ClearDepthStencilView(sceneDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    const CameraData& camera = CameraSystem::GetActiveData();
+    const float aspect = (sceneRTHeight > 0) ? ((float)sceneRTWidth / (float)sceneRTHeight) : 1.0f;
+    const CameraData camera = sceneCamera.GetCameraData(aspect);
 
     SceneRenderContext sceneCtx{};
     sceneCtx.device = device.Get();
@@ -2777,6 +2785,22 @@ void Graphics::RenderSceneToTarget()
 void Graphics::Render(HWND hWnd)
 {
     (void)hWnd;
+
+    extern Engine* g_engineInstance;
+    const CameraNavMode navMode = g_engineInstance ? g_engineInstance->GetEditorState().cameraNavMode : CameraNavMode::TFZ_RMB;
+    if (g_engineInstance)
+    {
+        const EditorState& editor = g_engineInstance->GetEditorState();
+        sceneCamera.SetNavigationTuning(
+            editor.invertLookX,
+            editor.invertLookY,
+            editor.smoothLook,
+            editor.lookSmoothing,
+            editor.flyLookSpeed,
+            editor.orbitLookSpeed,
+            editor.flyMoveSpeed);
+    }
+    sceneCamera.UpdateEditorNavigation(ImGui::GetIO().DeltaTime, sceneViewportAllowCameraInput, navMode);
 
     // Render the Scene viewport target first (so UI can display it via ImGui::Image)
 #ifndef NDEBUG

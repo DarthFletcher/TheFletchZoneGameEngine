@@ -66,10 +66,24 @@ public:
 
     static bool TrySelectInstanceAtViewportPoint(float mouseX, float mouseY, float viewportWidth, float viewportHeight);
     static bool TrySelectInstanceFromRay(const DirectX::XMFLOAT3& rayOrigin, const DirectX::XMFLOAT3& rayDir);
+    static bool TrySelectInstanceAtViewportPoint(float mouseX, float mouseY, float viewportWidth, float viewportHeight, bool additive, bool toggle);
+    static bool TrySelectInstanceFromRay(const DirectX::XMFLOAT3& rayOrigin, const DirectX::XMFLOAT3& rayDir, bool additive, bool toggle);
+    static bool TryHoverInstanceAtViewportPoint(float mouseX, float mouseY, float viewportWidth, float viewportHeight);
+    static bool TryHoverInstanceFromRay(const DirectX::XMFLOAT3& rayOrigin, const DirectX::XMFLOAT3& rayDir);
+    static void ClearHoveredInstance();
+    static uint32_t GetHoveredInstanceId();
     static void SetSelectedInstanceIndex(int index);
     static int GetSelectedInstanceIndex();
     static void SetSelectedInstanceId(uint32_t instanceId);
     static uint32_t GetSelectedInstanceId();
+    static bool IsInstanceSelected(uint32_t instanceId);
+    static void AddSelectedInstanceId(uint32_t instanceId);
+    static void RemoveSelectedInstanceId(uint32_t instanceId);
+    static void ToggleSelectedInstanceId(uint32_t instanceId);
+    static void ClearSelection();
+    static const std::vector<uint32_t>& GetSelectedInstanceIds();
+    static bool TryGetSelectionCenter(DirectX::XMFLOAT3& outCenter);
+    static DirectX::XMFLOAT3 GetSelectionCenterOrActivePosition();
     static bool GetSelectedInstanceTransform(DirectX::XMFLOAT3& outPosition, DirectX::XMFLOAT3& outRotation, DirectX::XMFLOAT3& outScale);
     static SceneInstance* GetSelectedInstance();
     static SceneInstance* GetInstance(size_t index);
@@ -107,6 +121,8 @@ private:
     static std::vector<InstanceData> s_VisibleInstancesScratch;
 
     static uint32_t s_SelectedInstanceId;
+    static uint32_t s_HoveredInstanceId;
+    static std::vector<uint32_t> s_SelectedInstanceIds;
 
     static D3D12_CPU_DESCRIPTOR_HANDLE s_InstanceSRVCpu;
     static D3D12_GPU_DESCRIPTOR_HANDLE s_InstanceSRVGpu;
