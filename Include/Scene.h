@@ -18,6 +18,7 @@ struct CameraData;
 struct SceneInstance
 {
     uint32_t instanceId = 0;
+    uint32_t parentInstanceId = 0;
     std::string name;
     DirectX::XMFLOAT3 position{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 rotation{ 0.0f, 0.0f, 0.0f };
@@ -84,6 +85,12 @@ public:
     static const std::vector<uint32_t>& GetSelectedInstanceIds();
     static bool TryGetSelectionCenter(DirectX::XMFLOAT3& outCenter);
     static DirectX::XMFLOAT3 GetSelectionCenterOrActivePosition();
+    static bool CanParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId);
+    static bool SetParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId, bool keepWorldTransform = true);
+    static uint32_t GetParentInstanceId(uint32_t instanceId);
+    static DirectX::XMFLOAT3 GetInstanceWorldPosition(uint32_t instanceId);
+    static bool TryGetInstanceWorldMatrix(uint32_t instanceId, DirectX::XMFLOAT4X4& outWorld);
+    static std::vector<uint32_t> GetChildInstanceIds(uint32_t parentInstanceId);
     static bool GetSelectedInstanceTransform(DirectX::XMFLOAT3& outPosition, DirectX::XMFLOAT3& outRotation, DirectX::XMFLOAT3& outScale);
     static SceneInstance* GetSelectedInstance();
     static SceneInstance* GetInstance(size_t index);
@@ -95,6 +102,8 @@ public:
     static void CreateCube(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
     static bool SaveToFile(const std::string& path);
     static bool LoadFromFile(const std::string& path);
+    static std::string SerializeToString();
+    static bool LoadFromString(const std::string& content);
 
     static const InstanceData* GetInstancesCPU();
     static UINT GetInstanceCount();

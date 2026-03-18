@@ -411,6 +411,17 @@ namespace
         }
         return nullptr;
     }
+
+    static XMFLOAT3 RotatePointAroundAxis(const XMFLOAT3& point, const XMFLOAT3& center, const XMFLOAT3& axis, float angle)
+    {
+        const XMVECTOR p = XMLoadFloat3(&point);
+        const XMVECTOR c = XMLoadFloat3(&center);
+        const XMVECTOR a = XMVector3Normalize(XMLoadFloat3(&axis));
+        const XMMATRIX rot = XMMatrixRotationAxis(a, angle);
+        XMFLOAT3 result{};
+        XMStoreFloat3(&result, XMVector3TransformCoord(p - c, rot) + c);
+        return result;
+    }
 }
 
 void EditorGizmo::SetMode(Mode m)
@@ -429,6 +440,8 @@ void EditorGizmo::SetMode(Mode m)
     hasDragStartHit = false;
     activeRotationDegrees = 0.0f;
     dragStartSelectionPositions.clear();
+    dragStartSelectionRotations.clear();
+    dragStartSelectionScales.clear();
 }
 
 EditorGizmo::Mode EditorGizmo::GetMode() const
@@ -443,7 +456,8 @@ void EditorGizmo::Update(
     ImVec2 sceneMin,
     ImVec2 sceneSize,
     bool viewportHovered,
-    bool allowInput)
+    bool allowInput,
+    bool useSelectionCenter)
 {
     if (!instance || !drawList)
         return;
@@ -451,19 +465,31 @@ void EditorGizmo::Update(
     ImGuiIO& io = ImGui::GetIO();
     auto captureDragSelection = [this, instance]() {
         dragStartSelectionPositions.clear();
+        dragStartSelectionRotations.clear();
+        dragStartSelectionScales.clear();
         const auto& selectedIds = Scene::GetSelectedInstanceIds();
         if (!selectedIds.empty())
         {
             dragStartSelectionPositions.reserve(selectedIds.size());
+            dragStartSelectionRotations.reserve(selectedIds.size());
+            dragStartSelectionScales.reserve(selectedIds.size());
             for (uint32_t id : selectedIds)
             {
                 if (SceneInstance* selectedInstance = FindSceneInstanceById(id))
+                {
                     dragStartSelectionPositions.emplace_back(id, selectedInstance->position);
+                    dragStartSelectionRotations.emplace_back(id, selectedInstance->rotation);
+                    dragStartSelectionScales.emplace_back(id, selectedInstance->scale);
+                }
             }
         }
 
         if (dragStartSelectionPositions.empty() && instance)
+        {
             dragStartSelectionPositions.emplace_back(instance->instanceId, instance->position);
+            dragStartSelectionRotations.emplace_back(instance->instanceId, instance->rotation);
+            dragStartSelectionScales.emplace_back(instance->instanceId, instance->scale);
+        }
     };
 
     auto applyGroupTranslationDelta = [this](const XMFLOAT3& delta) {
@@ -480,6 +506,77 @@ void EditorGizmo::Update(
         }
     };
 
+    auto applyGroupRotationDelta = [this](const XMFLOAT3& center, const XMFLOAT3& axis, float angle) {
+        for (const auto& [id, startPos] : dragStartSelectionPositions)
+        {
+            if (SceneInstance* selectedInstance = FindSceneInstanceById(id))
+                selectedInstance->position = RotatePointAroundAxis(startPos, center, axis, angle);
+        }
+
+        for (const auto& [id, startRot] : dragStartSelectionRotations)
+        {
+            if (SceneInstance* selectedInstance = FindSceneInstanceById(id))
+            {
+                selectedInstance->rotation = startRot;
+                if (fabsf(axis.x) > 0.5f) selectedInstance->rotation.x += angle;
+                else if (fabsf(axis.y) > 0.5f) selectedInstance->rotation.y += angle;
+                else if (fabsf(axis.z) > 0.5f) selectedInstance->rotation.z += angle;
+            }
+        }
+    };
+
+    auto applyGroupScaleDelta = [this](const XMFLOAT3& center, const XMFLOAT3& axis, float factor, bool uniform) {
+        const XMVECTOR centerV = XMLoadFloat3(&center);
+        const XMVECTOR axisV = XMVector3Normalize(XMLoadFloat3(&axis));
+
+        for (const auto& [id, startPos] : dragStartSelectionPositions)
+        {
+            if (SceneInstance* selectedInstance = FindSceneInstanceById(id))
+            {
+                XMVECTOR offset = XMLoadFloat3(&startPos) - centerV;
+                if (uniform)
+                {
+                    offset *= factor;
+                }
+                else
+                {
+                    const float amount = XMVectorGetX(XMVector3Dot(offset, axisV));
+                    const XMVECTOR parallel = axisV * amount;
+                    const XMVECTOR perpendicular = offset - parallel;
+                    offset = perpendicular + parallel * factor;
+                }
+
+                XMStoreFloat3(&selectedInstance->position, centerV + offset);
+            }
+        }
+
+        for (const auto& [id, startScale] : dragStartSelectionScales)
+        {
+            if (SceneInstance* selectedInstance = FindSceneInstanceById(id))
+            {
+                selectedInstance->scale = startScale;
+                if (uniform)
+                {
+                    selectedInstance->scale.x = (std::max)(startScale.x * factor, 0.01f);
+                    selectedInstance->scale.y = (std::max)(startScale.y * factor, 0.01f);
+                    selectedInstance->scale.z = (std::max)(startScale.z * factor, 0.01f);
+                }
+                else if (fabsf(axis.x) > 0.5f)
+                {
+                    selectedInstance->scale.x = (std::max)(startScale.x * factor, 0.01f);
+                }
+                else if (fabsf(axis.y) > 0.5f)
+                {
+                    selectedInstance->scale.y = (std::max)(startScale.y * factor, 0.01f);
+                }
+                else if (fabsf(axis.z) > 0.5f)
+                {
+                    selectedInstance->scale.z = (std::max)(startScale.z * factor, 0.01f);
+                }
+            }
+        }
+    };
+
     if (allowInput)
     {
         if (ImGui::IsKeyPressed(ImGuiKey_W)) SetMode(Mode::Translate);
@@ -488,11 +585,12 @@ void EditorGizmo::Update(
         if (ImGui::IsKeyPressed(ImGuiKey_X)) ToggleSpace();
     }
 
-    const XMFLOAT3 gizmoOriginWorld = (mode == Mode::Translate)
+    const bool multiSelection = Scene::GetSelectedInstanceIds().size() > 1;
+    const bool useCenterAnchor = multiSelection && useSelectionCenter;
+    const XMFLOAT3 gizmoOriginWorld = (((mode == Mode::Translate) || (mode == Mode::Rotate) || (mode == Mode::Scale)) && useCenterAnchor)
         ? Scene::GetSelectionCenterOrActivePosition()
         : instance->position;
-    const bool multiSelection = Scene::GetSelectedInstanceIds().size() > 1;
-    const Space effectiveSpace = (mode == Mode::Translate && multiSelection) ? Space::World : space;
+    const Space effectiveSpace = ((mode == Mode::Translate) || (mode == Mode::Rotate) || (mode == Mode::Scale)) && multiSelection ? Space::World : space;
 
     ImVec2 origin{};
     if (!ProjectWorldToScreen(gizmoOriginWorld, camera, sceneMin, sceneSize, origin))
@@ -562,8 +660,10 @@ void EditorGizmo::Update(
             activePlane = -1;
             activeCenter = false;
             dragStartRotation = instance->rotation;
+            dragStartPosition = gizmoOriginWorld;
             dragStartAngle = AngleFromCenter(origin, io.MousePos);
             dragStartMouse = io.MousePos;
+            captureDragSelection();
             switch (activeAxis)
             {
             case 0: dragStartTangent = FindClosestRingTangent(io.MousePos, ringX, dragStartRingPoint); break;
@@ -587,13 +687,21 @@ void EditorGizmo::Update(
                     appliedDelta = SnapValue(appliedDelta, snapStep);
 
                 activeRotationDegrees = XMConvertToDegrees(appliedDelta);
-                instance->rotation = dragStartRotation;
-                switch (activeAxis)
+                if (multiSelection)
                 {
-                case 0: instance->rotation.x += appliedDelta; break;
-                case 1: instance->rotation.y += appliedDelta; break;
-                case 2: instance->rotation.z += appliedDelta; break;
-                default: break;
+                    const XMFLOAT3 axis = (activeAxis == 0) ? axisXWorld : (activeAxis == 1) ? axisYWorld : axisZWorld;
+                    applyGroupRotationDelta(dragStartPosition, axis, appliedDelta);
+                }
+                else
+                {
+                    instance->rotation = dragStartRotation;
+                    switch (activeAxis)
+                    {
+                    case 0: instance->rotation.x += appliedDelta; break;
+                    case 1: instance->rotation.y += appliedDelta; break;
+                    case 2: instance->rotation.z += appliedDelta; break;
+                    default: break;
+                    }
                 }
             }
             else
@@ -619,6 +727,136 @@ void EditorGizmo::Update(
     const ImVec2 xEnd{ origin.x + xDir.x * axisLength, origin.y + xDir.y * axisLength };
     const ImVec2 yEnd{ origin.x + yDir.x * axisLength, origin.y + yDir.y * axisLength };
     const ImVec2 zEnd{ origin.x + zDir.x * axisLength * 0.7f, origin.y + zDir.y * axisLength * 0.7f };
+
+    if (mode == Mode::Scale)
+    {
+        constexpr float kMinScale = 0.01f;
+        constexpr float kScaleSnap = 0.1f;
+        const float handleHalf = (std::clamp)(axisLength * 0.11f, 7.0f, 16.0f);
+        const float centerHalf = handleHalf * 0.85f;
+
+        auto pointInBox = [](ImVec2 p, ImVec2 c, float half)
+        {
+            return p.x >= (c.x - half) && p.x <= (c.x + half) && p.y >= (c.y - half) && p.y <= (c.y + half);
+        };
+
+        hoveredAxis = -1;
+        hoveredPlane = -1;
+        hoveredCenter = false;
+        if (!dragging && viewportHovered && allowInput)
+        {
+            const ImVec2 mouse = io.MousePos;
+            hoveredCenter = pointInBox(mouse, origin, centerHalf + 3.0f);
+            if (!hoveredCenter)
+            {
+                if (pointInBox(mouse, xEnd, handleHalf)) hoveredAxis = 0;
+                else if (pointInBox(mouse, yEnd, handleHalf)) hoveredAxis = 1;
+                else if (pointInBox(mouse, zEnd, handleHalf)) hoveredAxis = 2;
+            }
+        }
+
+        if (allowInput && !dragging && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        {
+            if (hoveredCenter)
+            {
+                dragging = true;
+                activeCenter = true;
+                activeAxis = -1;
+                dragStartScale = instance->scale;
+                dragStartPosition = gizmoOriginWorld;
+                dragStartMouse = io.MousePos;
+                captureDragSelection();
+            }
+            else if (hoveredAxis != -1)
+            {
+                dragging = true;
+                activeAxis = hoveredAxis;
+                activeCenter = false;
+                dragStartScale = instance->scale;
+                dragStartPosition = gizmoOriginWorld;
+                dragStartMouse = io.MousePos;
+                captureDragSelection();
+            }
+        }
+
+        if (dragging)
+        {
+            if (allowInput && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            {
+                const ImVec2 mouseDelta{ io.MousePos.x - dragStartMouse.x, io.MousePos.y - dragStartMouse.y };
+                const bool snapEnabled = io.KeyCtrl;
+
+                if (activeCenter)
+                {
+                    float factor = 1.0f + (mouseDelta.x - mouseDelta.y) * 0.006f;
+                    if (snapEnabled)
+                        factor = SnapValue(factor, 0.1f);
+                    factor = (std::max)(factor, kMinScale / (std::max)(dragStartScale.x, (std::max)(dragStartScale.y, dragStartScale.z)));
+
+                    if (multiSelection)
+                    {
+                        applyGroupScaleDelta(dragStartPosition, XMFLOAT3{ 1.0f, 1.0f, 1.0f }, factor, true);
+                    }
+                    else
+                    {
+                        instance->scale = {
+                            (std::max)(dragStartScale.x * factor, kMinScale),
+                            (std::max)(dragStartScale.y * factor, kMinScale),
+                            (std::max)(dragStartScale.z * factor, kMinScale)
+                        };
+                    }
+                }
+                else
+                {
+                    const ImVec2 axisDir2D = (activeAxis == 0) ? xDir : (activeAxis == 1) ? yDir : zDir;
+                    const float signedDelta = mouseDelta.x * axisDir2D.x + mouseDelta.y * axisDir2D.y;
+                    float factor = 1.0f + signedDelta * 0.006f;
+                    factor = (std::max)(factor, 0.01f);
+
+                    if (multiSelection)
+                    {
+                        const XMFLOAT3 axis = (activeAxis == 0) ? axisXWorld : (activeAxis == 1) ? axisYWorld : axisZWorld;
+                        applyGroupScaleDelta(dragStartPosition, axis, factor, false);
+                        if (snapEnabled)
+                        {
+                            for (const auto& [id, startScale] : dragStartSelectionScales)
+                            {
+                                if (SceneInstance* selectedInstance = FindSceneInstanceById(id))
+                                {
+                                    float* axisScale = (activeAxis == 0) ? &selectedInstance->scale.x : (activeAxis == 1) ? &selectedInstance->scale.y : &selectedInstance->scale.z;
+                                    *axisScale = (std::max)(SnapValue(*axisScale, kScaleSnap), kMinScale);
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        instance->scale = dragStartScale;
+                        float* axisScale = (activeAxis == 0) ? &instance->scale.x : (activeAxis == 1) ? &instance->scale.y : &instance->scale.z;
+                        *axisScale = (std::max)(*axisScale * factor, kMinScale);
+                        if (snapEnabled)
+                            *axisScale = (std::max)(SnapValue(*axisScale, kScaleSnap), kMinScale);
+                    }
+                }
+            }
+            else
+            {
+                dragging = false;
+                activeAxis = -1;
+                activeCenter = false;
+            }
+        }
+
+        const ImU32 centerColor = activeCenter ? IM_COL32(255, 255, 255, 235) : (hoveredCenter ? IM_COL32(255, 220, 64, 235) : IM_COL32(245, 245, 245, 230));
+        drawList->AddLine(origin, xEnd, AxisColor(0, activeAxis == 0, hoveredAxis == 0), 3.0f);
+        drawList->AddLine(origin, yEnd, AxisColor(1, activeAxis == 1, hoveredAxis == 1), 3.0f);
+        drawList->AddLine(origin, zEnd, AxisColor(2, activeAxis == 2, hoveredAxis == 2), 3.0f);
+        drawList->AddRectFilled(ImVec2(xEnd.x - handleHalf, xEnd.y - handleHalf), ImVec2(xEnd.x + handleHalf, yEnd.y + handleHalf), AxisColor(0, activeAxis == 0, hoveredAxis == 0), 2.0f);
+        drawList->AddRectFilled(ImVec2(yEnd.x - handleHalf, yEnd.y - handleHalf), ImVec2(yEnd.x + handleHalf, yEnd.y + handleHalf), AxisColor(1, activeAxis == 1, hoveredAxis == 1), 2.0f);
+        drawList->AddRectFilled(ImVec2(zEnd.x - handleHalf, zEnd.y - handleHalf), ImVec2(zEnd.x + handleHalf, zEnd.y + handleHalf), AxisColor(2, activeAxis == 2, hoveredAxis == 2), 2.0f);
+        drawList->AddRectFilled(ImVec2(origin.x - centerHalf, origin.y - centerHalf), ImVec2(origin.x + centerHalf, origin.y + centerHalf), centerColor, 2.0f);
+        return;
+    }
 
     ImVec2 xTriA{}, xTriB{}, xTriC{};
     ImVec2 yTriA{}, yTriB{}, yTriC{};

@@ -18,6 +18,24 @@ extern Engine* g_engineInstance;
 
 namespace UI {
 
+    static constexpr size_t kMaxUndoSnapshots = 64;
+
+    static void PushUndoSnapshot()
+    {
+        if (!g_engineInstance)
+            return;
+
+        EditorState& editor = g_engineInstance->GetEditorState();
+        const std::string snapshot = Scene::SerializeToString();
+        if (!editor.undoSceneSnapshots.empty() && editor.undoSceneSnapshots.back() == snapshot)
+            return;
+
+        editor.undoSceneSnapshots.push_back(snapshot);
+        if (editor.undoSceneSnapshots.size() > kMaxUndoSnapshots)
+            editor.undoSceneSnapshots.erase(editor.undoSceneSnapshots.begin());
+        editor.redoSceneSnapshots.clear();
+    }
+
     // 🔧 Current theme tracking
     static Theme currentTheme = Theme::Dark;
 
@@ -689,7 +707,10 @@ namespace UI {
 
          if (ImGui::BeginMenu("Create")) {
              if (ImGui::MenuItem("Cube"))
+             {
+                 PushUndoSnapshot();
                  Scene::CreateCube();
+             }
              ImGui::EndMenu();
          }
  

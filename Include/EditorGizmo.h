@@ -42,7 +42,8 @@ public:
         ImVec2 sceneMin,
         ImVec2 sceneSize,
         bool viewportHovered,
-        bool allowInput);
+        bool allowInput,
+        bool useSelectionCenter);
 
 private:
     Mode mode = Mode::Translate;
@@ -56,6 +57,7 @@ private:
     bool activeCenter = false;
     DirectX::XMFLOAT3 dragStartPosition{};
     DirectX::XMFLOAT3 dragStartRotation{};
+    DirectX::XMFLOAT3 dragStartScale{ 1.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT3 dragStartHit{};
     DirectX::XMFLOAT3 dragPlaneNormal{};
     bool hasDragStartHit = false;
@@ -65,4 +67,6 @@ private:
     ImVec2 dragStartTangent{};
     ImVec2 dragStartRingPoint{};
     std::vector<std::pair<uint32_t, DirectX::XMFLOAT3>> dragStartSelectionPositions;
+    std::vector<std::pair<uint32_t, DirectX::XMFLOAT3>> dragStartSelectionRotations;
+    std::vector<std::pair<uint32_t, DirectX::XMFLOAT3>> dragStartSelectionScales;
 };

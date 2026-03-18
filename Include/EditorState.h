@@ -2,6 +2,8 @@
 
 #include <DirectXMath.h>
 #include <cstdint>
+#include <vector>
+#include <string>
 
 #include "EditorCommon.h"
 
@@ -23,6 +25,12 @@ enum class GridMode : uint8_t
 {
     Infinite_CameraPivot = 0,
     Fixed_WorldOrigin
+};
+
+enum class GizmoPivotMode : uint8_t
+{
+    Pivot = 0,
+    Center
 };
 
 // =====================================================
@@ -103,6 +111,7 @@ struct EditorState
     CameraNavMode cameraNavMode = CameraNavMode::Unity_AltMouse;
     GridMode gridMode = GridMode::Infinite_CameraPivot;
     ViewMode viewMode = ViewMode::Mode3D;
+    GizmoPivotMode gizmoPivotMode = GizmoPivotMode::Center;
 
     // Camera feel
     bool invertLookX = false;
@@ -124,6 +133,9 @@ struct EditorState
     bool showDiagnostics = true;
     bool showLogViewer = true;
     bool showDebugOverlay = true;
+
+    std::vector<std::string> undoSceneSnapshots;
+    std::vector<std::string> redoSceneSnapshots;
 
     void ResetAllInteraction()
     {

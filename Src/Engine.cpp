@@ -15,6 +15,7 @@
 #include "TextureManager.h"
 #include "MaterialManager.h"
 #pragma comment(lib, "Shcore.lib") // Link against Shcore for DPI functions
+#include "resource.h"
 
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -482,6 +483,14 @@ bool Engine::InitializeWindow(HINSTANCE hInstance, int nCmdShow) {
         return false;
     }
 
+    HICON bigIcon = (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_THEFLETCHZONEGAMEENGINE), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
+    HICON smallIcon = (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_THEFLETCHZONEGAMEENGINE), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+    if (bigIcon)
+        SendMessage(hWnd, WM_SETICON, ICON_BIG, (LPARAM)bigIcon);
+    if (smallIcon)
+        SendMessage(hWnd, WM_SETICON, ICON_SMALL, (LPARAM)smallIcon);
+
     // ✅ Show and Update Window
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
@@ -494,16 +503,19 @@ bool Engine::InitializeWindow(HINSTANCE hInstance, int nCmdShow) {
 // ✅ Register Window Class
 // ==========================================
 void Engine::RegisterWindowClass(HINSTANCE hInstance) {
-    WNDCLASS wc = {};
+    WNDCLASSEX wc = {};
+    wc.cbSize = sizeof(WNDCLASSEX);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = L"3DGameEngine";
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC; // ✅ CS_OWNDC added here
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIcon = (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_THEFLETCHZONEGAMEENGINE), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE);
+    wc.hIconSm = (HICON)LoadImage(hInstance, MAKEINTRESOURCE(IDI_THEFLETCHZONEGAMEENGINE), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
 
-    if (!RegisterClass(&wc)) {
+    if (!RegisterClassEx(&wc)) {
         Logger::Log(LogLevel::Error, "❌ Failed to register window class.");
         MessageBox(nullptr, L"Failed to register window class.", L"Error", MB_OK | MB_ICONERROR);
         exit(EXIT_FAILURE);
