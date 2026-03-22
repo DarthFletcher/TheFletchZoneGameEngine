@@ -20,6 +20,7 @@ struct SceneInstance
     uint32_t instanceId = 0;
     uint32_t parentInstanceId = 0;
     std::string name;
+    std::string prefabSourcePath;
     DirectX::XMFLOAT3 position{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 rotation{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 scale{ 1.0f, 1.0f, 1.0f };
@@ -55,6 +56,29 @@ enum class ShaderID : uint32_t
     Count,
 };
 
+struct PrefabOverrideState
+{
+    bool name = false;
+    bool rotation = false;
+    bool scale = false;
+    bool visible = false;
+    bool material = false;
+
+    bool Any() const
+    {
+        return name || rotation || scale || visible || material;
+    }
+};
+
+enum class PrefabProperty : uint8_t
+{
+    Name,
+    Rotation,
+    Scale,
+    Visible,
+    Material,
+};
+
 class Scene
 {
 public:
@@ -82,6 +106,7 @@ public:
     static void RemoveSelectedInstanceId(uint32_t instanceId);
     static void ToggleSelectedInstanceId(uint32_t instanceId);
     static void ClearSelection();
+    static void RestoreSelectionState(uint32_t activeInstanceId, const std::vector<uint32_t>& selectedInstanceIds);
     static const std::vector<uint32_t>& GetSelectedInstanceIds();
     static bool TryGetSelectionCenter(DirectX::XMFLOAT3& outCenter);
     static DirectX::XMFLOAT3 GetSelectionCenterOrActivePosition();
@@ -100,6 +125,13 @@ public:
     static void DeleteSelectedInstance();
     static void DuplicateSelectedInstance();
     static void CreateCube(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
+    static bool SaveSelectedAsPrefab(const std::string& path);
+    static bool InstantiatePrefab(const std::string& path, const DirectX::XMFLOAT3& position);
+    static bool ApplySelectedToPrefab();
+    static bool ApplySelectedPrefabProperty(PrefabProperty property);
+    static bool RevertSelectedToPrefab();
+    static bool RevertSelectedPrefabProperty(PrefabProperty property);
+    static bool TryGetPrefabOverrideState(uint32_t instanceId, PrefabOverrideState& outState);
     static bool SaveToFile(const std::string& path);
     static bool LoadFromFile(const std::string& path);
     static std::string SerializeToString();

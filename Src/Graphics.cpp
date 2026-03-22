@@ -734,6 +734,11 @@ void Graphics::Shutdown()
 {
     Logger::Log(LogLevel::Info, "🔻 Shutting down graphics...", "[Core]");
 
+#ifndef NDEBUG
+    const HRESULT shutdownDeviceReason = device ? device->GetDeviceRemovedReason() : S_OK;
+    DX12_ClearInfoQueue(device.Get());
+#endif
+
     // Phase 4A: drop engine-owned static geometry handles before flush/release.
     m_cubeMesh = {};
 
@@ -798,8 +803,8 @@ void Graphics::Shutdown()
     SafeReleaseComPtr("swapChain", swapChain, false);
 
 #ifndef NDEBUG
-    // Dump info queue on shutdown (mostly for leak tracking)
-    DX12_DumpInfoQueue(device.Get(), "Shutdown dump", 100);
+    if (shutdownDeviceReason != S_OK)
+        DX12_DumpInfoQueue(device.Get(), "Shutdown dump after abnormal device removal", 100);
 #endif
 }
 

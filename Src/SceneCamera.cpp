@@ -16,6 +16,18 @@ namespace
         return XMVector3Normalize(v);
     }
 
+    static void SyncYawPitchFromView(XMVECTOR eye, XMVECTOR target, float& yaw, float& pitch);
+
+    static void ApplyLookAtState(XMVECTOR eye, XMVECTOR target, XMVECTOR up, XMVECTOR& ioEye, XMVECTOR& ioTarget, XMVECTOR& ioUp, XMVECTOR& ioOrbitPivot, float& ioYaw, float& ioPitch, float& ioDistance)
+    {
+        ioEye = eye;
+        ioTarget = target;
+        ioUp = NormalizeOrFallback(up, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+        ioOrbitPivot = target;
+        ioDistance = (std::max)(0.25f, XMVectorGetX(XMVector3Length(target - eye)));
+        SyncYawPitchFromView(ioEye, ioTarget, ioYaw, ioPitch);
+    }
+
     static void SyncYawPitchFromView(XMVECTOR eye, XMVECTOR target, float& yaw, float& pitch)
     {
         const XMVECTOR forward = NormalizeOrFallback(target - eye, XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f));
@@ -37,6 +49,63 @@ namespace
         outRight = NormalizeOrFallback(XMVector3Cross(worldUp, outForward), XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f));
         outUp = NormalizeOrFallback(XMVector3Cross(outForward, outRight), worldUp);
     }
+}
+
+SceneCamera::SceneCamera()
+{
+    ResetToDefaultView();
+}
+
+void SceneCamera::ResetToDefaultView()
+{
+    projectionMode_ = ProjectionMode::Perspective;
+    viewPreset_ = ViewPreset::View3D;
+    const XMVECTOR target = XMVectorSet(0.0f, 0.5f, 0.0f, 1.0f);
+    orbitPivot_ = target;
+    yaw_ = XM_PIDIV4;
+    pitch_ = XMConvertToRadians(-25.0f);
+    distance_ = 10.0f;
+
+    XMVECTOR forward{}, right{}, up{};
+    BuildBasis(yaw_, pitch_, forward, right, up);
+    up_ = up;
+    target_ = target;
+    eye_ = target_ - forward * distance_;
+    freelooking_ = false;
+    orbitInteracting_ = false;
+}
+
+void SceneCamera::SetFrontView()
+{
+    projectionMode_ = ProjectionMode::Orthographic;
+    viewPreset_ = ViewPreset::View3D;
+    const XMVECTOR target = orbitPivot_;
+    const XMVECTOR eye = target + XMVectorSet(0.0f, 0.0f, -distance_, 0.0f);
+    ApplyLookAtState(eye, target, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), eye_, target_, up_, orbitPivot_, yaw_, pitch_, distance_);
+    freelooking_ = false;
+    orbitInteracting_ = false;
+}
+
+void SceneCamera::SetRightView()
+{
+    projectionMode_ = ProjectionMode::Orthographic;
+    viewPreset_ = ViewPreset::View3D;
+    const XMVECTOR target = orbitPivot_;
+    const XMVECTOR eye = target + XMVectorSet(distance_, 0.0f, 0.0f, 0.0f);
+    ApplyLookAtState(eye, target, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), eye_, target_, up_, orbitPivot_, yaw_, pitch_, distance_);
+    freelooking_ = false;
+    orbitInteracting_ = false;
+}
+
+void SceneCamera::SetTopView()
+{
+    projectionMode_ = ProjectionMode::Orthographic;
+    viewPreset_ = ViewPreset::View3D;
+    const XMVECTOR target = orbitPivot_;
+    const XMVECTOR eye = target + XMVectorSet(0.0f, distance_, 0.0f, 0.0f);
+    ApplyLookAtState(eye, target, XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), eye_, target_, up_, orbitPivot_, yaw_, pitch_, distance_);
+    freelooking_ = false;
+    orbitInteracting_ = false;
 }
 
 XMMATRIX SceneCamera::GetView() const
@@ -111,7 +180,7 @@ void SceneCamera::SetViewPreset(ViewPreset preset)
     {
         projectionMode_ = ProjectionMode::Perspective;
         if (fabsf(pitch_) < 1e-4f)
-            pitch_ = 0.35f;
+            pitch_ = -0.35f;
         if (distance_ < 0.25f)
             distance_ = 5.0f;
 

@@ -42,6 +42,8 @@ namespace
         DirectX::XMFLOAT3 direction{};
     };
 
+    static std::string UnescapeJsonString(const std::string& value);
+
     static SceneInstance* FindSceneInstanceByIdMutable(uint32_t instanceId)
     {
         if (instanceId == 0)
@@ -769,6 +771,166 @@ namespace
             g_scene.gridVbv.StrideInBytes = sizeof(VertexPC);
         }
     }
+
+    static bool ParseSceneInstanceFromJson(const std::string& content, SceneInstance& outInstance, bool readIdAndParent)
+    {
+        auto readNumber = [&](const std::string& key, float& outValue) -> bool
+        {
+            const size_t keyPos = content.find(key);
+            if (keyPos == std::string::npos) return false;
+            const size_t colon = content.find(':', keyPos);
+            if (colon == std::string::npos) return false;
+            const size_t begin = content.find_first_of("-0123456789", colon);
+            if (begin == std::string::npos) return false;
+            const size_t end = content.find_first_not_of("-+.0123456789eE", begin);
+            outValue = std::stof(content.substr(begin, end - begin));
+            return true;
+        };
+        auto readBool = [&](const std::string& key, bool& outValue) -> bool
+        {
+            const size_t keyPos = content.find(key);
+            if (keyPos == std::string::npos) return false;
+            const size_t colon = content.find(':', keyPos);
+            if (colon == std::string::npos) return false;
+            const size_t begin = content.find_first_not_of(" \t\r\n", colon + 1);
+            if (begin == std::string::npos) return false;
+            if (content.compare(begin, 4, "true") == 0) { outValue = true; return true; }
+            if (content.compare(begin, 5, "false") == 0) { outValue = false; return true; }
+            return false;
+        };
+        auto readString = [&](const std::string& key, std::string& outValue) -> bool
+        {
+            const size_t keyPos = content.find(key);
+            if (keyPos == std::string::npos) return false;
+            const size_t colon = content.find(':', keyPos);
+            const size_t begin = content.find('"', colon + 1);
+            if (colon == std::string::npos || begin == std::string::npos) return false;
+            size_t end = begin + 1;
+            while ((end = content.find('"', end)) != std::string::npos)
+            {
+                if (content[end - 1] != '\\')
+                    break;
+                ++end;
+            }
+            if (end == std::string::npos) return false;
+            outValue = UnescapeJsonString(content.substr(begin + 1, end - begin - 1));
+            return true;
+        };
+        auto readVector3 = [&](const std::string& key, DirectX::XMFLOAT3& outValue) -> bool
+        {
+            const size_t keyPos = content.find(key);
+            if (keyPos == std::string::npos) return false;
+            const size_t open = content.find('[', keyPos);
+            const size_t close = content.find(']', open);
+            if (open == std::string::npos || close == std::string::npos) return false;
+            std::string values = content.substr(open + 1, close - open - 1);
+            std::replace(values.begin(), values.end(), ',', ' ');
+            std::istringstream stream(values);
+            stream >> outValue.x >> outValue.y >> outValue.z;
+            return !stream.fail();
+        };
+
+        float idValue = 0.0f;
+        float parentValue = 0.0f;
+        float materialValue = 0.0f;
+        if (readIdAndParent && !readNumber("\"id\"", idValue))
+            return false;
+        if (readIdAndParent)
+            readNumber("\"parent\"", parentValue);
+        if (!readString("\"name\"", outInstance.name)) return false;
+        readString("\"prefabSource\"", outInstance.prefabSourcePath);
+        if (!readVector3("\"position\"", outInstance.position)) return false;
+        if (!readVector3("\"rotation\"", outInstance.rotation)) return false;
+        if (!readVector3("\"scale\"", outInstance.scale)) return false;
+        if (!readBool("\"visible\"", outInstance.visible)) return false;
+        if (!readNumber("\"material\"", materialValue)) return false;
+
+        outInstance.instanceId = static_cast<uint32_t>(idValue);
+        outInstance.parentInstanceId = static_cast<uint32_t>(parentValue);
+        outInstance.materialIndex = static_cast<int>(materialValue);
+        return true;
+    }
+
+    static std::string EscapeJsonString(const std::string& value)
+    {
+        std::string escaped;
+        escaped.reserve(value.size());
+        for (char c : value)
+        {
+            switch (c)
+            {
+            case '\\': escaped += "\\\\"; break;
+            case '"': escaped += "\\\""; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default: escaped += c; break;
+            }
+        }
+        return escaped;
+    }
+
+    static std::string UnescapeJsonString(const std::string& value)
+    {
+        std::string result;
+        result.reserve(value.size());
+        for (size_t i = 0; i < value.size(); ++i)
+        {
+            if (value[i] == '\\' && i + 1 < value.size())
+            {
+                ++i;
+                switch (value[i])
+                {
+                case '\\': result += '\\'; break;
+                case '"': result += '"'; break;
+                case 'n': result += '\n'; break;
+                case 'r': result += '\r'; break;
+                case 't': result += '\t'; break;
+                default: result += value[i]; break;
+                }
+            }
+            else
+            {
+                result += value[i];
+            }
+        }
+        return result;
+    }
+
+    static bool TryLoadPrefabForInstance(const SceneInstance& instance, SceneInstance& outPrefab)
+    {
+        if (instance.prefabSourcePath.empty())
+            return false;
+
+        std::ifstream file(instance.prefabSourcePath);
+        if (!file.is_open())
+            return false;
+
+        const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        return ParseSceneInstanceFromJson(content, outPrefab, false);
+    }
+
+    static bool SavePrefabAsset(const std::string& path, const SceneInstance& prefab)
+    {
+        std::filesystem::path outPath(path);
+        if (outPath.has_parent_path())
+            std::filesystem::create_directories(outPath.parent_path());
+
+        std::ofstream file(outPath, std::ios::trunc);
+        if (!file.is_open())
+            return false;
+
+        file << "{\n";
+        file << "  \"prefabVersion\": 1,\n";
+        file << "  \"name\": \"" << EscapeJsonString(prefab.name) << "\",\n";
+        file << "  \"position\": [" << prefab.position.x << ", " << prefab.position.y << ", " << prefab.position.z << "],\n";
+        file << "  \"rotation\": [" << prefab.rotation.x << ", " << prefab.rotation.y << ", " << prefab.rotation.z << "],\n";
+        file << "  \"scale\": [" << prefab.scale.x << ", " << prefab.scale.y << ", " << prefab.scale.z << "],\n";
+        file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
+        file << "  \"material\": " << prefab.materialIndex << "\n";
+        file << "}\n";
+        return file.good();
+    }
 }
 
 std::vector<SceneInstance> Scene::s_SceneInstances;
@@ -950,6 +1112,18 @@ namespace
         const float maxScale = MaxBasisScaleFromWorld(world);
         s.Radius = kCubeLocalRadius * maxScale;
         return s;
+    }
+
+    static bool NearlyEqualFloat(float a, float b, float epsilon = 1e-4f)
+    {
+        return fabsf(a - b) <= epsilon;
+    }
+
+    static bool NearlyEqualFloat3(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, float epsilon = 1e-4f)
+    {
+        return NearlyEqualFloat(a.x, b.x, epsilon) &&
+            NearlyEqualFloat(a.y, b.y, epsilon) &&
+            NearlyEqualFloat(a.z, b.z, epsilon);
     }
 }
 
@@ -1165,6 +1339,16 @@ void Scene::ClearSelection()
 {
     s_SelectedInstanceId = 0;
     s_SelectedInstanceIds.clear();
+}
+
+void Scene::RestoreSelectionState(uint32_t activeInstanceId, const std::vector<uint32_t>& selectedInstanceIds)
+{
+    s_SelectedInstanceId = activeInstanceId;
+    s_SelectedInstanceIds = selectedInstanceIds;
+    ValidateSelection();
+
+    if (s_SelectedInstanceId != 0 && !IsInstanceSelected(s_SelectedInstanceId))
+        s_SelectedInstanceIds.push_back(s_SelectedInstanceId);
 }
 
 const std::vector<uint32_t>& Scene::GetSelectedInstanceIds()
@@ -1388,29 +1572,38 @@ bool Scene::GetSelectedInstanceTransform(DirectX::XMFLOAT3& outPosition, DirectX
 
 void Scene::DeleteSelectedInstance()
 {
-    const uint32_t selectedId = s_SelectedInstanceId;
-    if (selectedId == 0)
+    std::vector<uint32_t> selectedIds = s_SelectedInstanceIds;
+    if (selectedIds.empty() && s_SelectedInstanceId != 0)
+        selectedIds.push_back(s_SelectedInstanceId);
+    if (selectedIds.empty())
         return;
 
-    for (auto& instance : s_SceneInstances)
+    const auto isSelectedId = [&selectedIds](uint32_t id)
     {
-        if (instance.parentInstanceId == selectedId)
-        {
-            SetParentInstance(instance.instanceId, 0, true);
-        }
+        return std::find(selectedIds.begin(), selectedIds.end(), id) != selectedIds.end();
+    };
+
+    std::vector<uint32_t> childrenToUnparent;
+    for (const auto& instance : s_SceneInstances)
+    {
+        if (instance.parentInstanceId != 0 && isSelectedId(instance.parentInstanceId) && !isSelectedId(instance.instanceId))
+            childrenToUnparent.push_back(instance.instanceId);
     }
 
-    const auto it = std::find_if(s_SceneInstances.begin(), s_SceneInstances.end(), [selectedId](const SceneInstance& instance)
-        {
-            return instance.instanceId == selectedId;
-        });
-    if (it == s_SceneInstances.end())
-        return;
+    for (uint32_t childId : childrenToUnparent)
+        SetParentInstance(childId, 0, true);
 
-    s_SceneInstances.erase(it);
-    RemoveSelectedInstanceId(selectedId);
-    if (s_HoveredInstanceId == selectedId)
+    s_SceneInstances.erase(
+        std::remove_if(s_SceneInstances.begin(), s_SceneInstances.end(), [&isSelectedId](const SceneInstance& instance)
+            {
+                return isSelectedId(instance.instanceId);
+            }),
+        s_SceneInstances.end());
+
+    if (isSelectedId(s_HoveredInstanceId))
         s_HoveredInstanceId = 0;
+
+    ClearSelection();
     s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
     RebuildRenderInstancesFromSceneData();
     MarkInstancesDirty();
@@ -1449,55 +1642,217 @@ void Scene::CreateCube(const DirectX::XMFLOAT3& position)
 
     s_SceneInstances.push_back(instance);
     s_SelectedInstanceId = instance.instanceId;
+    s_SelectedInstanceIds = { instance.instanceId };
     s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
     RebuildRenderInstancesFromSceneData();
     MarkInstancesDirty();
 }
 
-static std::string EscapeJsonString(const std::string& value)
+bool Scene::SaveSelectedAsPrefab(const std::string& path)
 {
-    std::string escaped;
-    escaped.reserve(value.size());
-    for (char c : value)
-    {
-        switch (c)
-        {
-        case '\\': escaped += "\\\\"; break;
-        case '"': escaped += "\\\""; break;
-        case '\n': escaped += "\\n"; break;
-        case '\r': escaped += "\\r"; break;
-        case '\t': escaped += "\\t"; break;
-        default: escaped += c; break;
-        }
-    }
-    return escaped;
-}
+    SceneInstance* selected = GetSelectedInstance();
+    if (!selected)
+        return false;
 
-static std::string UnescapeJsonString(const std::string& value)
-{
-    std::string result;
-    result.reserve(value.size());
-    for (size_t i = 0; i < value.size(); ++i)
+    std::filesystem::path outPath(path);
+    if (outPath.has_parent_path())
+        std::filesystem::create_directories(outPath.parent_path());
+
+    SceneInstance prefab = *selected;
+    prefab.instanceId = 0;
+    prefab.parentInstanceId = 0;
+
+    if (selected->instanceId != 0)
     {
-        if (value[i] == '\\' && i + 1 < value.size())
+        DirectX::XMFLOAT4X4 world{};
+        if (TryGetInstanceWorldMatrix(selected->instanceId, world))
         {
-            ++i;
-            switch (value[i])
+            SceneInstance decomposed = prefab;
+            if (DecomposeWorldToLocal(DirectX::XMLoadFloat4x4(&world), decomposed))
             {
-            case '\\': result += '\\'; break;
-            case '"': result += '"'; break;
-            case 'n': result += '\n'; break;
-            case 'r': result += '\r'; break;
-            case 't': result += '\t'; break;
-            default: result += value[i]; break;
+                prefab.position = decomposed.position;
+                prefab.rotation = decomposed.rotation;
+                prefab.scale = decomposed.scale;
             }
         }
-        else
-        {
-            result += value[i];
-        }
     }
-    return result;
+
+    std::ofstream file(outPath, std::ios::trunc);
+    if (!file.is_open())
+        return false;
+
+    file << "{\n";
+    file << "  \"prefabVersion\": 1,\n";
+    file << "  \"name\": \"" << EscapeJsonString(prefab.name) << "\",\n";
+    file << "  \"position\": [" << prefab.position.x << ", " << prefab.position.y << ", " << prefab.position.z << "],\n";
+    file << "  \"rotation\": [" << prefab.rotation.x << ", " << prefab.rotation.y << ", " << prefab.rotation.z << "],\n";
+    file << "  \"scale\": [" << prefab.scale.x << ", " << prefab.scale.y << ", " << prefab.scale.z << "],\n";
+    file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
+    file << "  \"material\": " << prefab.materialIndex << "\n";
+    file << "}\n";
+
+    selected->prefabSourcePath = path;
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+    Logger::Log(LogLevel::Info, std::format("Saved prefab: {}", path), "[Scene]");
+    return true;
+}
+
+bool Scene::InstantiatePrefab(const std::string& path, const DirectX::XMFLOAT3& position)
+{
+    std::ifstream file(path);
+    if (!file.is_open())
+        return false;
+
+    const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    SceneInstance prefab{};
+    if (!ParseSceneInstanceFromJson(content, prefab, false))
+        return false;
+
+    prefab.instanceId = s_NextInstanceId++;
+    prefab.parentInstanceId = 0;
+    prefab.prefabSourcePath = path;
+    prefab.position = position;
+    if (prefab.name.empty())
+        prefab.name = MakeSceneInstanceName(prefab.instanceId);
+
+    s_SceneInstances.push_back(prefab);
+    s_SelectedInstanceId = prefab.instanceId;
+    s_SelectedInstanceIds = { prefab.instanceId };
+    s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+    Logger::Log(LogLevel::Info, std::format("Instantiated prefab: {}", path), "[Scene]");
+    return true;
+}
+
+bool Scene::ApplySelectedToPrefab()
+{
+    SceneInstance* selected = GetSelectedInstance();
+    if (!selected || selected->prefabSourcePath.empty())
+        return false;
+
+    return SaveSelectedAsPrefab(selected->prefabSourcePath);
+}
+
+bool Scene::ApplySelectedPrefabProperty(PrefabProperty property)
+{
+    SceneInstance* selected = GetSelectedInstance();
+    if (!selected || selected->prefabSourcePath.empty())
+        return false;
+
+    SceneInstance prefab{};
+    if (!TryLoadPrefabForInstance(*selected, prefab))
+        return false;
+
+    switch (property)
+    {
+    case PrefabProperty::Name:
+        prefab.name = selected->name;
+        break;
+    case PrefabProperty::Rotation:
+        prefab.rotation = selected->rotation;
+        break;
+    case PrefabProperty::Scale:
+        prefab.scale = selected->scale;
+        break;
+    case PrefabProperty::Visible:
+        prefab.visible = selected->visible;
+        break;
+    case PrefabProperty::Material:
+        prefab.materialIndex = selected->materialIndex;
+        break;
+    default:
+        return false;
+    }
+
+    if (!SavePrefabAsset(selected->prefabSourcePath, prefab))
+        return false;
+
+    Logger::Log(LogLevel::Info, std::format("Applied prefab property to: {}", selected->prefabSourcePath), "[Scene]");
+    return true;
+}
+
+bool Scene::RevertSelectedToPrefab()
+{
+    SceneInstance* selected = GetSelectedInstance();
+    if (!selected || selected->prefabSourcePath.empty())
+        return false;
+
+    SceneInstance prefab{};
+    if (!TryLoadPrefabForInstance(*selected, prefab))
+        return false;
+
+    const uint32_t instanceId = selected->instanceId;
+    const uint32_t parentId = selected->parentInstanceId;
+    const std::string prefabPath = selected->prefabSourcePath;
+    const DirectX::XMFLOAT3 preservedPosition = selected->position;
+
+    *selected = prefab;
+    selected->instanceId = instanceId;
+    selected->parentInstanceId = parentId;
+    selected->prefabSourcePath = prefabPath;
+    selected->position = preservedPosition;
+
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+    return true;
+}
+
+bool Scene::RevertSelectedPrefabProperty(PrefabProperty property)
+{
+    SceneInstance* selected = GetSelectedInstance();
+    if (!selected || selected->prefabSourcePath.empty())
+        return false;
+
+    SceneInstance prefab{};
+    if (!TryLoadPrefabForInstance(*selected, prefab))
+        return false;
+
+    switch (property)
+    {
+    case PrefabProperty::Name:
+        selected->name = prefab.name;
+        break;
+    case PrefabProperty::Rotation:
+        selected->rotation = prefab.rotation;
+        break;
+    case PrefabProperty::Scale:
+        selected->scale = prefab.scale;
+        break;
+    case PrefabProperty::Visible:
+        selected->visible = prefab.visible;
+        break;
+    case PrefabProperty::Material:
+        selected->materialIndex = prefab.materialIndex;
+        break;
+    default:
+        return false;
+    }
+
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+    return true;
+}
+
+bool Scene::TryGetPrefabOverrideState(uint32_t instanceId, PrefabOverrideState& outState)
+{
+    outState = {};
+
+    const SceneInstance* instance = FindSceneInstanceByIdConst(instanceId);
+    if (!instance || instance->prefabSourcePath.empty())
+        return false;
+
+    SceneInstance prefab{};
+    if (!TryLoadPrefabForInstance(*instance, prefab))
+        return false;
+
+    outState.name = (instance->name != prefab.name);
+    outState.rotation = !NearlyEqualFloat3(instance->rotation, prefab.rotation);
+    outState.scale = !NearlyEqualFloat3(instance->scale, prefab.scale);
+    outState.visible = (instance->visible != prefab.visible);
+    outState.material = (instance->materialIndex != prefab.materialIndex);
+    return true;
 }
 
 std::string Scene::SerializeToString()
@@ -1511,8 +1866,9 @@ std::string Scene::SerializeToString()
         out << "      \"id\": " << inst.instanceId << ",\n";
         out << "      \"parent\": " << inst.parentInstanceId << ",\n";
         out << "      \"name\": \"" << EscapeJsonString(inst.name) << "\",\n";
+        out << "      \"prefabSource\": \"" << EscapeJsonString(inst.prefabSourcePath) << "\",\n";
         out << "      \"position\": [" << inst.position.x << ", " << inst.position.y << ", " << inst.position.z << "],\n";
-        out << "      \"rotation\": [" << inst.rotation.x << ", " << inst.rotation.y << ", " << inst.rotation.z << "],\n";
+               out << "      \"rotation\": [" << inst.rotation.x << ", " << inst.rotation.y << ", " << inst.rotation.z << "],\n";
         out << "      \"scale\": [" << inst.scale.x << ", " << inst.scale.y << ", " << inst.scale.z << "],\n";
         out << "      \"visible\": " << (inst.visible ? "true" : "false") << ",\n";
         out << "      \"material\": " << inst.materialIndex << "\n";
@@ -1531,89 +1887,26 @@ bool Scene::LoadFromString(const std::string& content)
 
     size_t searchPos = 0;
     uint32_t maxId = 0;
-
     while ((searchPos = content.find("\"id\"", searchPos)) != std::string::npos)
     {
-        auto readNumber = [&](const std::string& key, size_t fromPos, float& outValue) -> bool
-        {
-            const size_t keyPos = content.find(key, fromPos);
-            if (keyPos == std::string::npos) return false;
-            const size_t colon = content.find(':', keyPos);
-            if (colon == std::string::npos) return false;
-            size_t begin = content.find_first_of("-0123456789", colon);
-            if (begin == std::string::npos) return false;
-            size_t end = content.find_first_not_of("-+.0123456789eE", begin);
-            outValue = std::stof(content.substr(begin, end - begin));
-            return true;
-        };
-        auto readBool = [&](const std::string& key, size_t fromPos, bool& outValue) -> bool
-        {
-            const size_t keyPos = content.find(key, fromPos);
-            if (keyPos == std::string::npos) return false;
-            const size_t colon = content.find(':', keyPos);
-            if (colon == std::string::npos) return false;
-            const size_t begin = content.find_first_not_of(" \t\r\n", colon + 1);
-            if (begin == std::string::npos) return false;
-            if (content.compare(begin, 4, "true") == 0) { outValue = true; return true; }
-            if (content.compare(begin, 5, "false") == 0) { outValue = false; return true; }
-            return false;
-        };
-        auto readString = [&](const std::string& key, size_t fromPos, std::string& outValue) -> bool
-        {
-            const size_t keyPos = content.find(key, fromPos);
-            if (keyPos == std::string::npos) return false;
-            const size_t colon = content.find(':', keyPos);
-            const size_t begin = content.find('"', colon + 1);
-            if (colon == std::string::npos || begin == std::string::npos) return false;
-            size_t end = begin + 1;
-            while ((end = content.find('"', end)) != std::string::npos)
-            {
-                if (content[end - 1] != '\\')
-                    break;
-                ++end;
-            }
-            if (end == std::string::npos) return false;
-            outValue = UnescapeJsonString(content.substr(begin + 1, end - begin - 1));
-            return true;
-        };
-        auto readVector3 = [&](const std::string& key, size_t fromPos, DirectX::XMFLOAT3& outValue) -> bool
-        {
-            const size_t keyPos = content.find(key, fromPos);
-            if (keyPos == std::string::npos) return false;
-            const size_t open = content.find('[', keyPos);
-            const size_t close = content.find(']', open);
-            if (open == std::string::npos || close == std::string::npos) return false;
-            std::string values = content.substr(open + 1, close - open - 1);
-            std::replace(values.begin(), values.end(), ',', ' ');
-            std::istringstream stream(values);
-            stream >> outValue.x >> outValue.y >> outValue.z;
-            return !stream.fail();
-        };
+        const size_t objectBegin = content.rfind('{', searchPos);
+        const size_t objectEnd = content.find('}', searchPos);
+        if (objectBegin == std::string::npos || objectEnd == std::string::npos)
+            break;
 
         SceneInstance inst{};
-        float idValue = 0.0f;
-        float materialValue = 0.0f;
-        float parentValue = 0.0f;
-        if (!readNumber("\"id\"", searchPos, idValue)) break;
-        if (!readNumber("\"parent\"", searchPos, parentValue)) parentValue = 0.0f;
-        if (!readString("\"name\"", searchPos, inst.name)) break;
-        if (!readVector3("\"position\"", searchPos, inst.position)) break;
-        if (!readVector3("\"rotation\"", searchPos, inst.rotation)) break;
-        if (!readVector3("\"scale\"", searchPos, inst.scale)) break;
-        if (!readBool("\"visible\"", searchPos, inst.visible)) break;
-        if (!readNumber("\"material\"", searchPos, materialValue)) break;
+        if (!ParseSceneInstanceFromJson(content.substr(objectBegin, objectEnd - objectBegin + 1), inst, true))
+            break;
 
-        inst.instanceId = static_cast<uint32_t>(idValue);
-        inst.parentInstanceId = static_cast<uint32_t>(parentValue);
-        inst.materialIndex = static_cast<int>(materialValue);
         s_SceneInstances.push_back(inst);
         maxId = (std::max)(maxId, inst.instanceId);
-        ++searchPos;
+        searchPos = objectEnd + 1;
     }
 
     s_NextInstanceId = maxId + 1;
     s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
     s_SceneLayoutDirty = false;
+    ValidateSelection();
     RebuildRenderInstancesFromSceneData();
     MarkInstancesDirty();
     return true;
@@ -1698,7 +1991,7 @@ void Scene::Render(const SceneRenderContext& ctx)
     //   - g_SRVHeap may or may not be bound (we re-bind defensively)
     //
     // ImGui bleed: ImGui may have left PSO/heap/viewport bound. We reset all.
-    // ====================================================================
+       // ====================================================================
 
     if (!ctx.device || !ctx.commandList)
     {

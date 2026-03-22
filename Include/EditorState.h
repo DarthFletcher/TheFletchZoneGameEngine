@@ -102,6 +102,13 @@ struct TFZGrabState
     DirectX::XMFLOAT3 startPos = { 0.0f, 0.0f, 0.0f };
 };
 
+struct SceneHistoryEntry
+{
+    std::string sceneSnapshot;
+    uint32_t activeSelectedInstanceId = 0;
+    std::vector<uint32_t> selectedInstanceIds;
+};
+
 // =====================================================
 // Main Editor State
 // =====================================================
@@ -134,8 +141,8 @@ struct EditorState
     bool showLogViewer = true;
     bool showDebugOverlay = true;
 
-    std::vector<std::string> undoSceneSnapshots;
-    std::vector<std::string> redoSceneSnapshots;
+    std::vector<SceneHistoryEntry> undoSceneSnapshots;
+    std::vector<SceneHistoryEntry> redoSceneSnapshots;
 
     void ResetAllInteraction()
     {

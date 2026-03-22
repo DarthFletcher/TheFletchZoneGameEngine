@@ -19,7 +19,7 @@ public:
         View2D
     };
 
-    SceneCamera() = default;
+    SceneCamera();
 
     DirectX::XMMATRIX GetView() const;
     DirectX::XMMATRIX GetProj(float aspect) const;
@@ -42,6 +42,11 @@ public:
 
     void SetViewPreset(ViewPreset preset);
     ViewPreset GetViewPreset() const { return viewPreset_; }
+
+    void ResetToDefaultView();
+    void SetFrontView();
+    void SetRightView();
+    void SetTopView();
 
     void FocusOn(const DirectX::XMFLOAT3& position, float distance = 5.0f);
     void FocusOnPoint(const DirectX::XMFLOAT3& position, float distance = 5.0f) { FocusOn(position, distance); }
@@ -66,15 +71,15 @@ public:
 
 private:
     // Backing vectors used for rendering.
-    DirectX::XMVECTOR eye_ = DirectX::XMVectorSet(0.0f, 2.5f, -4.5f, 1.0f);
-    DirectX::XMVECTOR target_ = DirectX::XMVectorZero();
+    DirectX::XMVECTOR eye_ = DirectX::XMVectorSet(0.0f, 0.0f, -1.0f, 1.0f);
+    DirectX::XMVECTOR target_ = DirectX::XMVectorSet(0.0f, 0.5f, 0.0f, 1.0f);
     DirectX::XMVECTOR up_ = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    DirectX::XMVECTOR orbitPivot_ = DirectX::XMVectorZero();
+    DirectX::XMVECTOR orbitPivot_ = DirectX::XMVectorSet(0.0f, 0.5f, 0.0f, 1.0f);
 
     // Orbit state
-    float yaw_ = 0.0f;
-    float pitch_ = 0.35f;
-    float distance_ = 5.0f;
+    float yaw_ = DirectX::XM_PIDIV4;
+    float pitch_ = DirectX::XMConvertToRadians(-25.0f);
+    float distance_ = 10.0f;
     bool freelooking_ = false;
     ProjectionMode projectionMode_ = ProjectionMode::Perspective;
     ViewPreset viewPreset_ = ViewPreset::View3D;

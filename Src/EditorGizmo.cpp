@@ -422,6 +422,117 @@ namespace
         XMStoreFloat3(&result, XMVector3TransformCoord(p - c, rot) + c);
         return result;
     }
+
+    static bool TryGetParentWorldMatrix(const SceneInstance& instance, XMMATRIX& outParentWorld)
+    {
+        const uint32_t parentId = Scene::GetParentInstanceId(instance.instanceId);
+        if (parentId == 0)
+            return false;
+
+        XMFLOAT4X4 parentWorldF{};
+        if (!Scene::TryGetInstanceWorldMatrix(parentId, parentWorldF))
+            return false;
+
+        outParentWorld = XMLoadFloat4x4(&parentWorldF);
+        return true;
+    }
+
+    static XMFLOAT3 QuaternionToEuler(const XMFLOAT4& q)
+    {
+        const float ysqr = q.y * q.y;
+        const float t0 = +2.0f * (q.w * q.x + q.y * q.z);
+        const float t1 = +1.0f - 2.0f * (q.x * q.x + ysqr);
+        const float t2 = (std::clamp)(+2.0f * (q.w * q.y - q.z * q.x), -1.0f, 1.0f);
+        const float t3 = +2.0f * (q.w * q.z + q.x * q.y);
+        const float t4 = +1.0f - 2.0f * (ysqr + q.z * q.z);
+        return { std::atan2(t0, t1), std::asin(t2), std::atan2(t3, t4) };
+    }
+
+    static XMFLOAT3 GetInstanceWorldPosition(const SceneInstance& instance)
+    {
+        return Scene::GetInstanceWorldPosition(instance.instanceId);
+    }
+
+    static void ComputeAxisBasisFromWorld(const SceneInstance& instance, EditorGizmo::Space space, XMFLOAT3& outX, XMFLOAT3& outY, XMFLOAT3& outZ)
+    {
+        if (space == EditorGizmo::Space::World)
+        {
+            outX = { 1.0f, 0.0f, 0.0f };
+            outY = { 0.0f, 1.0f, 0.0f };
+            outZ = { 0.0f, 0.0f, 1.0f };
+            return;
+        }
+
+        XMFLOAT4X4 worldF{};
+        if (!Scene::TryGetInstanceWorldMatrix(instance.instanceId, worldF))
+        {
+            ComputeAxisBasis(instance, space, outX, outY, outZ);
+            return;
+        }
+
+        const XMMATRIX world = XMLoadFloat4x4(&worldF);
+        XMStoreFloat3(&outX, XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f), world)));
+        XMStoreFloat3(&outY, XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), world)));
+        XMStoreFloat3(&outZ, XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), world)));
+    }
+
+    static void SetInstanceWorldPosition(SceneInstance& instance, const XMFLOAT3& worldPos)
+    {
+        XMMATRIX parentWorld{};
+        if (!TryGetParentWorldMatrix(instance, parentWorld))
+        {
+            instance.position = worldPos;
+            return;
+        }
+
+        XMFLOAT3 localPos{};
+        XMStoreFloat3(&localPos, XMVector3TransformCoord(XMLoadFloat3(&worldPos), XMMatrixInverse(nullptr, parentWorld)));
+        instance.position = localPos;
+    }
+
+    static void ApplyWorldAxisRotationToLocal(SceneInstance& instance, const XMFLOAT3& startLocalEuler, const XMFLOAT3& worldAxis, float angle)
+    {
+        const XMMATRIX localStart = XMMatrixRotationRollPitchYaw(startLocalEuler.x, startLocalEuler.y, startLocalEuler.z);
+        const XMMATRIX deltaWorld = XMMatrixRotationAxis(XMVector3Normalize(XMLoadFloat3(&worldAxis)), angle);
+
+        XMMATRIX localResult = XMMatrixMultiply(localStart, deltaWorld);
+        XMMATRIX parentWorld{};
+        if (TryGetParentWorldMatrix(instance, parentWorld))
+        {
+            XMVECTOR parentScale{}, parentRotQ{}, parentTrans{};
+            if (XMMatrixDecompose(&parentScale, &parentRotQ, &parentTrans, parentWorld))
+            {
+                const XMMATRIX parentRot = XMMatrixRotationQuaternion(parentRotQ);
+                localResult = XMMatrixMultiply(XMMatrixMultiply(localStart, parentRot), XMMatrixMultiply(deltaWorld, XMMatrixInverse(nullptr, parentRot)));
+            }
+        }
+
+        XMVECTOR outScale{}, outRotQ{}, outTrans{};
+        if (!XMMatrixDecompose(&outScale, &outRotQ, &outTrans, localResult))
+            return;
+
+        XMFLOAT4 q{};
+        XMStoreFloat4(&q, outRotQ);
+        instance.rotation = QuaternionToEuler(q);
+    }
+
+    static XMFLOAT3 ComputeAxisDragPlaneNormal(const XMFLOAT3& axis, const XMFLOAT3& viewDir)
+    {
+        const XMFLOAT3 axisN = Normalize3(axis);
+        const float axisDotView = Dot3(axisN, viewDir);
+        XMFLOAT3 planeNormal{
+            viewDir.x - axisN.x * axisDotView,
+            viewDir.y - axisN.y * axisDotView,
+            viewDir.z - axisN.z * axisDotView
+        };
+        planeNormal = Normalize3(planeNormal);
+        if (fabsf(planeNormal.x) <= 1e-6f && fabsf(planeNormal.y) <= 1e-6f && fabsf(planeNormal.z) <= 1e-6f)
+        {
+            const XMFLOAT3 fallback = (fabsf(axisN.y) < 0.9f) ? XMFLOAT3{ 0.0f, 1.0f, 0.0f } : XMFLOAT3{ 1.0f, 0.0f, 0.0f };
+            planeNormal = Normalize3(Cross3(axisN, Cross3(fallback, axisN)));
+        }
+        return planeNormal;
+    }
 }
 
 void EditorGizmo::SetMode(Mode m)
@@ -477,7 +588,7 @@ void EditorGizmo::Update(
             {
                 if (SceneInstance* selectedInstance = FindSceneInstanceById(id))
                 {
-                    dragStartSelectionPositions.emplace_back(id, selectedInstance->position);
+                    dragStartSelectionPositions.emplace_back(id, GetInstanceWorldPosition(*selectedInstance));
                     dragStartSelectionRotations.emplace_back(id, selectedInstance->rotation);
                     dragStartSelectionScales.emplace_back(id, selectedInstance->scale);
                 }
@@ -486,7 +597,7 @@ void EditorGizmo::Update(
 
         if (dragStartSelectionPositions.empty() && instance)
         {
-            dragStartSelectionPositions.emplace_back(instance->instanceId, instance->position);
+            dragStartSelectionPositions.emplace_back(instance->instanceId, GetInstanceWorldPosition(*instance));
             dragStartSelectionRotations.emplace_back(instance->instanceId, instance->rotation);
             dragStartSelectionScales.emplace_back(instance->instanceId, instance->scale);
         }
@@ -497,11 +608,12 @@ void EditorGizmo::Update(
         {
             if (SceneInstance* selectedInstance = FindSceneInstanceById(id))
             {
-                selectedInstance->position = {
+                const XMFLOAT3 targetWorldPos{
                     startPos.x + delta.x,
                     startPos.y + delta.y,
                     startPos.z + delta.z
                 };
+                SetInstanceWorldPosition(*selectedInstance, targetWorldPos);
             }
         }
     };
@@ -510,17 +622,14 @@ void EditorGizmo::Update(
         for (const auto& [id, startPos] : dragStartSelectionPositions)
         {
             if (SceneInstance* selectedInstance = FindSceneInstanceById(id))
-                selectedInstance->position = RotatePointAroundAxis(startPos, center, axis, angle);
+                SetInstanceWorldPosition(*selectedInstance, RotatePointAroundAxis(startPos, center, axis, angle));
         }
 
         for (const auto& [id, startRot] : dragStartSelectionRotations)
         {
             if (SceneInstance* selectedInstance = FindSceneInstanceById(id))
             {
-                selectedInstance->rotation = startRot;
-                if (fabsf(axis.x) > 0.5f) selectedInstance->rotation.x += angle;
-                else if (fabsf(axis.y) > 0.5f) selectedInstance->rotation.y += angle;
-                else if (fabsf(axis.z) > 0.5f) selectedInstance->rotation.z += angle;
+                ApplyWorldAxisRotationToLocal(*selectedInstance, startRot, axis, angle);
             }
         }
     };
@@ -546,7 +655,9 @@ void EditorGizmo::Update(
                     offset = perpendicular + parallel * factor;
                 }
 
-                XMStoreFloat3(&selectedInstance->position, centerV + offset);
+                XMFLOAT3 targetWorldPos{};
+                XMStoreFloat3(&targetWorldPos, centerV + offset);
+                SetInstanceWorldPosition(*selectedInstance, targetWorldPos);
             }
         }
 
@@ -589,7 +700,7 @@ void EditorGizmo::Update(
     const bool useCenterAnchor = multiSelection && useSelectionCenter;
     const XMFLOAT3 gizmoOriginWorld = (((mode == Mode::Translate) || (mode == Mode::Rotate) || (mode == Mode::Scale)) && useCenterAnchor)
         ? Scene::GetSelectionCenterOrActivePosition()
-        : instance->position;
+        : GetInstanceWorldPosition(*instance);
     const Space effectiveSpace = ((mode == Mode::Translate) || (mode == Mode::Rotate) || (mode == Mode::Scale)) && multiSelection ? Space::World : space;
 
     ImVec2 origin{};
@@ -599,7 +710,7 @@ void EditorGizmo::Update(
     const float axisLength = ComputeGizmoAxisLength(gizmoOriginWorld, camera);
 
     XMFLOAT3 axisXWorld{}, axisYWorld{}, axisZWorld{};
-    ComputeAxisBasis(*instance, effectiveSpace, axisXWorld, axisYWorld, axisZWorld);
+    ComputeAxisBasisFromWorld(*instance, effectiveSpace, axisXWorld, axisYWorld, axisZWorld);
 
     ImVec2 xSample{}, ySample{}, zSample{};
     constexpr float axisWorldSample = 1.0f;
@@ -694,13 +805,21 @@ void EditorGizmo::Update(
                 }
                 else
                 {
-                    instance->rotation = dragStartRotation;
-                    switch (activeAxis)
+                    if (effectiveSpace == Space::World)
                     {
-                    case 0: instance->rotation.x += appliedDelta; break;
-                    case 1: instance->rotation.y += appliedDelta; break;
-                    case 2: instance->rotation.z += appliedDelta; break;
-                    default: break;
+                        const XMFLOAT3 axis = (activeAxis == 0) ? axisXWorld : (activeAxis == 1) ? axisYWorld : axisZWorld;
+                        ApplyWorldAxisRotationToLocal(*instance, dragStartRotation, axis, appliedDelta);
+                    }
+                    else
+                    {
+                        instance->rotation = dragStartRotation;
+                        switch (activeAxis)
+                        {
+                        case 0: instance->rotation.x += appliedDelta; break;
+                        case 1: instance->rotation.y += appliedDelta; break;
+                        case 2: instance->rotation.z += appliedDelta; break;
+                        default: break;
+                        }
                     }
                 }
             }
@@ -972,13 +1091,27 @@ void EditorGizmo::Update(
         }
         else if (hoveredAxis != -1)
         {
+            WorldRay ray{};
+            const XMFLOAT3 planePoint = gizmoOriginWorld;
+            const XMFLOAT3 axis = (hoveredAxis == 0) ? axisXWorld : (hoveredAxis == 1) ? axisYWorld : axisZWorld;
+            XMFLOAT3 viewDir{
+                planePoint.x - camera.position.x,
+                planePoint.y - camera.position.y,
+                planePoint.z - camera.position.z
+            };
+            if (fabsf(viewDir.x) < 1e-6f && fabsf(viewDir.y) < 1e-6f && fabsf(viewDir.z) < 1e-6f)
+                viewDir = { 0.0f, 0.0f, 1.0f };
+            const XMFLOAT3 planeNormal = ComputeAxisDragPlaneNormal(axis, Normalize3(viewDir));
+
             dragging = true;
             activeAxis = hoveredAxis;
             activePlane = -1;
             activeCenter = false;
             dragStartPosition = gizmoOriginWorld;
+            dragPlaneNormal = planeNormal;
             dragStartMouse = io.MousePos;
-            hasDragStartHit = false;
+            hasDragStartHit = ScreenPointToWorldRay(io.MousePos, camera, sceneMin, sceneSize, ray) &&
+                IntersectRayPlane(ray, planePoint, planeNormal, dragStartHit);
             captureDragSelection();
         }
     }
@@ -1050,33 +1183,27 @@ void EditorGizmo::Update(
             }
             else
             {
-                const ImVec2 delta{ io.MousePos.x - dragStartMouse.x, io.MousePos.y - dragStartMouse.y };
-                const float axisDelta = (fabsf(delta.x) >= fabsf(delta.y)) ? delta.x * speed : -delta.y * speed;
-                switch (activeAxis)
+                WorldRay ray{};
+                XMFLOAT3 hit{};
+                if (hasDragStartHit && ScreenPointToWorldRay(io.MousePos, camera, sceneMin, sceneSize, ray) &&
+                    IntersectRayPlane(ray, dragStartPosition, dragPlaneNormal, hit))
                 {
-                case 0:
-                    {
-                        float snapped = axisDelta;
-                        if (snapEnabled) snapped = SnapValue(snapped, snapStep);
-                        targetPosition = AddScaled(dragStartPosition, axisXWorld, snapped);
-                    }
-                    break;
-                case 1:
-                    {
-                        float snapped = axisDelta;
-                        if (snapEnabled) snapped = SnapValue(snapped, snapStep);
-                        targetPosition = AddScaled(dragStartPosition, axisYWorld, snapped);
-                    }
-                    break;
-                case 2:
-                    {
-                        float snapped = axisDelta;
-                        if (snapEnabled) snapped = SnapValue(snapped, snapStep);
-                        targetPosition = AddScaled(dragStartPosition, axisZWorld, snapped);
-                    }
-                    break;
-                default:
-                    break;
+                    const XMFLOAT3 axis = (activeAxis == 0) ? axisXWorld : (activeAxis == 1) ? axisYWorld : axisZWorld;
+                    const ImVec2 axisDir2D = (activeAxis == 0) ? xDir : (activeAxis == 1) ? yDir : zDir;
+                    const ImVec2 mouseDelta2D{ io.MousePos.x - dragStartMouse.x, io.MousePos.y - dragStartMouse.y };
+                    XMFLOAT3 delta{
+                        hit.x - dragStartHit.x,
+                        hit.y - dragStartHit.y,
+                        hit.z - dragStartHit.z
+                    };
+
+                    float axisDelta = fabsf(Dot3(delta, axis));
+                    if ((mouseDelta2D.x * axisDir2D.x + mouseDelta2D.y * axisDir2D.y) < 0.0f)
+                        axisDelta = -axisDelta;
+
+                    if (snapEnabled)
+                        axisDelta = SnapValue(axisDelta, snapStep);
+                    targetPosition = AddScaled(dragStartPosition, axis, axisDelta);
                 }
             }
 

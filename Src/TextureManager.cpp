@@ -255,6 +255,7 @@ Texture* TextureManager::CreateTextureFromPixels(const std::string& key, const v
     record->texture.height = height;
 
     Texture* outTexture = &record->texture;
+    outTexture->sourcePath = key;
     m_Textures.emplace(key, std::move(record));
     return outTexture;
 }

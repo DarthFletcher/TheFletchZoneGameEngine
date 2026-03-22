@@ -13,6 +13,7 @@ struct Texture
     D3D12_GPU_DESCRIPTOR_HANDLE srvGPU = {};
     int width = 0;
     int height = 0;
+    std::string sourcePath;
 };
 
 class TextureManager

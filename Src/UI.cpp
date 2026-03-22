@@ -20,14 +20,25 @@ namespace UI {
 
     static constexpr size_t kMaxUndoSnapshots = 64;
 
+    static SceneHistoryEntry MakeHistoryEntry()
+    {
+        SceneHistoryEntry entry{};
+        entry.sceneSnapshot = Scene::SerializeToString();
+        entry.activeSelectedInstanceId = Scene::GetSelectedInstanceId();
+        entry.selectedInstanceIds = Scene::GetSelectedInstanceIds();
+        return entry;
+    }
+
     static void PushUndoSnapshot()
     {
         if (!g_engineInstance)
             return;
 
         EditorState& editor = g_engineInstance->GetEditorState();
-        const std::string snapshot = Scene::SerializeToString();
-        if (!editor.undoSceneSnapshots.empty() && editor.undoSceneSnapshots.back() == snapshot)
+        const SceneHistoryEntry snapshot = MakeHistoryEntry();
+        if (!editor.undoSceneSnapshots.empty() && editor.undoSceneSnapshots.back().sceneSnapshot == snapshot.sceneSnapshot &&
+            editor.undoSceneSnapshots.back().activeSelectedInstanceId == snapshot.activeSelectedInstanceId &&
+            editor.undoSceneSnapshots.back().selectedInstanceIds == snapshot.selectedInstanceIds)
             return;
 
         editor.undoSceneSnapshots.push_back(snapshot);
