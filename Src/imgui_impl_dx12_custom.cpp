@@ -723,7 +723,12 @@ bool ImGui_ImplDX12_CreateDeviceObjects()
     // 2. Build Root Signature (b0 + t0 + static s0)
     // ----------------------------------------------------
     CD3DX12_DESCRIPTOR_RANGE1 srvRange{};
-    srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0
+    srvRange.Init(
+        D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        1,
+        0,
+        0,
+        D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE); // t0
 
     CD3DX12_ROOT_PARAMETER1 rootParameters[2] = {};
     rootParameters[0].InitAsConstants(16, 0, 0, D3D12_SHADER_VISIBILITY_VERTEX);  // b0
@@ -1147,7 +1152,7 @@ void ImGui_ImplDX12_NewFrame()
     ImGuiContext* ctx = ImGui::GetCurrentContext();
     IM_ASSERT(ctx != nullptr);
 // Optional: Log new frame
-    Logger::Log(LogLevel::Info, std::format("ℹ️ ImGui New Frame Started — FrameIndex = {}", bd->FrameIndex));
+    Logger::Log(LogLevel::Verbose, std::format("ℹ️ ImGui New Frame Started — FrameIndex = {}", bd->FrameIndex));
 }
 
 //=========================================================================

@@ -15,6 +15,14 @@ struct ID3D12GraphicsCommandList;
 
 struct CameraData;
 
+enum class ScenePrimitive : uint8_t
+{
+    Cube = 0,
+    Sphere,
+    Plane,
+    Cylinder
+};
+
 struct SceneInstance
 {
     uint32_t instanceId = 0;
@@ -26,6 +34,7 @@ struct SceneInstance
     DirectX::XMFLOAT3 scale{ 1.0f, 1.0f, 1.0f };
     bool visible = true;
     int materialIndex = 0;
+    ScenePrimitive primitive = ScenePrimitive::Cube;
 };
 
 struct SceneStats
@@ -88,6 +97,7 @@ public:
     static SceneStats GetLastStats();
     static void SetTargetInstanceCount(uint32_t count);
     static uint32_t GetTargetInstanceCount();
+    static void UpdateLastRenderCameraData(const CameraData& camera);
 
     static bool TrySelectInstanceAtViewportPoint(float mouseX, float mouseY, float viewportWidth, float viewportHeight);
     static bool TrySelectInstanceFromRay(const DirectX::XMFLOAT3& rayOrigin, const DirectX::XMFLOAT3& rayDir);
@@ -125,6 +135,10 @@ public:
     static void DeleteSelectedInstance();
     static void DuplicateSelectedInstance();
     static void CreateCube(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
+    static void CreateSphere(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
+    static void CreatePlane(const DirectX::XMFLOAT3& position = { 0.0f, 0.0f, 0.0f });
+    static void CreateCylinder(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
+    static void CreatePrimitive(ScenePrimitive primitive, const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
     static bool SaveSelectedAsPrefab(const std::string& path);
     static bool InstantiatePrefab(const std::string& path, const DirectX::XMFLOAT3& position);
     static bool ApplySelectedToPrefab();

@@ -155,6 +155,8 @@
     <ClInclude Include="Dependencies\imgui-docking\imstb_rectpack.h" />
     <ClInclude Include="Dependencies\imgui-docking\imstb_textedit.h" />
     <ClInclude Include="Dependencies\imgui-docking\imstb_truetype.h" />
+    <ClInclude Include="include\BlackFlameAI.h" />
+    <ClInclude Include="Include\BlackFlameAudio.h" />
     <ClInclude Include="include\BootDiagnostics.h" />
     <ClInclude Include="include\BootProgress.h" />
     <ClInclude Include="Include\Bounds.h" />
@@ -219,6 +221,7 @@
     <ClCompile Include="src\CrashDiagnostics.cpp" />
     <ClCompile Include="Src\EditorGizmo.cpp" />
     <ClCompile Include="Src\EditorPanels.cpp" />
+    <ClCompile Include="Src\EditorPanels_BlackFlame.cpp" />
     <ClCompile Include="src\Engine.cpp" />
     <ClCompile Include="Src\Frustum.cpp" />
     <ClCompile Include="src\Game.cpp" />

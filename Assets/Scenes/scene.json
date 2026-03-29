@@ -3,228 +3,303 @@
   "instances": [
     {
       "id": 1,
-      "name": "Cube_001",
+      "parent": 0,
+      "name": "Object 1",
+      "prefabSource": "",
       "position": [-6, 0.5, -6],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 2,
-      "name": "Cube_002",
+      "parent": 0,
+      "name": "Object 2",
+      "prefabSource": "",
       "position": [-6, 0.5, -3],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 3,
-      "name": "Cube_003",
+      "parent": 0,
+      "name": "Object 3",
+      "prefabSource": "",
       "position": [-6, 0.5, 0],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 4,
-      "name": "Cube_004",
+      "parent": 0,
+      "name": "Object 4",
+      "prefabSource": "",
       "position": [-6, 0.5, 3],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 5,
-      "name": "Cube_005",
+      "parent": 0,
+      "name": "Object 5",
+      "prefabSource": "",
       "position": [-6, 0.5, 6],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 6,
-      "name": "Cube_006",
+      "parent": 0,
+      "name": "Object 6",
+      "prefabSource": "",
       "position": [-3, 0.5, -6],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 7,
-      "name": "Cube_007",
+      "parent": 0,
+      "name": "Object 7",
+      "prefabSource": "",
       "position": [-3, 0.5, -3],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 8,
-      "name": "Cube_008",
+      "parent": 0,
+      "name": "Object 8",
+      "prefabSource": "",
       "position": [-3, 0.5, 0],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 9,
-      "name": "Cube_009",
+      "parent": 0,
+      "name": "Object 9",
+      "prefabSource": "",
       "position": [-3, 0.5, 3],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 10,
-      "name": "Cube_010",
+      "parent": 0,
+      "name": "Object 10",
+      "prefabSource": "",
       "position": [-3, 0.5, 6],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 11,
-      "name": "Cube_011",
+      "parent": 0,
+      "name": "Object 11",
+      "prefabSource": "",
       "position": [0, 0.5, -6],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 12,
-      "name": "Cube_012",
+      "parent": 0,
+      "name": "Object 12",
+      "prefabSource": "",
       "position": [0, 0.5, -3],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 13,
-      "name": "Cube_013",
+      "parent": 0,
+      "name": "Object 13",
+      "prefabSource": "",
       "position": [0, 0.5, 0],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 14,
-      "name": "Cube_014",
-      "position": [0, -1, 3],
+      "parent": 0,
+      "name": "Object 14",
+      "prefabSource": "",
+      "position": [0, 0.5, 3],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 15,
-      "name": "Cube_015",
+      "parent": 0,
+      "name": "Object 15",
+      "prefabSource": "",
       "position": [0, 0.5, 6],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 16,
-      "name": "Cube_016",
+      "parent": 0,
+      "name": "Object 16",
+      "prefabSource": "",
       "position": [3, 0.5, -6],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 17,
-      "name": "Cube_017",
+      "parent": 0,
+      "name": "Object 17",
+      "prefabSource": "",
       "position": [3, 0.5, -3],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 18,
-      "name": "Cube_018",
+      "parent": 0,
+      "name": "Object 18",
+      "prefabSource": "",
       "position": [3, 0.5, 0],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 19,
-      "name": "Cube_019",
+      "parent": 0,
+      "name": "Object 19",
+      "prefabSource": "",
       "position": [3, 0.5, 3],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 20,
-      "name": "Cube_020",
+      "parent": 0,
+      "name": "Object 20",
+      "prefabSource": "",
       "position": [3, 0.5, 6],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 21,
-      "name": "Cube_021",
+      "parent": 0,
+      "name": "Object 21",
+      "prefabSource": "",
       "position": [6, 0.5, -6],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 22,
-      "name": "Cube_022",
+      "parent": 0,
+      "name": "Object 22",
+      "prefabSource": "",
       "position": [6, 0.5, -3],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 23,
-      "name": "Cube_023",
+      "parent": 0,
+      "name": "Object 23",
+      "prefabSource": "",
       "position": [6, 0.5, 0],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 24,
-      "name": "Cube_024",
+      "parent": 0,
+      "name": "Object 24",
+      "prefabSource": "",
       "position": [6, 0.5, 3],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     },
     {
       "id": 25,
-      "name": "Cube_025",
+      "parent": 0,
+      "name": "Object 25",
+      "prefabSource": "",
       "position": [6, 0.5, 6],
       "rotation": [0, 0, 0],
       "scale": [1, 1, 1],
       "visible": true,
-      "material": 0
+      "material": 0,
+      "primitive": 0
     }
   ]
 }

@@ -14,12 +14,11 @@ struct MeshData
     uint32_t IndexCount = 0;
 };
 
-// Creates a cube mesh in UPLOAD heap only (CPU-writable). No command list submission.
 bool CreateCubeMesh(ID3D12Device* device, MeshData& outMesh);
+bool CreateSphereMesh(ID3D12Device* device, MeshData& outMesh, uint32_t slices = 24, uint32_t stacks = 16);
+bool CreatePlaneMesh(ID3D12Device* device, MeshData& outMesh);
+bool CreateCylinderMesh(ID3D12Device* device, MeshData& outMesh, uint32_t slices = 24);
 
-// Phase 4B: creates the cube mesh in DEFAULT heap.
-// Uses temporary UPLOAD heap staging buffers and records copy + barriers on `commandList`.
-// Caller must provide a queue + fence and guarantees this runs outside the active frame loop.
 bool CreateCubeMeshDefaultHeap(
     ID3D12Device* device,
     ID3D12GraphicsCommandList* commandList,
@@ -29,4 +28,37 @@ bool CreateCubeMeshDefaultHeap(
     HANDLE fenceEvent,
     UINT64& inOutFenceValue,
     MeshData& outMesh);
+
+bool CreateSphereMeshDefaultHeap(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* commandList,
+    ID3D12CommandAllocator* commandAllocator,
+    ID3D12CommandQueue* queue,
+    ID3D12Fence* fence,
+    HANDLE fenceEvent,
+    UINT64& inOutFenceValue,
+    MeshData& outMesh,
+    uint32_t slices = 24,
+    uint32_t stacks = 16);
+
+bool CreatePlaneMeshDefaultHeap(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* commandList,
+    ID3D12CommandAllocator* commandAllocator,
+    ID3D12CommandQueue* queue,
+    ID3D12Fence* fence,
+    HANDLE fenceEvent,
+    UINT64& inOutFenceValue,
+    MeshData& outMesh);
+
+bool CreateCylinderMeshDefaultHeap(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* commandList,
+    ID3D12CommandAllocator* commandAllocator,
+    ID3D12CommandQueue* queue,
+    ID3D12Fence* fence,
+    HANDLE fenceEvent,
+    UINT64& inOutFenceValue,
+    MeshData& outMesh,
+    uint32_t slices = 24);
 

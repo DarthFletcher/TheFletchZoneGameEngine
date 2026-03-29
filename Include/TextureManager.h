@@ -23,6 +23,7 @@ public:
 
     Texture* LoadTexture(const std::string& path);
     Texture* GetWhiteTexture();
+    Texture* GetDefaultNormalTexture();
     void Shutdown();
 
 private:

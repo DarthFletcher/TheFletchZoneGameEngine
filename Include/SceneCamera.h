@@ -76,6 +76,10 @@ private:
     DirectX::XMVECTOR up_ = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
     DirectX::XMVECTOR orbitPivot_ = DirectX::XMVectorSet(0.0f, 0.5f, 0.0f, 1.0f);
 
+    float controlTickAccumulator_ = 0.0f;
+    DirectX::XMFLOAT2 pendingMouseDelta_{ 0.0f, 0.0f };
+    float pendingMouseWheel_ = 0.0f;
+
     // Orbit state
     float yaw_ = DirectX::XM_PIDIV4;
     float pitch_ = DirectX::XMConvertToRadians(-25.0f);
@@ -91,6 +95,7 @@ private:
     float orbitLookSpeed_ = 0.0055f;
     float flyMoveSpeed_ = 8.0f;
     bool orbitInteracting_ = false;
+    bool gamepadFocusPressed_ = false;
     DirectX::XMFLOAT2 smoothedLookDelta_{ 0.0f, 0.0f };
 
     float fovY_ = DirectX::XMConvertToRadians(60.0f);

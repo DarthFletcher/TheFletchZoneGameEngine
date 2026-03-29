@@ -257,6 +257,12 @@ bool Engine::Initialize(HINSTANCE hInstance, int nCmdShow)
     Logger::Log(LogLevel::Info, "🛠 Engine initialization started...");
     LogStartupBanner();
 
+    editorState.blackFlameAI.Initialize();
+    editorState.sceneEvents.Callback = [this](const SceneEvent& evt)
+    {
+        editorState.blackFlameAI.OnSceneEvent(evt);
+    };
+
     Boot::Reset(5);
     Boot::SetStage("Window", 0);
     Boot::SetStageProgress(0.0f, "Creating application window...");
@@ -393,6 +399,8 @@ void Engine::Run() {
         std::chrono::duration<float> deltaTime = currentFrameTime - lastFrameTime;
         lastFrameTime = currentFrameTime;
 
+        MaterialManager::GetInstance().ProcessPendingTextureLoads();
+
         // ✅ Begin Frame
         Logger::SetFrameNumber(++engineFrameNumber);
         Logger::Log(LogLevel::Debug, "===== BeginFrame =====", "Core");
@@ -417,7 +425,7 @@ void Engine::Run() {
         // ✅ Frame Time Logging for Profiling
         float frameTimeMs = deltaTime.count() * 1000.0f;
         float fps = (frameTimeMs > 0.0f) ? 1000.0f / frameTimeMs : 0.0f;
-        Logger::Log(LogLevel::Info, std::format("FrameTime: {:.3f}ms ({:.1f} FPS)", frameTimeMs, fps));
+        Logger::Log(LogLevel::Verbose, std::format("FrameTime: {:.3f}ms ({:.1f} FPS)", frameTimeMs, fps));
     }
 
     Logger::Log(LogLevel::Info, "🏁 Engine Run loop ended.");
@@ -429,6 +437,8 @@ void Engine::Run() {
 // ==========================================
 void Engine::Shutdown() {
     Logger::Log(LogLevel::Info, "💤 Shutting down engine...");
+
+    editorState.blackFlameAI.Shutdown();
 
     // Persist docking/layout on exit
     UI::SaveLayoutToDisk("imgui.ini");
@@ -544,6 +554,7 @@ void Engine::ProcessInput() {
 // ==========================================
 void Engine::Update() {
     timer.Tick();
+    editorState.blackFlameAI.Update();
     game.Update(timer.GetDeltaTime());
 }
 
@@ -576,6 +587,7 @@ void Engine::GameLoop(HWND hWnd)
 
     if (!SplashScreen::IsVisible())
     {
+        editorState.blackFlameAI.Update();
         game.Update(timer.GetDeltaTime());
     }
 

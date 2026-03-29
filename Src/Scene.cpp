@@ -8,6 +8,7 @@
 #include "Vertex.h"
 #include "Frustum.h"
 #include "Bounds.h"
+#include "Engine.h"
 
 #include <algorithm>
 #include <array>
@@ -25,13 +26,26 @@
 #include <DirectXMath.h>
 
 extern ID3D12DescriptorHeap* g_SRVHeap;
+extern Engine* g_engineInstance;
 
 namespace
 {
     using Microsoft::WRL::ComPtr;
 
+    static void EmitSceneEvent(SceneEventType type, SceneInstance* entity = nullptr, float strength = 1.0f)
+    {
+        if (!g_engineInstance)
+            return;
+
+        SceneEvent evt{};
+        evt.Type = type;
+        evt.Entity = entity;
+        evt.EventStrength = strength;
+        g_engineInstance->GetEditorState().sceneEvents.Emit(evt);
+    }
+
     static constexpr const char* kSceneTestMaterialName = "TestMaterial";
-    static constexpr const char* kSceneTestTexturePath = "Assets/Textures/crate.png";
+    static constexpr const char* kSceneTestTexturePath = "Assets/Meshes/crate.png";
     static bool g_loggedTestMaterialApplied = false;
     static CameraData g_LastRenderCameraData{};
     static bool g_HasLastRenderCameraData = false;
@@ -152,7 +166,44 @@ namespace
 
     static std::string MakeSceneInstanceName(uint32_t instanceId)
     {
-        return std::format("Cube_{:03}", instanceId);
+        return std::format("Object {}", instanceId);
+    }
+
+    static const char* ScenePrimitiveToString(ScenePrimitive primitive)
+    {
+        switch (primitive)
+        {
+        case ScenePrimitive::Sphere: return "Sphere";
+        case ScenePrimitive::Plane: return "Plane";
+        case ScenePrimitive::Cylinder: return "Cylinder";
+        case ScenePrimitive::Cube:
+        default: return "Cube";
+        }
+    }
+
+    static ScenePrimitive ScenePrimitiveFromValue(int value)
+    {
+        switch (value)
+        {
+        case 1: return ScenePrimitive::Sphere;
+        case 2: return ScenePrimitive::Plane;
+        case 3: return ScenePrimitive::Cylinder;
+        case 0:
+        default: return ScenePrimitive::Cube;
+        }
+    }
+
+    static const MeshData& GetMeshForPrimitive(ScenePrimitive primitive)
+    {
+        Graphics& gfx = Graphics::GetInstance();
+        switch (primitive)
+        {
+        case ScenePrimitive::Sphere: return gfx.GetSphereMesh();
+        case ScenePrimitive::Plane: return gfx.GetPlaneMesh();
+        case ScenePrimitive::Cylinder: return gfx.GetCylinderMesh();
+        case ScenePrimitive::Cube:
+        default: return gfx.GetCubeMesh();
+        }
     }
 
     static Ray ScreenPointToWorldRay(float mouseX, float mouseY, float viewportWidth, float viewportHeight, const CameraData& camera)
@@ -325,7 +376,11 @@ namespace
         float viewProj[16];
         float cameraPos[3];
         float gridFadeDist = 0;
-        float pad[44]{};
+        float lightDirection[3] = { 0.0f, -1.0f, 0.0f };
+        float lightIntensity = 1.0f;
+        float lightColor[3] = { 1.0f, 1.0f, 1.0f };
+        float ambientIntensity = 0.12f;
+        float pad[36]{};
     };
 
     static_assert(sizeof(SceneCB) == 256, "SceneCB must be exactly 256 bytes");
@@ -459,19 +514,25 @@ namespace
         }
 
         // ---------------------------
-        // Root Signature (b0 + SRV t0 + b1 + SRV t1)
+        // Root Signature (b0 + SRV t0 + b1 + SRV t1/t2/t3/t4)
         // ---------------------------
         if (!g_scene.rootSig)
         {
-            CD3DX12_DESCRIPTOR_RANGE srvRanges[2]{};
+            CD3DX12_DESCRIPTOR_RANGE srvRanges[5]{};
             srvRanges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0
             srvRanges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1); // t1
+            srvRanges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2); // t2
+            srvRanges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3); // t3
+            srvRanges[4].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4); // t4
 
-            CD3DX12_ROOT_PARAMETER params[4]{};
+            CD3DX12_ROOT_PARAMETER params[7]{};
             params[Graphics::SceneRootParamSceneCB].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0
             params[Graphics::SceneRootParamInstanceSRV].InitAsDescriptorTable(1, &srvRanges[0], D3D12_SHADER_VISIBILITY_VERTEX); // t0
             params[Graphics::SceneRootParamMaterialCB].InitAsConstantBufferView(1, 0, D3D12_SHADER_VISIBILITY_PIXEL); // b1
             params[Graphics::SceneRootParamMaterialAlbedoSRV].InitAsDescriptorTable(1, &srvRanges[1], D3D12_SHADER_VISIBILITY_PIXEL); // t1
+            params[Graphics::SceneRootParamMaterialNormalSRV].InitAsDescriptorTable(1, &srvRanges[2], D3D12_SHADER_VISIBILITY_PIXEL); // t2
+            params[Graphics::SceneRootParamMaterialMetallicSRV].InitAsDescriptorTable(1, &srvRanges[3], D3D12_SHADER_VISIBILITY_PIXEL); // t3
+            params[Graphics::SceneRootParamMaterialRoughnessSRV].InitAsDescriptorTable(1, &srvRanges[4], D3D12_SHADER_VISIBILITY_PIXEL); // t4
 
             CD3DX12_STATIC_SAMPLER_DESC samplerDesc(
                 0,
@@ -538,8 +599,9 @@ namespace
         if (!g_scene.pso)
         {
             D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
-                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-                { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, (UINT)sizeof(float) * 3, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, (UINT)offsetof(VertexPC, Position), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, (UINT)offsetof(VertexPC, Color), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+                { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, (UINT)offsetof(VertexPC, Normal), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
                 { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, (UINT)offsetof(VertexPC, UV), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
             };
 
@@ -609,6 +671,23 @@ namespace
             g_scene.cbData = {};
             FillIdentity(g_scene.cbData.viewProj);
             g_scene.cbData.gridFadeDist = 10.0f;
+
+            const Graphics::DirectionalLight& light = Graphics::GetInstance().GetDirectionalLight();
+            using namespace DirectX;
+            XMFLOAT3 lightDir = light.direction;
+            if (fabsf(lightDir.x) < 1e-4f && fabsf(lightDir.y) < 1e-4f && fabsf(lightDir.z) < 1e-4f)
+                lightDir = { 0.5f, -1.0f, 0.3f };
+            const XMVECTOR lightDirVec = XMVector3Normalize(XMLoadFloat3(&lightDir));
+            XMStoreFloat3(&lightDir, lightDirVec);
+
+            g_scene.cbData.lightDirection[0] = lightDir.x;
+            g_scene.cbData.lightDirection[1] = lightDir.y;
+            g_scene.cbData.lightDirection[2] = lightDir.z;
+            g_scene.cbData.lightIntensity = light.intensity;
+            g_scene.cbData.lightColor[0] = light.color.x;
+            g_scene.cbData.lightColor[1] = light.color.y;
+            g_scene.cbData.lightColor[2] = light.color.z;
+            g_scene.cbData.ambientIntensity = light.ambient;
         }
 
         // ---------------------------
@@ -833,6 +912,7 @@ namespace
         float idValue = 0.0f;
         float parentValue = 0.0f;
         float materialValue = 0.0f;
+        float primitiveValue = 0.0f;
         if (readIdAndParent && !readNumber("\"id\"", idValue))
             return false;
         if (readIdAndParent)
@@ -844,10 +924,12 @@ namespace
         if (!readVector3("\"scale\"", outInstance.scale)) return false;
         if (!readBool("\"visible\"", outInstance.visible)) return false;
         if (!readNumber("\"material\"", materialValue)) return false;
+        readNumber("\"primitive\"", primitiveValue);
 
         outInstance.instanceId = static_cast<uint32_t>(idValue);
         outInstance.parentInstanceId = static_cast<uint32_t>(parentValue);
         outInstance.materialIndex = static_cast<int>(materialValue);
+        outInstance.primitive = ScenePrimitiveFromValue(static_cast<int>(primitiveValue));
         return true;
     }
 
@@ -927,7 +1009,8 @@ namespace
         file << "  \"rotation\": [" << prefab.rotation.x << ", " << prefab.rotation.y << ", " << prefab.rotation.z << "],\n";
         file << "  \"scale\": [" << prefab.scale.x << ", " << prefab.scale.y << ", " << prefab.scale.z << "],\n";
         file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
-        file << "  \"material\": " << prefab.materialIndex << "\n";
+        file << "  \"material\": " << prefab.materialIndex << ",\n";
+        file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << "\n";
         file << "}\n";
         return file.good();
     }
@@ -997,6 +1080,12 @@ bool Scene::TryGetLastRenderCameraData(CameraData& outCamera)
 
     outCamera = g_LastRenderCameraData;
     return true;
+}
+
+void Scene::UpdateLastRenderCameraData(const CameraData& camera)
+{
+    g_LastRenderCameraData = camera;
+    g_HasLastRenderCameraData = true;
 }
 
 void Scene::EnsureInstanceBufferDefault(ID3D12Device* device, UINT requiredCount)
@@ -1291,6 +1380,7 @@ void Scene::SetSelectedInstanceId(uint32_t instanceId)
     if (instanceId != 0)
         s_SelectedInstanceIds.push_back(instanceId);
     ValidateSelection();
+    EmitSceneEvent(SceneEventType::EntitySelected, GetSelectedInstance(), 0.6f);
 }
 
 uint32_t Scene::GetSelectedInstanceId()
@@ -1311,6 +1401,7 @@ void Scene::AddSelectedInstanceId(uint32_t instanceId)
     s_SelectedInstanceIds.push_back(instanceId);
     s_SelectedInstanceId = instanceId;
     ValidateSelection();
+    EmitSceneEvent(SceneEventType::EntitySelected, GetSelectedInstance(), 0.6f);
 }
 
 void Scene::RemoveSelectedInstanceId(uint32_t instanceId)
@@ -1349,6 +1440,8 @@ void Scene::RestoreSelectionState(uint32_t activeInstanceId, const std::vector<u
 
     if (s_SelectedInstanceId != 0 && !IsInstanceSelected(s_SelectedInstanceId))
         s_SelectedInstanceIds.push_back(s_SelectedInstanceId);
+
+    EmitSceneEvent(SceneEventType::EntitySelected, GetSelectedInstance(), 0.6f);
 }
 
 const std::vector<uint32_t>& Scene::GetSelectedInstanceIds()
@@ -1630,15 +1723,36 @@ void Scene::DuplicateSelectedInstance()
 
 void Scene::CreateCube(const DirectX::XMFLOAT3& position)
 {
+    CreatePrimitive(ScenePrimitive::Cube, position);
+}
+
+void Scene::CreateSphere(const DirectX::XMFLOAT3& position)
+{
+    CreatePrimitive(ScenePrimitive::Sphere, position);
+}
+
+void Scene::CreatePlane(const DirectX::XMFLOAT3& position)
+{
+    CreatePrimitive(ScenePrimitive::Plane, position);
+}
+
+void Scene::CreateCylinder(const DirectX::XMFLOAT3& position)
+{
+    CreatePrimitive(ScenePrimitive::Cylinder, position);
+}
+
+void Scene::CreatePrimitive(ScenePrimitive primitive, const DirectX::XMFLOAT3& position)
+{
     SceneInstance instance{};
     instance.instanceId = s_NextInstanceId++;
     instance.parentInstanceId = 0;
-    instance.name = MakeSceneInstanceName(instance.instanceId);
+    instance.name = std::format("{} {}", ScenePrimitiveToString(primitive), instance.instanceId);
     instance.position = position;
     instance.rotation = { 0.0f, 0.0f, 0.0f };
     instance.scale = { 1.0f, 1.0f, 1.0f };
     instance.visible = true;
     instance.materialIndex = 0;
+    instance.primitive = primitive;
 
     s_SceneInstances.push_back(instance);
     s_SelectedInstanceId = instance.instanceId;
@@ -1646,6 +1760,10 @@ void Scene::CreateCube(const DirectX::XMFLOAT3& position)
     s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
     RebuildRenderInstancesFromSceneData();
     MarkInstancesDirty();
+
+    SceneInstance* createdInstance = s_SceneInstances.empty() ? nullptr : &s_SceneInstances.back();
+    EmitSceneEvent(SceneEventType::EntityCreated, createdInstance, 1.3f);
+    EmitSceneEvent(SceneEventType::EntitySelected, createdInstance, 0.8f);
 }
 
 bool Scene::SaveSelectedAsPrefab(const std::string& path)
@@ -1688,14 +1806,10 @@ bool Scene::SaveSelectedAsPrefab(const std::string& path)
     file << "  \"rotation\": [" << prefab.rotation.x << ", " << prefab.rotation.y << ", " << prefab.rotation.z << "],\n";
     file << "  \"scale\": [" << prefab.scale.x << ", " << prefab.scale.y << ", " << prefab.scale.z << "],\n";
     file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
-    file << "  \"material\": " << prefab.materialIndex << "\n";
+    file << "  \"material\": " << prefab.materialIndex << ",\n";
+    file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << "\n";
     file << "}\n";
-
-    selected->prefabSourcePath = path;
-    RebuildRenderInstancesFromSceneData();
-    MarkInstancesDirty();
-    Logger::Log(LogLevel::Info, std::format("Saved prefab: {}", path), "[Scene]");
-    return true;
+    return file.good();
 }
 
 bool Scene::InstantiatePrefab(const std::string& path, const DirectX::XMFLOAT3& position)
@@ -1868,11 +1982,15 @@ std::string Scene::SerializeToString()
         out << "      \"name\": \"" << EscapeJsonString(inst.name) << "\",\n";
         out << "      \"prefabSource\": \"" << EscapeJsonString(inst.prefabSourcePath) << "\",\n";
         out << "      \"position\": [" << inst.position.x << ", " << inst.position.y << ", " << inst.position.z << "],\n";
-               out << "      \"rotation\": [" << inst.rotation.x << ", " << inst.rotation.y << ", " << inst.rotation.z << "],\n";
+        out << "      \"rotation\": [" << inst.rotation.x << ", " << inst.rotation.y << ", " << inst.rotation.z << "],\n";
         out << "      \"scale\": [" << inst.scale.x << ", " << inst.scale.y << ", " << inst.scale.z << "],\n";
         out << "      \"visible\": " << (inst.visible ? "true" : "false") << ",\n";
-        out << "      \"material\": " << inst.materialIndex << "\n";
-        out << "    }" << (i + 1 < s_SceneInstances.size() ? "," : "") << "\n";
+        out << "      \"material\": " << inst.materialIndex << ",\n";
+        out << "      \"primitive\": " << static_cast<int>(inst.primitive) << "\n";
+        out << "    }";
+        if (i + 1 < s_SceneInstances.size())
+            out << ",";
+        out << "\n";
     }
     out << "  ]\n}\n";
     return out.str();
@@ -2069,6 +2187,23 @@ void Scene::Render(const SceneRenderContext& ctx)
         g_scene.cbData.cameraPos[1] = ctx.camera->position.y;
         g_scene.cbData.cameraPos[2] = ctx.camera->position.z;
         g_scene.cbData.gridFadeDist = 10.0f;
+
+        const Graphics::DirectionalLight& light = Graphics::GetInstance().GetDirectionalLight();
+        using namespace DirectX;
+        XMFLOAT3 lightDir = light.direction;
+        if (fabsf(lightDir.x) < 1e-4f && fabsf(lightDir.y) < 1e-4f && fabsf(lightDir.z) < 1e-4f)
+            lightDir = { 0.5f, -1.0f, 0.3f };
+        const XMVECTOR lightDirVec = XMVector3Normalize(XMLoadFloat3(&lightDir));
+        XMStoreFloat3(&lightDir, lightDirVec);
+
+        g_scene.cbData.lightDirection[0] = lightDir.x;
+        g_scene.cbData.lightDirection[1] = lightDir.y;
+        g_scene.cbData.lightDirection[2] = lightDir.z;
+        g_scene.cbData.lightIntensity = light.intensity;
+        g_scene.cbData.lightColor[0] = light.color.x;
+        g_scene.cbData.lightColor[1] = light.color.y;
+        g_scene.cbData.lightColor[2] = light.color.z;
+        g_scene.cbData.ambientIntensity = light.ambient;
     }
 
     // CP11-A: extract frustum planes from ViewProj (CPU-only; no filtering yet).
@@ -2129,24 +2264,6 @@ void Scene::Render(const SceneRenderContext& ctx)
                 (UINT)hrMap), "[Scene]");
         }
     }
-
-    // ====================================================================
-    // Phase 4A: EXPLICIT STATE SETUP
-    // ====================================================================
-    // WHY: ImGui or other passes may have left incompatible state bound.
-    // D3D12 does NOT auto-reset state between draws. We must explicitly
-    // bind our own PSO, root signature, heaps, and dynamic state.
-    //
-    // Order matters:
-    //   1. Descriptor heaps (required before any SRV/CBV bindings)
-    //   2. Viewport + scissor (defines rasterization region)
-    //   3. Root signature (defines shader bindings)
-    //   4. Blend factor + stencil ref (dynamic state that persists)
-    //   5. CBV (constant buffer for transforms)
-    //   6. PSO (defines shaders, blend, rasterizer, depth)
-    //   7. IA state (topology, vertex buffers)
-    //   8. Draw calls
-    // ====================================================================
 
     // ---------------------------
     // Explicit state setup (no ImGui bleed)
@@ -2234,39 +2351,39 @@ void Scene::Render(const SceneRenderContext& ctx)
 #endif
 
     // ====================================================================
-    // Phase 4A: OPAQUE GEOMETRY PASS (Engine-owned cube, instanced)
+    // Phase 4A: OPAQUE GEOMETRY PASS (engine-owned primitive meshes)
     // ====================================================================
     ctx.commandList->SetPipelineState(g_scene.pso.Get());
     ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-    const MeshData& cube = Graphics::GetInstance().GetCubeMesh();
-    if (cube.IndexCount > 0)
+    const UINT instanceCount = (UINT)s_VisibleInstancesScratch.size();
+#ifndef NDEBUG
     {
-        ctx.commandList->IASetVertexBuffers(0, 1, &cube.VBV);
-        ctx.commandList->IASetIndexBuffer(&cube.IBV);
+        static auto s_drawLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+        const auto nowDraw = std::chrono::steady_clock::now();
+        if (nowDraw - s_drawLast >= std::chrono::seconds(1))
+        {
+            s_drawLast = nowDraw;
+            Logger::Log(LogLevel::Debug, std::format("[Scene] Draw primitives | visible={}", (size_t)instanceCount), "[Scene]");
+        }
+    }
+#endif
+    for (UINT visibleIndex = 0; visibleIndex < instanceCount; ++visibleIndex)
+    {
+        if (visibleIndex >= s_VisibleInstanceIndices.size())
+            break;
+        const UINT sceneIndex = s_VisibleInstanceIndices[visibleIndex];
+        if (sceneIndex >= s_SceneInstances.size())
+            continue;
 
-        const UINT instanceCount = (UINT)s_VisibleInstancesScratch.size();
-#ifndef NDEBUG
-        {
-            static auto s_drawLast = std::chrono::steady_clock::now() - std::chrono::seconds(10);
-            const auto nowDraw = std::chrono::steady_clock::now();
-            if (nowDraw - s_drawLast >= std::chrono::seconds(1))
-            {
-                s_drawLast = nowDraw;
-                Logger::Log(LogLevel::Debug, std::format("[Scene] DrawIndexedInstanced | visible={}", (size_t)instanceCount), "[Scene]");
-            }
-        }
-#endif
-        if (instanceCount > 0)
-        {
-#ifndef NDEBUG
-            const UINT drawInstances = g_DebugForceSingleInstanceDraw ? 1u : instanceCount;
-#else
-            const UINT drawInstances = instanceCount;
-#endif
-            ctx.commandList->DrawIndexedInstanced(cube.IndexCount, drawInstances, 0, 0, 0);
-            s_LastStats.drawCalls++;
-        }
+        const MeshData& mesh = GetMeshForPrimitive(s_SceneInstances[sceneIndex].primitive);
+        if (mesh.IndexCount == 0)
+            continue;
+
+        ctx.commandList->IASetVertexBuffers(0, 1, &mesh.VBV);
+        ctx.commandList->IASetIndexBuffer(&mesh.IBV);
+        ctx.commandList->DrawIndexedInstanced(mesh.IndexCount, 1, 0, 0, visibleIndex);
+        s_LastStats.drawCalls++;
     }
 
     // For subsequent passes (grid), re-bind a fresh slice.

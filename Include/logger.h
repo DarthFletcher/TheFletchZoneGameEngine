@@ -73,7 +73,6 @@ private:
     static std::unordered_map<std::string, std::vector<size_t>> categoryTimelineIndices;
     static std::unordered_map<std::string, std::vector<std::string>> categorizedLogs;
     static std::set<std::string> activeCategories;
-
     static bool autoScroll;
     static char logFilter[256];
     static size_t maxLogBufferSize;

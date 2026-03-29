@@ -20,6 +20,11 @@ namespace EditorPanels
     EditorPanel& Diagnostics();
     EditorPanel& LogViewer();
     EditorPanel& Instancing();
+    EditorPanel& MaterialPreview();
+    EditorPanel& BlackFlame();
+    EditorPanel& PromptHelper();
+    EditorPanel& PrefabWorkflow();
 
     void DrawAll();
+    void DrawPrefabOptionsMenu();
 }

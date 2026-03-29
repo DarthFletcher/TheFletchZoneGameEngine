@@ -970,7 +970,7 @@ void EditorGizmo::Update(
         drawList->AddLine(origin, xEnd, AxisColor(0, activeAxis == 0, hoveredAxis == 0), 3.0f);
         drawList->AddLine(origin, yEnd, AxisColor(1, activeAxis == 1, hoveredAxis == 1), 3.0f);
         drawList->AddLine(origin, zEnd, AxisColor(2, activeAxis == 2, hoveredAxis == 2), 3.0f);
-        drawList->AddRectFilled(ImVec2(xEnd.x - handleHalf, xEnd.y - handleHalf), ImVec2(xEnd.x + handleHalf, yEnd.y + handleHalf), AxisColor(0, activeAxis == 0, hoveredAxis == 0), 2.0f);
+        drawList->AddRectFilled(ImVec2(xEnd.x - handleHalf, xEnd.y - handleHalf), ImVec2(xEnd.x + handleHalf, xEnd.y + handleHalf), AxisColor(0, activeAxis == 0, hoveredAxis == 0), 2.0f);
         drawList->AddRectFilled(ImVec2(yEnd.x - handleHalf, yEnd.y - handleHalf), ImVec2(yEnd.x + handleHalf, yEnd.y + handleHalf), AxisColor(1, activeAxis == 1, hoveredAxis == 1), 2.0f);
         drawList->AddRectFilled(ImVec2(zEnd.x - handleHalf, zEnd.y - handleHalf), ImVec2(zEnd.x + handleHalf, zEnd.y + handleHalf), AxisColor(2, activeAxis == 2, hoveredAxis == 2), 2.0f);
         drawList->AddRectFilled(ImVec2(origin.x - centerHalf, origin.y - centerHalf), ImVec2(origin.x + centerHalf, origin.y + centerHalf), centerColor, 2.0f);
@@ -1243,6 +1243,4 @@ void EditorGizmo::Update(
     drawList->AddTriangleFilled(yTriA, yTriB, yTriC, AxisColor(1, activeAxis == 1, hoveredAxis == 1));
     drawList->AddTriangleFilled(zTriA, zTriB, zTriC, AxisColor(2, activeAxis == 2, hoveredAxis == 2));
 
-    const ImU32 centerColor = activeCenter ? IM_COL32(255, 255, 255, 230) : (hoveredCenter ? IM_COL32(255, 220, 64, 220) : IM_COL32(245, 245, 245, 220));
-    drawList->AddCircleFilled(origin, centerRadius, centerColor);
 }

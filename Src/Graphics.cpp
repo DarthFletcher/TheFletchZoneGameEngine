@@ -23,6 +23,7 @@
 #include <format>
 #include <queue>
 #include <vector>
+#include <cstring>
 #if __has_include(<pix3.h>)
 #include <pix3.h>
 #define GFX_HAS_PIX 1
@@ -99,16 +100,18 @@ static ViewMode g_LastSceneGridBuiltViewMode = ViewMode::Mode3D;
 // Static variable to track the next available SRV descriptor
 static UINT g_SRVDescriptorIndex = 1; // slot 0 reserved for ImGui font
 
-// Reserve a stable SRV slot for the Scene render target to avoid descriptor leaks/overflow during resize spam.
+// Reserve stable SRV slots for engine-owned ImGui textures to avoid descriptor leaks/overflow during resize spam.
 static constexpr UINT kSceneSrvDescriptorIndex = 1;
-static constexpr UINT kFirstDynamicSrvDescriptorIndex = kSceneSrvDescriptorIndex + 1;
+static constexpr UINT kBlackFlameSrvDescriptorIndex = 2;
+static constexpr UINT kFirstDynamicSrvDescriptorIndex = kBlackFlameSrvDescriptorIndex + 1;
+static constexpr const char* kBlackFlameCardTexturePath = "Assets/Icons/The_Fletch_Zone_Icon.png";
 
 static void RequestScreenshot();
 static void ExportRaytraceScene();
 
 // SRV allocator callbacks (custom ImGui DX12 backend signatures)
 static void ImGui_SrvDescriptorAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu_handle);
-static void ImGui_SrvDescriptorFree(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle);
+static void ImGui_SrvDescriptorFree(ImGui_ImplDX12_InitInfo* /*info*/, D3D12_CPU_DESCRIPTOR_HANDLE /*cpu_handle*/, D3D12_GPU_DESCRIPTOR_HANDLE /*gpu_handle*/);
 
 // After includes, at file scope
 ID3D12DescriptorHeap* g_SRVHeap = nullptr; // global definition
@@ -117,6 +120,7 @@ ID3D12DescriptorHeap* g_SRVHeap = nullptr; // global definition
 static std::chrono::steady_clock::time_point g_SceneDiag_Last = std::chrono::steady_clock::now();
 static uint64_t g_SceneDiag_Frame = 0;
 
+// Returns true if enough time has passed since the last log, and updates the timestamp. Default interval is 1 second.
 static bool SceneDiag_ShouldLog(std::chrono::milliseconds interval = std::chrono::milliseconds(1000))
 {
     const auto now = std::chrono::steady_clock::now();
@@ -128,6 +132,14 @@ static bool SceneDiag_ShouldLog(std::chrono::milliseconds interval = std::chrono
     return false;
 }
 
+static void NotifyBlackFlameEngineEvent(EngineEventType evt)
+{
+    extern Engine* g_engineInstance;
+    if (g_engineInstance)
+        g_engineInstance->GetEditorState().blackFlameAI.OnEngineEvent(evt);
+}
+
+// Debug utility to convert D3D12_RESOURCE_STATES to a human-readable string (for diagnostics/logging)
 static const char* D3D12StateToString(D3D12_RESOURCE_STATES s)
 {
     switch (s)
@@ -142,6 +154,7 @@ static const char* D3D12StateToString(D3D12_RESOURCE_STATES s)
     }
 }
 
+// Debug utilities for D3D12 InfoQueue (debug builds only)
 #ifndef NDEBUG
 static void DX12_ClearInfoQueue(ID3D12Device* device)
 {
@@ -153,6 +166,7 @@ static void DX12_ClearInfoQueue(ID3D12Device* device)
         q->ClearStoredMessages();
 }
 
+// Dumps messages from the D3D12 InfoQueue to the logger, with an optional reason tag for context. Limits to maxMessages for brevity.
 static void DX12_DumpInfoQueue(ID3D12Device* device, const char* reasonTag, uint64_t maxMessages = 50)
 {
     if (!device)
@@ -169,6 +183,8 @@ static void DX12_DumpInfoQueue(ID3D12Device* device, const char* reasonTag, uint
     const uint64_t start = (count > maxMessages) ? (count - maxMessages) : 0;
     Logger::Log(LogLevel::Error, std::format("[InfoQueue] Dumping {} message(s) ({} total) | {}",
         (unsigned long long)(count - start), (unsigned long long)count, (reasonTag ? reasonTag : "(no tag)")), "[DX12]");
+
+    bool sawBarrierMismatch = false;
 
     for (uint64_t i = start; i < count; ++i)
     {
@@ -193,9 +209,18 @@ static void DX12_DumpInfoQueue(ID3D12Device* device, const char* reasonTag, uint
         }
 
         const char* desc = msg->pDescription ? msg->pDescription : "(no description)";
+        if ((msg->Severity == D3D12_MESSAGE_SEVERITY_ERROR || msg->Severity == D3D12_MESSAGE_SEVERITY_WARNING) &&
+            (strstr(desc, "RESOURCE_BARRIER") || strstr(desc, "resource barrier") || strstr(desc, "RESOURCE STATE") || strstr(desc, "resource state")))
+        {
+            sawBarrierMismatch = true;
+        }
+
         Logger::Log(LogLevel::Error, std::format("[InfoQueue] #{} {} id={} : {}",
             (unsigned long long)i, sev, (unsigned)msg->ID, desc), "[DX12]");
     }
+
+    if (sawBarrierMismatch)
+        NotifyBlackFlameEngineEvent(EngineEventType::ResourceBarrierMismatch);
 }
 #endif
 
@@ -228,6 +253,7 @@ namespace
         return {};
     }
 
+	// Builds the ImGui font atlas with specified sizes and fallback options. Returns true if successful.
     static bool BuildEditorFontAtlas(float sizePx)
     {
         if (!ImGui::GetCurrentContext())
@@ -601,7 +627,7 @@ bool Graphics::Initialize(HWND hWnd)
 #endif
     }
 
-    // Phase 4B: Graphics owns the cube mesh (DEFAULT heap + one-time upload).
+    // Phase 4B: Graphics owns the built-in primitive meshes (DEFAULT heap + one-time upload).
     if (!fenceEvent)
         fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
@@ -619,7 +645,49 @@ bool Graphics::Initialize(HWND hWnd)
         return false;
     }
 
-    Logger::Log(LogLevel::Info, "✅ Engine cube mesh created (Phase 4B DEFAULT heap)", "[Graphics]");
+    if (!CreateSphereMeshDefaultHeap(
+        device.Get(),
+        uploadCommandList.Get(),
+        uploadAllocator.Get(),
+        commandQueue.Get(),
+        fence.Get(),
+        fenceEvent,
+        fenceValue,
+        m_sphereMesh))
+    {
+        Logger::Log(LogLevel::Error, "Failed to create sphere mesh (DEFAULT heap).", "[Graphics]");
+        return false;
+    }
+
+    if (!CreatePlaneMeshDefaultHeap(
+        device.Get(),
+        uploadCommandList.Get(),
+        uploadAllocator.Get(),
+        commandQueue.Get(),
+        fence.Get(),
+        fenceEvent,
+        fenceValue,
+        m_planeMesh))
+    {
+        Logger::Log(LogLevel::Error, "Failed to create plane mesh (DEFAULT heap).", "[Graphics]");
+        return false;
+    }
+
+    if (!CreateCylinderMeshDefaultHeap(
+        device.Get(),
+        uploadCommandList.Get(),
+        uploadAllocator.Get(),
+        commandQueue.Get(),
+        fence.Get(),
+        fenceEvent,
+        fenceValue,
+        m_cylinderMesh))
+    {
+        Logger::Log(LogLevel::Error, "Failed to create cylinder mesh (DEFAULT heap).", "[Graphics]");
+        return false;
+    }
+
+    Logger::Log(LogLevel::Info, "✅ Engine primitive meshes created (cube, sphere, plane, cylinder)", "[Graphics]");
 
     // 🎮 Log selected GPU info
     ComPtr<IDXGIAdapter> adapter;
@@ -704,6 +772,19 @@ bool Graphics::Initialize(HWND hWnd)
     // ✅ 3. Initialize ImGui (safe now that RTV heap is valid)
     InitializeImGui(hWnd);
 
+    TextureManager& textureManager = TextureManager::GetInstance();
+    if (!textureManager.GetWhiteTexture() || !textureManager.GetDefaultNormalTexture())
+    {
+        Logger::Log(LogLevel::Error, "❌ Failed to initialize built-in fallback textures.", "[Texture]");
+        return false;
+    }
+
+    blackFlameCardTexture = textureManager.LoadTexture(kBlackFlameCardTexturePath);
+    if (!blackFlameCardTexture)
+        Logger::Log(LogLevel::Warning, "[BlackFlame] Failed to preload flame card texture.", "BlackFlame");
+
+    EnsureBlackFlamePanelEffect();
+
     // ✅ Deterministic Scene GPU resource initialization (never during Render)
     Scene::InitializeResources(device.Get());
 
@@ -741,6 +822,9 @@ void Graphics::Shutdown()
 
     // Phase 4A: drop engine-owned static geometry handles before flush/release.
     m_cubeMesh = {};
+    m_sphereMesh = {};
+    m_planeMesh = {};
+    m_cylinderMesh = {};
 
     // Ensure we are not mid-recording when releasing GPU resources.
     if (commandListOpen)
@@ -754,6 +838,9 @@ void Graphics::Shutdown()
     }
 
     FlushGPU();
+
+    blackFlameCardTexture = nullptr;
+    TextureManager::GetInstance().Shutdown();
 
     // Ensure all queued releases get a chance to retire (after FlushGPU, fence is complete).
     ProcessDeferredReleases();
@@ -965,6 +1052,7 @@ void Graphics::FlushGPU()
     const HRESULT hr = commandQueue->Signal(fence.Get(), signalValue);
     if (FAILED(hr))
     {
+        NotifyBlackFlameEngineEvent(EngineEventType::FenceSyncIssue);
         Logger::Log(LogLevel::Error, std::format("❌ FlushGPU: commandQueue->Signal failed HR=0x{:08X}", (UINT)hr), "[DX12]");
         return;
     }
@@ -1015,6 +1103,7 @@ void Graphics::SignalFence()
     const HRESULT hr = commandQueue->Signal(fence.Get(), signalValue);
     if (FAILED(hr))
     {
+        NotifyBlackFlameEngineEvent(EngineEventType::FenceSyncIssue);
         Logger::Log(LogLevel::Error, std::format("❌ SignalFence: commandQueue->Signal failed HR=0x{:08X}", (UINT)hr), "[DX12]");
         return;
     }
@@ -1119,8 +1208,7 @@ void Graphics::CreateSwapChain(HWND hwnd, UINT width, UINT height)
 
     currentBackBufferIndex = swapChain->GetCurrentBackBufferIndex();
 
-    // Pre-first-signal bring-up: none of the per-backbuffer stamps should be ahead of the last signal.
-    // Initialize to 0; stamps are set when we successfully Signal on the command queue.
+    // Pre-First-Signal: ensure all per-backbuffer fence values are zeroed before the first present.
     lastSignaledFenceValue = 0;
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
     {
@@ -1390,16 +1478,7 @@ void Graphics::BeginFrame(HWND hWnd)
     // Use the scene render target dimensions for correct aspect (not the main window).
     const float aspect = (sceneRTHeight > 0) ? ((float)sceneRTWidth / (float)sceneRTHeight) : 1.0f;
     const CameraData camera = sceneCamera.GetCameraData(aspect);
-
-    SceneRenderContext sceneCtx{};
-    sceneCtx.device = device.Get();
-    sceneCtx.commandList = commandList.Get();
-    sceneCtx.viewportWidth = sceneRTWidth;
-    sceneCtx.viewportHeight = sceneRTHeight;
-    sceneCtx.frameIndex = Logger::GetFrameNumber();
-    sceneCtx.camera = &camera;
-
-    Scene::Render(sceneCtx);
+    Scene::UpdateLastRenderCameraData(camera);
 
     // Phase 1B drift detector: per-buffer fence stamps must never exceed the last signaled fence.
     // Guard: skip until we have actually signaled at least once (Frame 0/1 bring-up).
@@ -1420,6 +1499,7 @@ void Graphics::BeginFrame(HWND hWnd)
         }
         else if (fv > lastSignaledFenceValue)
         {
+            NotifyBlackFlameEngineEvent(EngineEventType::FenceSyncIssue);
             Logger::Log(LogLevel::Error, std::format(
                 "🚨 Fence state corruption detected | bb={} frameFence={} lastSignaled={} ",
                 currentBackBufferIndex, fv, lastSignaledFenceValue));
@@ -1466,6 +1546,7 @@ void Graphics::BeginFrame(HWND hWnd)
         const UINT64 fv = frames[currentBackBufferIndex].fenceValue;
         if (lastSignaledFenceValue != 0 && fv > lastSignaledFenceValue)
         {
+            NotifyBlackFlameEngineEvent(EngineEventType::FenceSyncIssue);
             Logger::Log(LogLevel::Error, std::format(
                 "🚨 Fence state corruption detected | bb={} frameFence={} lastSignaled={} ",
                 currentBackBufferIndex, fv, lastSignaledFenceValue));
@@ -1485,6 +1566,7 @@ void Graphics::BeginFrame(HWND hWnd)
     // ==========================
     if (completedValue == UINT64_MAX)
     {
+        NotifyBlackFlameEngineEvent(EngineEventType::GPUCrash);
         Logger::Log(LogLevel::Error, std::format(
             "🚨 Fence->GetCompletedValue() == UINT64_MAX (device lost sentinel) on Present()",
             currentBackBufferIndex, fenceToWaitFor), "[DX12]");
@@ -1514,6 +1596,7 @@ void Graphics::BeginFrame(HWND hWnd)
         // UINT64_MAX is the documented sentinel for device removal.
         if (completedValue == UINT64_MAX)
         {
+            NotifyBlackFlameEngineEvent(EngineEventType::GPUCrash);
             Logger::Log(LogLevel::Error, std::format(
                 "🚨 GPU wait aborted: Fence->GetCompletedValue()==UINT64_MAX after waiting | BackBuffer={} FenceToWaitFor={}",
                 currentBackBufferIndex, fenceToWaitFor), "[DX12]");
@@ -1547,6 +1630,7 @@ void Graphics::BeginFrame(HWND hWnd)
     // Guard against future regressions (resetting allocator while still in-flight).
     if (fence->GetCompletedValue() < fc.fenceValue)
     {
+        NotifyBlackFlameEngineEvent(EngineEventType::AllocatorResetWarning);
         Logger::Log(LogLevel::Error, std::format(
             "🚨 FrameContext allocator reset while GPU in-flight | bb={} fence={} completed={} ",
             currentBackBufferIndex, fc.fenceValue, fence->GetCompletedValue()));
@@ -1557,6 +1641,7 @@ void Graphics::BeginFrame(HWND hWnd)
 
     if (!fc.allocator)
     {
+        NotifyBlackFlameEngineEvent(EngineEventType::AllocatorResetWarning);
         Logger::Log(LogLevel::Error, std::format("❌ BeginFrame(): frames[{}].allocator is NULL", currentBackBufferIndex));
         HandleDeviceLost(hWnd);
         return;
@@ -1565,6 +1650,7 @@ void Graphics::BeginFrame(HWND hWnd)
     HRESULT hr = fc.allocator->Reset();
     if (FAILED(hr))
     {
+        NotifyBlackFlameEngineEvent(EngineEventType::AllocatorResetWarning);
         Logger::Log(LogLevel::Error,
             std::format("❌ Failed to reset allocator[{}] HR=0x{:08X}",
                 currentBackBufferIndex, (UINT)hr));
@@ -1575,6 +1661,7 @@ void Graphics::BeginFrame(HWND hWnd)
     hr = commandList->Reset(fc.allocator.Get(), nullptr);
     if (FAILED(hr))
     {
+        NotifyBlackFlameEngineEvent(EngineEventType::AllocatorResetWarning);
         Logger::Log(LogLevel::Error,
             std::format("❌ Failed to reset command list HR=0x{:08X}", (UINT)hr));
         HandleDeviceLost(hWnd);
@@ -1742,6 +1829,7 @@ void Graphics::EndFrame(HWND hWnd)
     const HRESULT hrSignal = commandQueue->Signal(fence.Get(), signalValue);
     if (FAILED(hrSignal))
     {
+        NotifyBlackFlameEngineEvent(EngineEventType::FenceSyncIssue);
         Logger::Log(LogLevel::Error, std::format("❌ EndFrame(): commandQueue->Signal failed HR=0x{:08X}", (UINT)hrSignal), "[DX12]");
     }
     else
@@ -1764,11 +1852,11 @@ void Graphics::EndFrame(HWND hWnd)
 
 #ifndef NDEBUG
         // Throttled frame lifecycle validation log.
-        static std::chrono::steady_clock::time_point s_EndDiagLast = std::chrono::steady_clock::now();
+        static std::chrono::steady_clock::time_point s_endDiag_last = std::chrono::steady_clock::now();
         const auto now = std::chrono::steady_clock::now();
-        if (now - s_EndDiagLast >= std::chrono::milliseconds(1000))
+        if (now - s_endDiag_last >= std::chrono::milliseconds(1000))
         {
-            s_EndDiagLast = now;
+            s_endDiag_last = now;
             Logger::Log(LogLevel::Debug, std::format(
                 "[FrameDiag] EndFrame bb={} signaledFence={} lastSignaled={}",
                 currentBackBufferIndex, signalValue, lastSignaledFenceValue));
@@ -2077,18 +2165,36 @@ void Graphics::BindMaterial(Material* material)
     MaterialCBData cb{};
     if (material)
     {
+        cb.baseColor = { material->baseColor.x, material->baseColor.y, material->baseColor.z, 1.0f };
         cb.metallic = material->metallic;
         cb.roughness = material->roughness;
         cb.useAlbedoTexture = material->albedo ? 1.0f : 0.0f;
+        cb.useMetallicTexture = material->metallicMap ? 1.0f : 0.0f;
+        cb.useRoughnessTexture = material->roughnessMap ? 1.0f : 0.0f;
     }
+    cb.flipNormalGreen = flipNormalGreenChannel ? 1.0f : 0.0f;
 
     const auto alloc = AllocateFrameCB(sizeof(MaterialCBData));
     std::memcpy(alloc.CpuPtr, &cb, sizeof(cb));
     commandList->SetGraphicsRootConstantBufferView(SceneRootParamMaterialCB, alloc.GpuAddress);
 
-    Texture* boundTexture = (material && material->albedo) ? material->albedo : TextureManager::GetInstance().GetWhiteTexture();
-    if (boundTexture && boundTexture->srvGPU.ptr != 0)
-        commandList->SetGraphicsRootDescriptorTable(SceneRootParamMaterialAlbedoSRV, boundTexture->srvGPU);
+    TextureManager& textureManager = TextureManager::GetInstance();
+
+    Texture* boundAlbedo = (material && material->albedo) ? material->albedo : textureManager.GetWhiteTexture();
+    if (boundAlbedo && boundAlbedo->srvGPU.ptr != 0)
+        commandList->SetGraphicsRootDescriptorTable(SceneRootParamMaterialAlbedoSRV, boundAlbedo->srvGPU);
+
+    Texture* boundNormal = (material && material->normal) ? material->normal : textureManager.GetDefaultNormalTexture();
+    if (boundNormal && boundNormal->srvGPU.ptr != 0)
+        commandList->SetGraphicsRootDescriptorTable(SceneRootParamMaterialNormalSRV, boundNormal->srvGPU);
+
+    Texture* boundMetallic = (material && material->metallicMap) ? material->metallicMap : textureManager.GetWhiteTexture();
+    if (boundMetallic && boundMetallic->srvGPU.ptr != 0)
+        commandList->SetGraphicsRootDescriptorTable(SceneRootParamMaterialMetallicSRV, boundMetallic->srvGPU);
+
+    Texture* boundRoughness = (material && material->roughnessMap) ? material->roughnessMap : textureManager.GetWhiteTexture();
+    if (boundRoughness && boundRoughness->srvGPU.ptr != 0)
+        commandList->SetGraphicsRootDescriptorTable(SceneRootParamMaterialRoughnessSRV, boundRoughness->srvGPU);
 }
 
 Graphics& Graphics::GetInstance()
@@ -2343,16 +2449,15 @@ static void ImGui_SrvDescriptorAlloc(ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DE
     const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     // Slot 0 reserved for the font. Slot 1 reserved for SceneRT.
-    if (g_SRVDescriptorIndex < kFirstDynamicSrvDescriptorIndex)
-        g_SRVDescriptorIndex = kFirstDynamicSrvDescriptorIndex;
+    // Reserve a small fixed range for engine-owned SRVs to avoid collisions with backend allocations.
+    static constexpr UINT kEngineSrvReservationStart = 64;
 
-    const UINT index = g_SRVDescriptorIndex++;
+    static UINT s_srvDescriptorIndex = kEngineSrvReservationStart;
 
-    const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = heap->GetCPUDescriptorHandleForHeapStart();
-    const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = heap->GetGPUDescriptorHandleForHeapStart();
+    out_cpu_handle->ptr = heap->GetCPUDescriptorHandleForHeapStart().ptr + (SIZE_T)s_srvDescriptorIndex * (SIZE_T)inc;
+    out_gpu_handle->ptr = heap->GetGPUDescriptorHandleForHeapStart().ptr + (UINT64)s_srvDescriptorIndex * (UINT64)inc;
 
-    out_cpu_handle->ptr = cpuStart.ptr + (SIZE_T)index * (SIZE_T)inc;
-    out_gpu_handle->ptr = gpuStart.ptr + (UINT64)index * (UINT64)inc;
+    s_srvDescriptorIndex++;
 }
 
 static void ImGui_SrvDescriptorFree(ImGui_ImplDX12_InitInfo* /*info*/, D3D12_CPU_DESCRIPTOR_HANDLE /*cpu_handle*/, D3D12_GPU_DESCRIPTOR_HANDLE /*gpu_handle*/)
@@ -2678,59 +2783,26 @@ void Graphics::EnsureSceneRenderTarget(UINT width, UINT height)
         if (imguiHeap)
         {
             const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-            // Use a stable descriptor slot so we can overwrite it each resize without leaking SRVs.
             const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = imguiHeap->GetCPUDescriptorHandleForHeapStart();
             const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = imguiHeap->GetGPUDescriptorHandleForHeapStart();
-
             sceneSrvCpu.ptr = cpuStart.ptr + (SIZE_T)kSceneSrvDescriptorIndex * (SIZE_T)inc;
             sceneSrvGpu.ptr = gpuStart.ptr + (UINT64)kSceneSrvDescriptorIndex * (UINT64)inc;
             sceneImGuiTextureID = (ImTextureID)sceneSrvGpu.ptr;
-
-            // Ensure the monotonic allocator never hands out the reserved slot.
             if (g_SRVDescriptorIndex <= kSceneSrvDescriptorIndex)
-                g_SRVDescriptorIndex = kSceneSrvDescriptorIndex + 1;
+                g_SRVDescriptorIndex = kFirstDynamicSrvDescriptorIndex;
 
-            D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-            srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-            srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            srv.Texture2D.MipLevels = 1;
-            device->CreateShaderResourceView(sceneRenderTarget.Get(), &srv, sceneSrvCpu);
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MipLevels = 1;
+            device->CreateShaderResourceView(sceneRenderTarget.Get(), &srvDesc, sceneSrvCpu);
         }
-    }
-}
-
-namespace
-{
-    static bool ValidateScenePassResources(const Microsoft::WRL::ComPtr<ID3D12Resource>& rt,
-        D3D12_CPU_DESCRIPTOR_HANDLE rtv,
-        UINT w,
-        UINT h)
-    {
-        if (!rt)
-        {
-            Logger::Log(LogLevel::Warning, "[ScenePass] Missing sceneRenderTarget. Skipping scene pass.", "[Graphics]");
-            return false;
-        }
-        if (rtv.ptr == 0)
-        {
-            Logger::Log(LogLevel::Warning, "[ScenePass] Missing scene RTV handle. Skipping scene pass.", "[Graphics]");
-            return false;
-        }
-        if (w == 0 || h == 0)
-        {
-            Logger::Log(LogLevel::Warning, std::format(
-                "[ScenePass] Invalid scene dimensions ({}x{}). Skipping scene pass.", w, h), "[Graphics]");
-            return false;
-        }
-        return true;
     }
 }
 
 void Graphics::RenderSceneToTarget()
 {
-    // Lazy-create scene RT on demand using current known dimensions.
     if (!sceneRenderTarget || sceneRtvHandle.ptr == 0 || sceneRTWidth == 0 || sceneRTHeight == 0)
     {
         const UINT w = (UINT)(std::max)(1, screenWidth);
@@ -2738,7 +2810,7 @@ void Graphics::RenderSceneToTarget()
         EnsureSceneRenderTarget(w, h);
     }
 
-    if (!ValidateScenePassResources(sceneRenderTarget, sceneRtvHandle, sceneRTWidth, sceneRTHeight))
+    if (!sceneRenderTarget || sceneRtvHandle.ptr == 0 || sceneRTWidth == 0 || sceneRTHeight == 0)
         return;
 
     ScopedRenderPass pass(commandList.Get(), "ScenePass");
@@ -2791,6 +2863,8 @@ void Graphics::Render(HWND hWnd)
 {
     (void)hWnd;
 
+    m_InsideRender = true;
+
     extern Engine* g_engineInstance;
     const CameraNavMode navMode = g_engineInstance ? g_engineInstance->GetEditorState().cameraNavMode : CameraNavMode::TFZ_RMB;
     if (g_engineInstance)
@@ -2807,7 +2881,6 @@ void Graphics::Render(HWND hWnd)
     }
     sceneCamera.UpdateEditorNavigation(ImGui::GetIO().DeltaTime, sceneViewportAllowCameraInput, navMode);
 
-    // Render the Scene viewport target first (so UI can display it via ImGui::Image)
 #ifndef NDEBUG
     if (!g_r_skipScene)
     {
@@ -2817,9 +2890,8 @@ void Graphics::Render(HWND hWnd)
     RenderSceneToTarget();
 #endif
 
-    // ==========================
-    // Main ImGui render pass
-    // ==========================
+    RenderBlackFlamePanelEffect();
+
     ImDrawData* drawData = nullptr;
     {
         ScopedRenderPass imguiPass(commandList.Get(), "ImGuiPass");
@@ -2833,7 +2905,6 @@ void Graphics::Render(HWND hWnd)
             return;
         }
 
-        // Transition backbuffer to RT
         CD3DX12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(
             backBuffers[currentBackBufferIndex].Get(),
             D3D12_RESOURCE_STATE_PRESENT,
@@ -2847,12 +2918,10 @@ void Graphics::Render(HWND hWnd)
 
         commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
-        // Clear
         const ImVec4 clear = UI::GetClearColor();
         const float clearColor[4] = { clear.x, clear.y, clear.z, clear.w };
         commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
-        // Draw ImGui
 #ifndef NDEBUG
         if (!g_r_skipImGui)
         {
@@ -2865,7 +2934,6 @@ void Graphics::Render(HWND hWnd)
 #endif
     }
 
-    // Present prep (final barrier back to PRESENT)
     {
         ScopedRenderPass presentPrepPass(commandList.Get(), "PresentPrep");
         CD3DX12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -2876,4 +2944,345 @@ void Graphics::Render(HWND hWnd)
     }
 
     m_FrameActive = false;
+    m_InsideRender = false;
+}
+
+void Graphics::EnsureBlackFlamePanelEffect()
+{
+    AssertNotInRender("Graphics::EnsureBlackFlamePanelEffect");
+
+    if (!device || !imguiHeap)
+        return;
+
+    if (!blackFlameRenderTarget)
+    {
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = blackFlameRTWidth;
+        desc.Height = blackFlameRTHeight;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+        D3D12_CLEAR_VALUE clear{};
+        clear.Format = desc.Format;
+        clear.Color[0] = 0.03f;
+        clear.Color[1] = 0.01f;
+        clear.Color[2] = 0.04f;
+        clear.Color[3] = 1.0f;
+
+        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+        const HRESULT hr = device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clear,
+            IID_PPV_ARGS(&blackFlameRenderTarget));
+        if (FAILED(hr) || !blackFlameRenderTarget)
+            return;
+
+        blackFlameRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+        D3D12_DESCRIPTOR_HEAP_DESC rtvDesc{};
+        rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        rtvDesc.NumDescriptors = 1;
+        rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&blackFlameRtvHeap))) || !blackFlameRtvHeap)
+        {
+            blackFlameRenderTarget.Reset();
+            return;
+        }
+
+        blackFlameRtvHandle = blackFlameRtvHeap->GetCPUDescriptorHandleForHeapStart();
+        device->CreateRenderTargetView(blackFlameRenderTarget.Get(), nullptr, blackFlameRtvHandle);
+
+        const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = imguiHeap->GetCPUDescriptorHandleForHeapStart();
+        const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = imguiHeap->GetGPUDescriptorHandleForHeapStart();
+        blackFlameSrvCpu.ptr = cpuStart.ptr + (SIZE_T)kBlackFlameSrvDescriptorIndex * (SIZE_T)inc;
+        blackFlameSrvGpu.ptr = gpuStart.ptr + (UINT64)kBlackFlameSrvDescriptorIndex * (UINT64)inc;
+        blackFlameImGuiTextureID = (ImTextureID)blackFlameSrvGpu.ptr;
+        if (g_SRVDescriptorIndex <= kBlackFlameSrvDescriptorIndex)
+            g_SRVDescriptorIndex = kFirstDynamicSrvDescriptorIndex;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(blackFlameRenderTarget.Get(), &srv, blackFlameSrvCpu);
+    }
+
+    if (!blackFlameRootSignature)
+    {
+        CD3DX12_DESCRIPTOR_RANGE srvRange;
+        srvRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+
+        CD3DX12_ROOT_PARAMETER params[2];
+        params[0].InitAsConstantBufferView(0);
+        params[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL);
+
+        CD3DX12_STATIC_SAMPLER_DESC samplerDesc(
+            0,
+            D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            0.0f,
+            1,
+            D3D12_COMPARISON_FUNC_ALWAYS,
+            D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
+            0.0f,
+            D3D12_FLOAT32_MAX,
+            D3D12_SHADER_VISIBILITY_PIXEL);
+
+        CD3DX12_ROOT_SIGNATURE_DESC rsDesc{};
+        rsDesc.Init(_countof(params), params, 1, &samplerDesc,
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+            D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+            D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
+            D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS);
+
+        Microsoft::WRL::ComPtr<ID3DBlob> sigBlob;
+        Microsoft::WRL::ComPtr<ID3DBlob> errBlob;
+        if (FAILED(D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sigBlob, &errBlob)) || !sigBlob)
+            return;
+        if (FAILED(device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&blackFlameRootSignature))) || !blackFlameRootSignature)
+            return;
+    }
+
+    if (!blackFlamePSO || !blackFlameHaloPSO)
+    {
+        Microsoft::WRL::ComPtr<ID3DBlob> vs;
+        Microsoft::WRL::ComPtr<ID3DBlob> ps;
+        Microsoft::WRL::ComPtr<ID3DBlob> haloPs;
+        try
+        {
+            static constexpr const char* kBlackFlameFxVS = R"(
+struct VSOutput
+{
+    float4 pos : SV_POSITION;
+    float2 uv  : TEXCOORD0;
+};
+
+VSOutput main(uint vertexId : SV_VertexID)
+{
+    VSOutput o;
+    float2 pos;
+    if (vertexId == 0) pos = float2(-1.0f, -1.0f);
+    else if (vertexId == 1) pos = float2(-1.0f, 3.0f);
+    else pos = float2(3.0f, -1.0f);
+    o.pos = float4(pos, 0.0f, 1.0f);
+    o.uv = float2(pos.x * 0.5f + 0.5f, 1.0f - (pos.y * 0.5f + 0.5f));
+    return o;
+})";
+
+            static constexpr const char* kBlackFlameFxPS = R"(
+cbuffer BlackFlameFxCB : register(b0)
+{
+    float gTime;
+    float gState;
+    float gPulse;
+    float gVisualProfile;
+    float2 gResolution;
+    float gExecPulse;
+    float gDenyPulse;
+    float gAdminPulse;
+    float3 gColorBias;
+    float gLightInfluence;
+    float gFocusPulse;
+    float gGlitchIntensity;
+    float gStability;
+    float gPadRest[48];
+};
+Texture2D gFlameCard : register(t0);
+SamplerState gLinearSampler : register(s0);
+struct PSInput { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
+float Hash21(float2 p) { p = frac(p * float2(123.34, 456.21)); p += dot(p, p + 45.32); return frac(p.x * p.y); }
+float Noise2D(float2 p) { float2 i = floor(p); float2 f = frac(p); float a = Hash21(i); float b = Hash21(i + float2(1.0, 0.0)); float c = Hash21(i + float2(0.0, 1.0)); float d = Hash21(i + float2(1.0, 1.0)); float2 u = f * f * (3.0 - 2.0 * f); return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y); }
+float FBM(float2 p) { float value = 0.0; float amplitude = 0.5; for (int i = 0; i < 4; ++i) { value += Noise2D(p) * amplitude; p = p * 2.03 + float2(17.2, 9.4); amplitude *= 0.5; } return value; }
+float4 main(PSInput input) : SV_Target
+{
+    float2 uv = input.uv;
+    float2 center = float2(0.5f, 0.5f);
+    float2 p = uv - center;
+    p.x *= gResolution.x / max(gResolution.y, 1.0f);
+    float radial = length(p);
+    float glitch = saturate(gGlitchIntensity);
+    float stability = saturate(gStability);
+    float2 duv = uv + (FBM(uv * (18.0f + glitch * 10.0f) + float2(gTime * (5.0f + glitch * 18.0f), -gTime * (3.0f + glitch * 11.0f))) - 0.5f) * (1.0f - stability) * float2(0.030f, 0.018f);
+    float2 aberrationOffset = float2(0.0025f + gDenyPulse * 0.0075f + glitch * 0.0065f, 0.0f) * (0.5f + 0.5f * sin(gTime * (40.0f + glitch * 35.0f)));
+    float3 cardColor = float3(gFlameCard.Sample(gLinearSampler, saturate(duv + aberrationOffset)).r, gFlameCard.Sample(gLinearSampler, saturate(duv)).g, gFlameCard.Sample(gLinearSampler, saturate(duv - aberrationOffset)).b);
+    float pulse = 0.5f + 0.5f * sin(gTime * (2.0f + gPulse * 10.0f));
+    float aura = saturate(1.0f - radial * (1.65f - FBM(uv * 4.0f + float2(0.0f, -gTime * 0.45f)) * 0.12f));
+    float3 stateColor = (gVisualProfile == 1.0f) ? float3(0.92f, 0.26f, 1.0f) : ((gVisualProfile == 2.0f) ? float3(0.85f, 0.05f, 0.12f) : float3(0.95f, 0.42f, 0.16f));
+    float3 emissive = stateColor * (0.18f + aura * (0.55f + pulse * 0.26f + gExecPulse * 0.18f));
+    float3 color = cardColor * lerp(float3(0.60f, 0.28f, 0.18f), stateColor, 0.58f) + emissive;
+    float glitchBand = step(0.76f, frac(uv.y * (20.0f + glitch * 24.0f) + gTime * (7.0f + glitch * 28.0f)));
+    color += glitch * (FBM(uv * (18.0f + glitch * 10.0f)) - 0.5f) * float3(0.45f, 0.10f, 0.14f);
+    color += glitchBand * glitch * float3(0.18f, 0.03f, 0.04f);
+    color *= 1.0f + sin(gTime * (40.0f + glitch * 30.0f) + radial * 25.0f) * glitch * 0.18f;
+    color *= saturate(0.35f + stability * 0.65f);
+    return float4(saturate(color), 1.0f);
+})";
+
+            static constexpr const char* kBlackFlameHaloPS = R"(
+cbuffer BlackFlameFxCB : register(b0)
+{
+    float gTime;
+    float gState;
+    float gPulse;
+    float gVisualProfile;
+    float2 gResolution;
+    float gExecPulse;
+    float gDenyPulse;
+    float gAdminPulse;
+    float3 gColorBias;
+    float gLightInfluence;
+    float gFocusPulse;
+    float gGlitchIntensity;
+    float gStability;
+    float gPadRest[48];
+};
+struct PSInput { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
+float4 main(PSInput input) : SV_Target
+{
+    float2 p = input.uv - float2(0.5f, 0.5f);
+    p.x *= gResolution.x / max(gResolution.y, 1.0f);
+    float radial = length(p);
+    float glitch = saturate(gGlitchIntensity);
+    float stability = saturate(gStability);
+    float halo = pow(saturate(1.0f - radial * 1.35f), 2.2f);
+    float3 haloColor = (gVisualProfile == 1.0f) ? float3(0.92f, 0.26f, 1.0f) : ((gVisualProfile == 2.0f) ? float3(0.85f, 0.05f, 0.12f) : float3(1.0f, 0.38f, 0.12f));
+    haloColor = lerp(haloColor, float3(1.0f, 0.08f, 0.08f), glitch * 0.35f);
+    float intensity = halo * (0.22f + 0.15f * sin(gTime * (4.0f + glitch * 12.0f) + radial * 18.0f));
+    intensity *= (0.55f + stability * 0.45f) * (1.0f + glitch * 0.20f);
+    return float4(haloColor * intensity, saturate(intensity));
+})";
+
+            vs = CompileShader(kBlackFlameFxVS, "vs_5_1");
+            ps = CompileShader(kBlackFlameFxPS, "ps_5_1");
+            haloPs = CompileShader(kBlackFlameHaloPS, "ps_5_1");
+        }
+        catch (const std::exception&)
+        {
+            return;
+        }
+
+        D3D12_BLEND_DESC blend{};
+        blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        D3D12_BLEND_DESC additiveBlend = blend;
+        additiveBlend.RenderTarget[0].BlendEnable = TRUE;
+        additiveBlend.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+        additiveBlend.RenderTarget[0].DestBlend = D3D12_BLEND_ONE;
+        additiveBlend.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        additiveBlend.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        additiveBlend.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
+        additiveBlend.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        additiveBlend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+        D3D12_RASTERIZER_DESC rast{};
+        rast.FillMode = D3D12_FILL_MODE_SOLID;
+        rast.CullMode = D3D12_CULL_MODE_NONE;
+        rast.DepthClipEnable = TRUE;
+
+        D3D12_DEPTH_STENCIL_DESC ds{};
+        ds.DepthEnable = FALSE;
+        ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        ds.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+        psoDesc.pRootSignature = blackFlameRootSignature.Get();
+        psoDesc.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+        psoDesc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+        psoDesc.BlendState = blend;
+        psoDesc.SampleMask = UINT_MAX;
+        psoDesc.RasterizerState = rast;
+        psoDesc.DepthStencilState = ds;
+        psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psoDesc.NumRenderTargets = 1;
+        psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        psoDesc.SampleDesc.Count = 1;
+        if (FAILED(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&blackFlamePSO))) || !blackFlamePSO)
+            return;
+
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC haloDesc = psoDesc;
+        haloDesc.PS = { haloPs->GetBufferPointer(), haloPs->GetBufferSize() };
+        haloDesc.BlendState = additiveBlend;
+        if (FAILED(device->CreateGraphicsPipelineState(&haloDesc, IID_PPV_ARGS(&blackFlameHaloPSO))) || !blackFlameHaloPSO)
+            return;
+    }
+}
+
+void Graphics::RenderBlackFlamePanelEffect()
+{
+    if (!commandList || !blackFlameRenderTarget || !blackFlameRtvHandle.ptr || !blackFlamePSO || !blackFlameHaloPSO || !blackFlameRootSignature)
+        return;
+
+    Texture* flameCardTexture = blackFlameCardTexture;
+    if (!flameCardTexture || flameCardTexture->srvGPU.ptr == 0)
+        return;
+
+    extern Engine* g_engineInstance;
+    const BlackFlameState state = g_engineInstance ? g_engineInstance->GetEditorState().blackFlameAI.GetState() : BlackFlameState::Idle;
+    const BlackFlameVisualProfile visualProfile = g_engineInstance ? g_engineInstance->GetEditorState().blackFlameAI.GetVisualProfile() : BlackFlameVisualProfile::Normal;
+    const BlackFlameVisualState visualState = g_engineInstance ? g_engineInstance->GetEditorState().blackFlameAI.GetVisualState() : BlackFlameVisualState{};
+    const float time = (float)ImGui::GetTime();
+    const float pulseSpeed = (state == BlackFlameState::Thinking) ? 5.0f : ((state == BlackFlameState::Executing) ? 10.0f : 2.0f);
+    const float pulse = 0.5f + 0.5f * std::sin(time * pulseSpeed);
+
+    BlackFlameFxCBData cb{};
+    cb.time = time;
+    cb.state = (float)(int)state;
+    cb.pulse = pulse;
+    cb.visualProfile = (float)(int)visualProfile;
+    cb.resolution[0] = (float)blackFlameRTWidth;
+    cb.resolution[1] = (float)blackFlameRTHeight;
+    cb.execPulse = visualState.ExecPulse;
+    cb.denyPulse = visualState.DenyPulse;
+    cb.adminPulse = visualState.AdminPulse;
+    cb.colorBias[0] = visualState.ColorBias.x;
+    cb.colorBias[1] = visualState.ColorBias.y;
+    cb.colorBias[2] = visualState.ColorBias.z;
+    cb.lightInfluence = visualState.LightInfluence;
+    cb.focusPulse = visualState.FocusPulse;
+    cb.glitchIntensity = visualState.GlitchIntensity;
+    cb.stability = visualState.Stability;
+
+    const auto alloc = AllocateFrameCB(sizeof(BlackFlameFxCBData));
+    std::memcpy(alloc.CpuPtr, &cb, sizeof(cb));
+
+    auto transitionResource = [&](ID3D12Resource* resource, D3D12_RESOURCE_STATES& currentState, D3D12_RESOURCE_STATES targetState)
+    {
+        if (!resource || currentState == targetState)
+            return;
+        const CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(resource, currentState, targetState);
+        commandList->ResourceBarrier(1, &barrier);
+        currentState = targetState;
+    };
+
+    transitionResource(blackFlameRenderTarget.Get(), blackFlameRTState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    commandList->OMSetRenderTargets(1, &blackFlameRtvHandle, FALSE, nullptr);
+    const float clearColor[4] = { 0.03f, 0.01f, 0.04f, 1.0f };
+    commandList->ClearRenderTargetView(blackFlameRtvHandle, clearColor, 0, nullptr);
+
+    D3D12_VIEWPORT vp{ 0.0f, 0.0f, (float)blackFlameRTWidth, (float)blackFlameRTHeight, 0.0f, 1.0f };
+    D3D12_RECT sr{ 0, 0, (LONG)blackFlameRTWidth, (LONG)blackFlameRTHeight };
+    commandList->RSSetViewports(1, &vp);
+    commandList->RSSetScissorRects(1, &sr);
+    commandList->SetGraphicsRootSignature(blackFlameRootSignature.Get());
+    commandList->SetGraphicsRootConstantBufferView(0, alloc.GpuAddress);
+    commandList->SetGraphicsRootDescriptorTable(1, flameCardTexture->srvGPU);
+    commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    commandList->SetPipelineState(blackFlamePSO.Get());
+    commandList->DrawInstanced(3, 1, 0, 0);
+    commandList->SetPipelineState(blackFlameHaloPSO.Get());
+    commandList->DrawInstanced(3, 1, 0, 0);
+
+    transitionResource(blackFlameRenderTarget.Get(), blackFlameRTState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }

@@ -9,6 +9,7 @@
 #include "Scene.h"
 #include "CameraData.h"
 #include "MaterialManager.h"
+#include "TextureManager.h"
 #include "EditorGizmo.h"
 #include "UI.h"
 #include "EditorIcons.h"
@@ -30,11 +31,18 @@ namespace EditorPanels
         All,
         Primitives,
         Prefabs,
+        Textures,
+        Materials,
     };
 
     static constexpr size_t kMaxUndoSnapshots = 64;
     static constexpr const char* kSceneCreateCubePayload = "SCENE_CREATE_CUBE";
+    static constexpr const char* kSceneCreateSpherePayload = "SCENE_CREATE_SPHERE";
+    static constexpr const char* kSceneCreatePlanePayload = "SCENE_CREATE_PLANE";
+    static constexpr const char* kSceneCreateCylinderPayload = "SCENE_CREATE_CYLINDER";
     static constexpr const char* kSceneCreatePrefabPayload = "SCENE_CREATE_PREFAB";
+    static constexpr const char* kAssetTexturePayload = "ASSET_TEXTURE";
+    static constexpr const char* kAssetMaterialPayload = "ASSET_MATERIAL";
     static EditorGizmo g_EditorGizmo;
     static bool g_WasGizmoDragging = false;
     static AssetCategory g_SelectedAssetCategory = AssetCategory::All;
@@ -53,6 +61,8 @@ namespace EditorPanels
         {
         case AssetCategory::Primitives: return "Primitives";
         case AssetCategory::Prefabs: return "Prefabs";
+        case AssetCategory::Textures: return "Textures";
+        case AssetCategory::Materials: return "Materials";
         case AssetCategory::All:
         default: return "All";
         }
@@ -86,8 +96,11 @@ namespace EditorPanels
         if (!std::filesystem::exists(prefabDir))
             return result;
 
-        for (const auto& entry : std::filesystem::directory_iterator(prefabDir))
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(prefabDir, ec))
         {
+            if (ec)
+                break;
             if (!entry.is_regular_file())
                 continue;
             const std::string filename = entry.path().filename().string();
@@ -114,6 +127,63 @@ namespace EditorPanels
         if (editor.undoSceneSnapshots.size() > kMaxUndoSnapshots)
             editor.undoSceneSnapshots.erase(editor.undoSceneSnapshots.begin());
         editor.redoSceneSnapshots.clear();
+    }
+
+    static bool DrawTickFloat(const char* label, float& value, float minValue, float maxValue, float step, const char* format = "%.2f")
+    {
+        bool changed = false;
+        ImGui::PushID(label);
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("-"))
+        {
+            value = (std::max)(minValue, value - step);
+            changed = true;
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(96.0f);
+        changed = ImGui::DragFloat("##value", &value, step, minValue, maxValue, format) || changed;
+        value = std::clamp(value, minValue, maxValue);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("+"))
+        {
+            value = (std::min)(maxValue, value + step);
+            changed = true;
+        }
+        ImGui::PopID();
+        return changed;
+    }
+
+    static bool DrawTickFloat3(const char* label, DirectX::XMFLOAT3& value, float step, float minValue, float maxValue)
+    {
+        bool changed = false;
+        ImGui::PushID(label);
+        ImGui::TextUnformatted(label);
+        changed = ImGui::DragFloat3("##value", &value.x, step, minValue, maxValue, "%.2f") || changed;
+        const char* axisLabels[3] = { "X", "Y", "Z" };
+        float* axisValues[3] = { &value.x, &value.y, &value.z };
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            if (axis > 0)
+                ImGui::SameLine();
+            ImGui::TextUnformatted(axisLabels[axis]);
+            ImGui::SameLine();
+            const std::string minusId = std::format("-{}", axisLabels[axis]);
+            if (ImGui::SmallButton(minusId.c_str()))
+            {
+                *axisValues[axis] = (std::max)(minValue, *axisValues[axis] - step);
+                changed = true;
+            }
+            ImGui::SameLine();
+            const std::string plusId = std::format("+{}", axisLabels[axis]);
+            if (ImGui::SmallButton(plusId.c_str()))
+            {
+                *axisValues[axis] = (std::min)(maxValue, *axisValues[axis] + step);
+                changed = true;
+            }
+        }
+        ImGui::PopID();
+        return changed;
     }
 
     static bool PerformUndo(EditorState& editor)
@@ -506,6 +576,28 @@ namespace EditorPanels
                             (void)payload;
                             PushUndoSnapshot(editor);
                             Scene::CreateCube(spawnPos);
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreateSpherePayload))
+                        {
+                            (void)payload;
+                            PushUndoSnapshot(editor);
+                            Scene::CreateSphere(spawnPos);
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreatePlanePayload))
+                        {
+                            (void)payload;
+                            PushUndoSnapshot(editor);
+                            const DirectX::XMFLOAT3 planeSpawnPos{ spawnPos.x, 0.0f, spawnPos.z };
+                            Scene::CreatePlane(planeSpawnPos);
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreateCylinderPayload))
+                        {
+                            (void)payload;
+                            PushUndoSnapshot(editor);
+                            Scene::CreateCylinder(spawnPos);
                             editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
                         }
                         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreatePrefabPayload))
@@ -1080,44 +1172,39 @@ namespace EditorPanels
                         editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
                     }
                     ImGui::SameLine();
+                    if (ImGui::SmallButton("Focus"))
+                    {
+                        DirectX::XMFLOAT3 focusPoint = Scene::GetSelectionCenterOrActivePosition();
+                        Graphics::GetInstance().GetSceneCamera().FocusOnPoint(focusPoint, ComputeSelectionFocusDistance(editor));
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Duplicate"))
+                    {
+                        PushUndoSnapshot(editor);
+                        Scene::DuplicateSelectedInstance();
+                        editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Delete"))
+                    {
+                        PushUndoSnapshot(editor);
+                        Scene::DeleteSelectedInstance();
+                        editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                    }
+                    ImGui::SameLine();
                     if (ImGui::SmallButton("Save Prefab"))
                     {
                         const std::filesystem::path prefabPath = std::filesystem::path("Assets") / "Prefabs" /
                             (SanitizeAssetName(selected->name) + ".prefab.json");
                         if (!Scene::SaveSelectedAsPrefab(prefabPath.string()))
                             Logger::Log(LogLevel::Error, std::format("Failed to save prefab: {}", prefabPath.string()), "[Editor]");
+                        else
+                            EditorPanels::PrefabWorkflow().open = true;
                     }
 
                     if (!selected->prefabSourcePath.empty())
                     {
-                        ImGui::Spacing();
-                        ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f), ICON_FA_LINK " Prefab Instance");
-                        ImGui::TextWrapped("Source: %s", selected->prefabSourcePath.c_str());
-
-                        if (hasPrefabOverrideState)
-                        {
-                            if (prefabOverrides.Any())
-                            {
-                                std::string overrideList;
-                                auto appendOverride = [&overrideList](const char* label)
-                                {
-                                    if (!overrideList.empty())
-                                        overrideList += ", ";
-                                    overrideList += label;
-                                };
-                                if (prefabOverrides.name) appendOverride("Name");
-                                if (prefabOverrides.rotation) appendOverride("Rotation");
-                                if (prefabOverrides.scale) appendOverride("Scale");
-                                if (prefabOverrides.visible) appendOverride("Visible");
-                                if (prefabOverrides.material) appendOverride("Material");
-                                ImGui::TextColored(overrideTextColor, "Overrides: %s", overrideList.c_str());
-                            }
-                            else
-                            {
-                                ImGui::TextColored(ImVec4(0.55f, 1.0f, 0.65f, 1.0f), "Overrides: None");
-                            }
-                        }
-
+                        ImGui::SameLine();
                         if (ImGui::SmallButton("Apply Prefab"))
                         {
                             if (!Scene::ApplySelectedToPrefab())
@@ -1132,53 +1219,39 @@ namespace EditorPanels
                             editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
                         }
                     }
-                    else
-                    {
-                        ImGui::Spacing();
-                        ImGui::TextDisabled("Scene Object (not linked to a prefab)");
-                    }
 
-                    const uint32_t parentId = Scene::GetParentInstanceId(selected->instanceId);
-                    std::string parentLabel = "None";
-                    if (parentId != 0)
-                    {
-                        for (const auto& inst : Scene::GetInstances())
-                        {
-                            if (inst.instanceId == parentId)
-                            {
-                                parentLabel = inst.name;
-                                break;
-                            }
-                        }
-                    }
-                    if (ImGui::BeginCombo("Parent", parentLabel.c_str()))
-                    {
-                        const bool noParentSelected = (parentId == 0);
-                        if (ImGui::Selectable("None", noParentSelected))
-                        {
-                            PushUndoSnapshot(editor);
-                            Scene::SetParentInstance(selected->instanceId, 0, true);
-                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
-                        }
+                    if (ImGui::SmallButton("Material Preview"))
+                        EditorPanels::MaterialPreview().open = true;
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Prefab Workflow"))
+                        EditorPanels::PrefabWorkflow().open = true;
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Black Flame"))
+                        EditorPanels::BlackFlame().open = true;
 
-                        for (const auto& candidate : Scene::GetInstances())
+                    if (hasPrefabOverrideState)
+                    {
+                        ImGui::TextColored(overrideTextColor, "Prefab Instance");
+                        if (prefabOverrides.Any())
                         {
-                            if (candidate.instanceId == selected->instanceId)
-                                continue;
-                            const bool canParent = Scene::CanParentInstance(selected->instanceId, candidate.instanceId);
-                            if (!canParent)
-                                ImGui::BeginDisabled();
-                            const bool isCurrentParent = (parentId == candidate.instanceId);
-                            if (ImGui::Selectable(candidate.name.c_str(), isCurrentParent) && canParent)
+                            std::string overrideList;
+                            auto appendOverride = [&overrideList](const char* label)
                             {
-                                PushUndoSnapshot(editor);
-                                Scene::SetParentInstance(selected->instanceId, candidate.instanceId, true);
-                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
-                            }
-                            if (!canParent)
-                                ImGui::EndDisabled();
+                                if (!overrideList.empty())
+                                    overrideList += ", ";
+                                overrideList += label;
+                            };
+                            if (prefabOverrides.name) appendOverride("Name");
+                            if (prefabOverrides.rotation) appendOverride("Rotation");
+                            if (prefabOverrides.scale) appendOverride("Scale");
+                            if (prefabOverrides.visible) appendOverride("Visible");
+                            if (prefabOverrides.material) appendOverride("Material");
+                            ImGui::TextColored(overrideTextColor, "Overrides: %s", overrideList.c_str());
                         }
-                        ImGui::EndCombo();
+                        else
+                        {
+                            ImGui::TextColored(ImVec4(0.55f, 1.0f, 0.65f, 1.0f), "Overrides: None");
+                        }
                     }
 
                     pushOverrideHighlight(hasPrefabOverrideState && prefabOverrides.name);
@@ -1192,36 +1265,45 @@ namespace EditorPanels
                         selected->name = nameBuffer;
 
                     DirectX::XMFLOAT3 position = selected->position;
-                    const bool positionChanged = ImGui::InputFloat3("Position", &position.x);
-                    if (ImGui::IsItemActivated())
-                        PushUndoSnapshot(editor);
+                    const bool positionChanged = DrawTickFloat3("Position", position, 0.1f, -10000.0f, 10000.0f);
                     if (positionChanged)
                     {
+                        PushUndoSnapshot(editor);
                         selected->position = position;
                         editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
                     }
 
                     DirectX::XMFLOAT3 rotation = selected->rotation;
                     pushOverrideHighlight(hasPrefabOverrideState && prefabOverrides.rotation);
-                    const bool rotationChanged = ImGui::InputFloat3("Rotation", &rotation.x);
-                    const bool rotationActivated = ImGui::IsItemActivated();
+                    const bool rotationChanged = DrawTickFloat3("Rotation", rotation, 1.0f, -360.0f, 360.0f);
                     popOverrideHighlight(hasPrefabOverrideState && prefabOverrides.rotation);
                     drawOverrideControls(hasPrefabOverrideState && prefabOverrides.rotation, "Rotation", PrefabProperty::Rotation);
-                    if (rotationActivated)
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reset##Rotation"))
+                    {
                         PushUndoSnapshot(editor);
-                    if (rotationChanged)
+                        selected->rotation = { 0.0f, 0.0f, 0.0f };
+                    }
+                    else if (rotationChanged)
+                    {
+                        PushUndoSnapshot(editor);
                         selected->rotation = rotation;
+                    }
 
                     DirectX::XMFLOAT3 scale = selected->scale;
                     pushOverrideHighlight(hasPrefabOverrideState && prefabOverrides.scale);
-                    const bool scaleChanged = ImGui::InputFloat3("Scale", &scale.x);
-                    const bool scaleActivated = ImGui::IsItemActivated();
+                    const bool scaleChanged = DrawTickFloat3("Scale", scale, 0.05f, 0.01f, 100.0f);
                     popOverrideHighlight(hasPrefabOverrideState && prefabOverrides.scale);
                     drawOverrideControls(hasPrefabOverrideState && prefabOverrides.scale, "Scale", PrefabProperty::Scale);
-                    if (scaleActivated)
-                        PushUndoSnapshot(editor);
-                    if (scaleChanged)
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reset##Scale"))
                     {
+                        PushUndoSnapshot(editor);
+                        selected->scale = { 1.0f, 1.0f, 1.0f };
+                    }
+                    else if (scaleChanged)
+                    {
+                        PushUndoSnapshot(editor);
                         selected->scale.x = (std::max)(scale.x, 0.01f);
                         selected->scale.y = (std::max)(scale.y, 0.01f);
                         selected->scale.z = (std::max)(scale.z, 0.01f);
@@ -1249,61 +1331,259 @@ namespace EditorPanels
                     }
 
                     MaterialManager& materials = MaterialManager::GetInstance();
-                    Material* material = materials.GetMaterial("TestMaterial");
-                    if (!material)
-                        material = materials.CreateMaterial("TestMaterial");
+                    Material* material = materials.GetMaterialByIndex(selected->materialIndex);
+
+                    auto emitMaterialChanged = [&](Material* changedMaterial)
+                    {
+                        if (!changedMaterial)
+                            return;
+                        SceneEvent evt{};
+                        evt.Type = SceneEventType::MaterialChanged;
+                        evt.Entity = selected;
+                        evt.Material = changedMaterial;
+                        evt.ColorBias = changedMaterial->baseColor;
+                        evt.EventStrength = 0.8f;
+                        editor.sceneEvents.Emit(evt);
+                    };
 
                     ImGui::Separator();
                     ImGui::TextUnformatted("Material");
-                    ImGui::TextDisabled("Shared renderer material (currently affects all scene objects)");
                     ImGui::Text("Material Slot: %d", selected->materialIndex);
+
+                    const std::string materialLabel = material ? material->name : std::string("<Invalid>");
+                    if (ImGui::BeginCombo("Assigned Material", materialLabel.c_str()))
+                    {
+                        for (int i = 0; i < materials.GetMaterialCount(); ++i)
+                        {
+                            const std::string* materialName = materials.GetMaterialNameByIndex(i);
+                            if (!materialName)
+                                continue;
+                            const bool isCurrent = (selected->materialIndex == i);
+                            if (ImGui::Selectable(materialName->c_str(), isCurrent))
+                            {
+                                PushUndoSnapshot(editor);
+                                selected->materialIndex = i;
+                                material = materials.GetMaterialByIndex(i);
+                                Scene::RebuildRenderInstancesFromSceneData();
+                                Scene::MarkInstancesDirty();
+                                emitMaterialChanged(material);
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+
+                    if (ImGui::SmallButton("Create Material"))
+                    {
+                        Material* created = materials.CreateMaterial(std::format("Material_{}", selected->instanceId));
+                        if (created)
+                        {
+                            PushUndoSnapshot(editor);
+                            selected->materialIndex = materials.GetMaterialCount() - 1;
+                            material = created;
+                            Scene::RebuildRenderInstancesFromSceneData();
+                            Scene::MarkInstancesDirty();
+                            emitMaterialChanged(material);
+                        }
+                    }
 
                     if (material)
                     {
-                        std::string currentTextureLabel = "<None>";
-                        if (material->albedo && !material->albedo->sourcePath.empty())
-                            currentTextureLabel = std::filesystem::path(material->albedo->sourcePath).filename().string();
-
-                        ImTextureID materialThumb = 0;
-                        if (material->albedo && !material->albedo->sourcePath.empty())
-                            materialThumb = GetAssetThumbnailTexture(material->albedo->sourcePath, material->albedo->sourcePath);
-
-                        if (materialThumb)
+                        auto textureLabel = [](Texture* texture) -> std::string
                         {
-                            ImGui::TextUnformatted("Albedo Preview");
-                            ImGui::Image(materialThumb, ImVec2(72.0f, 72.0f), ImVec2(0, 0), ImVec2(1, 1));
-                        }
+                            if (!texture || texture->sourcePath.empty())
+                                return "<None>";
+                            return std::filesystem::path(texture->sourcePath).filename().string();
+                        };
 
-                        if (ImGui::BeginCombo("Albedo Texture", currentTextureLabel.c_str()))
+                        auto drawTextureSlot = [&](const char* comboLabel, Texture* currentTexture, const std::function<void(const std::string&)>& assignTexture, const std::function<void()>& clearTexture)
                         {
-                            const bool noTextureSelected = (material->albedo == nullptr);
-                            if (ImGui::Selectable("<None>", noTextureSelected))
-                                materials.SetAlbedoTexture(material, nullptr);
-
-                            for (const auto& texturePath : EnumerateTextureAssets())
+                            const std::string currentTextureLabel = textureLabel(currentTexture);
+                            if (ImGui::BeginCombo(comboLabel, currentTextureLabel.c_str()))
                             {
-                                const std::string texturePathString = texturePath.string();
-                                const std::string textureName = texturePath.filename().string();
-                                const bool isCurrent = material->albedo && material->albedo->sourcePath == texturePathString;
-                                if (ImGui::Selectable(textureName.c_str(), isCurrent))
-                                    materials.LoadAlbedoTexture(material, texturePathString);
+                                static std::unordered_map<std::string, std::string> textureFilters;
+                                std::string& filterText = textureFilters[comboLabel];
+                                char filterBuffer[128] = {};
+                                strncpy_s(filterBuffer, filterText.c_str(), sizeof(filterBuffer) - 1u);
+                                if (ImGui::InputTextWithHint("##TextureFilter", "Filter textures...", filterBuffer, IM_ARRAYSIZE(filterBuffer)))
+                                    filterText = filterBuffer;
+
+                                auto matchesTextureFilter = [&](const std::string& textureName)
+                                {
+                                    if (filterText.empty())
+                                        return true;
+                                    std::string lowerName = textureName;
+                                    std::string lowerFilter = filterText;
+                                    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                                    std::transform(lowerFilter.begin(), lowerFilter.end(), lowerFilter.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                                    return lowerName.find(lowerFilter) != std::string::npos;
+                                };
+
+                                const bool noTextureSelected = (currentTexture == nullptr);
+                                if (matchesTextureFilter("<None>") && ImGui::Selectable("<None>", noTextureSelected))
+                                {
+                                    clearTexture();
+                                    emitMaterialChanged(material);
+                                }
+
+                                const std::filesystem::path textureRoot = std::filesystem::path("Assets") / "Textures";
+                                for (const auto& texturePath : EnumerateTextureAssets())
+                                {
+                                    const std::string texturePathString = texturePath.string();
+                                    const std::string textureLabelText = texturePath.lexically_relative(textureRoot).generic_string();
+                                    if (!matchesTextureFilter(textureLabelText))
+                                        continue;
+                                    const bool isCurrent = currentTexture && currentTexture->sourcePath == texturePathString;
+                                    if (ImGui::Selectable(textureLabelText.c_str(), isCurrent))
+                                    {
+                                        assignTexture(texturePathString);
+                                        emitMaterialChanged(material);
+                                    }
+                                }
+                                ImGui::EndCombo();
                             }
-                            ImGui::EndCombo();
+                        };
+
+                        auto drawTexturePreview = [&](const char* label, Texture* texture)
+                        {
+                            ImGui::TextUnformatted(label);
+                            if (texture && !texture->sourcePath.empty())
+                            {
+                                const ImTextureID preview = GetAssetThumbnailTexture(texture->sourcePath, texture->sourcePath);
+                                if (preview)
+                                {
+                                    ImGui::Image(preview, ImVec2(48.0f, 48.0f), ImVec2(0, 0), ImVec2(1, 1));
+                                    ImGui::SameLine();
+                                }
+                                ImGui::BeginGroup();
+                                ImGui::TextUnformatted(textureLabel(texture).c_str());
+                                ImGui::TextDisabled("%d x %d", texture->width, texture->height);
+                                ImGui::EndGroup();
+                            }
+                            else
+                            {
+                                ImGui::TextDisabled("<None>");
+                            }
+                        };
+
+                        drawTexturePreview("Albedo Preview", material->albedo);
+                        drawTextureSlot(
+                            "Albedo Texture",
+                            material->albedo,
+                            [&](const std::string& texturePath) { materials.LoadAlbedoTexture(material, texturePath); },
+                            [&]() { materials.SetAlbedoTexture(material, nullptr); });
+
+                        drawTexturePreview("Normal Preview", material->normal);
+                        drawTextureSlot(
+                            "Normal Texture",
+                            material->normal,
+                            [&](const std::string& texturePath) { materials.LoadNormalTexture(material, texturePath); },
+                            [&]() { materials.SetNormalTexture(material, nullptr); });
+
+                        drawTexturePreview("Metallic Preview", material->metallicMap);
+                        drawTextureSlot(
+                            "Metallic Texture",
+                            material->metallicMap,
+                            [&](const std::string& texturePath) { materials.LoadMetallicTexture(material, texturePath); },
+                            [&]() { materials.SetMetallicTexture(material, nullptr); });
+
+                        drawTexturePreview("Roughness Preview", material->roughnessMap);
+                        drawTextureSlot(
+                            "Roughness Texture",
+                            material->roughnessMap,
+                            [&](const std::string& texturePath) { materials.LoadRoughnessTexture(material, texturePath); },
+                            [&]() { materials.SetRoughnessTexture(material, nullptr); });
+
+                        ImGui::Text("Normal: %s", textureLabel(material->normal).c_str());
+                        ImGui::Text("Metallic Map: %s", textureLabel(material->metallicMap).c_str());
+                        ImGui::Text("Roughness Map: %s", textureLabel(material->roughnessMap).c_str());
+
+                        float baseColor[3] = { material->baseColor.x, material->baseColor.y, material->baseColor.z };
+                        if (ImGui::ColorEdit3("Base Color", baseColor))
+                        {
+                            material->SetBaseColor({ baseColor[0], baseColor[1], baseColor[2] });
+                            emitMaterialChanged(material);
                         }
 
                         float metallic = material->metallic;
-                        if (ImGui::SliderFloat("Metallic", &metallic, 0.0f, 1.0f))
+                        if (DrawTickFloat("Metallic", metallic, 0.0f, 1.0f, 0.05f))
+                        {
                             material->SetFloat("metallic", metallic);
+                            emitMaterialChanged(material);
+                        }
 
                         float roughness = material->roughness;
-                        if (ImGui::SliderFloat("Roughness", &roughness, 0.0f, 1.0f))
+                        if (DrawTickFloat("Roughness", roughness, 0.0f, 1.0f, 0.05f))
+                        {
                             material->SetFloat("roughness", roughness);
+                            emitMaterialChanged(material);
+                        }
+
+                        bool flipNormalY = Graphics::GetInstance().GetFlipNormalGreenChannel();
+                        if (ImGui::Checkbox("Normal Flip Y", &flipNormalY))
+                        {
+                            Graphics::GetInstance().GetFlipNormalGreenChannel() = flipNormalY;
+                            emitMaterialChanged(material);
+                        }
                     }
                 }
                 else
                 {
                     ImGui::Separator();
-                    ImGui::TextUnformatted("No object selected.");
+
+                    extern Engine* g_engineInstance;
+                    EditorState* editor = g_engineInstance ? &g_engineInstance->GetEditorState() : nullptr;
+                    MaterialManager& materials = MaterialManager::GetInstance();
+                    Material* focusedMaterial = (editor && editor->focusedMaterialIndex >= 0) ? materials.GetMaterialByIndex(editor->focusedMaterialIndex) : nullptr;
+
+                    if (editor && focusedMaterial)
+                    {
+                        ImGui::TextUnformatted("Focused Material Asset");
+                        ImGui::Text("Material: %s", focusedMaterial->name.c_str());
+                        if (ImGui::SmallButton("Clear Material Focus"))
+                            editor->focusedMaterialIndex = -1;
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Material Preview"))
+                            EditorPanels::MaterialPreview().open = true;
+
+                        auto emitMaterialChanged = [&](Material* changedMaterial)
+                        {
+                            if (!changedMaterial)
+                                return;
+                            SceneEvent evt{};
+                            evt.Type = SceneEventType::MaterialChanged;
+                            evt.Material = changedMaterial;
+                            evt.ColorBias = changedMaterial->baseColor;
+                            evt.EventStrength = 0.8f;
+                            editor->sceneEvents.Emit(evt);
+                        };
+
+                        float baseColor[3] = { focusedMaterial->baseColor.x, focusedMaterial->baseColor.y, focusedMaterial->baseColor.z };
+                        if (ImGui::ColorEdit3("Base Color", baseColor))
+                        {
+                            focusedMaterial->SetBaseColor({ baseColor[0], baseColor[1], baseColor[2] });
+                            emitMaterialChanged(focusedMaterial);
+                        }
+
+                        float metallic = focusedMaterial->metallic;
+                        if (DrawTickFloat("Metallic", metallic, 0.0f, 1.0f, 0.05f))
+                        {
+                            focusedMaterial->SetFloat("metallic", metallic);
+                            emitMaterialChanged(focusedMaterial);
+                        }
+
+                        float roughness = focusedMaterial->roughness;
+                        if (DrawTickFloat("Roughness", roughness, 0.0f, 1.0f, 0.05f))
+                        {
+                            focusedMaterial->SetFloat("roughness", roughness);
+                            emitMaterialChanged(focusedMaterial);
+                        }
+
+                        ImGui::Text("Texture Bound: %s", (focusedMaterial->albedo && !focusedMaterial->albedo->sourcePath.empty()) ? "Yes" : "No");
+                    }
+                    else
+                    {
+                        ImGui::TextUnformatted("No object selected.");
+                    }
                 }
             }
             ImGui::End();
@@ -1339,6 +1619,10 @@ namespace EditorPanels
                     g_SelectedAssetCategory = AssetCategory::Primitives;
                 if (ImGui::Selectable("Prefabs", g_SelectedAssetCategory == AssetCategory::Prefabs))
                     g_SelectedAssetCategory = AssetCategory::Prefabs;
+                if (ImGui::Selectable("Textures", g_SelectedAssetCategory == AssetCategory::Textures))
+                    g_SelectedAssetCategory = AssetCategory::Textures;
+                if (ImGui::Selectable("Materials", g_SelectedAssetCategory == AssetCategory::Materials))
+                    g_SelectedAssetCategory = AssetCategory::Materials;
                 ImGui::EndChild();
 
                 ImGui::SameLine();
@@ -1365,31 +1649,44 @@ namespace EditorPanels
 
                 const bool showPrimitives = g_SelectedAssetCategory == AssetCategory::All || g_SelectedAssetCategory == AssetCategory::Primitives;
                 const bool showPrefabs = g_SelectedAssetCategory == AssetCategory::All || g_SelectedAssetCategory == AssetCategory::Prefabs;
+                const bool showTextures = g_SelectedAssetCategory == AssetCategory::All || g_SelectedAssetCategory == AssetCategory::Textures;
+                const bool showMaterials = g_SelectedAssetCategory == AssetCategory::All || g_SelectedAssetCategory == AssetCategory::Materials;
 
                 if (showPrimitives)
                 {
                     DrawAssetSectionHeader("Primitives");
-                    if (matchesFilter("Cube"))
+                    int primitiveTileIndex = 0;
+                    auto drawPrimitive = [&](const char* assetId, const char* label, const char* payloadType)
                     {
-                        const ImTextureID cubeThumb = GetAssetThumbnailTexture("PrimitiveCube", "Assets/Textures/crate.png");
-                        if (DrawAssetTile("PrimitiveCube", "Cube", ICON_FA_CUBE, kSceneCreateCubePayload, "Cube", std::strlen("Cube") + 1u, g_SelectedAssetId == "PrimitiveCube", cubeThumb))
-                            g_SelectedAssetId = "PrimitiveCube";
-                    }
-                    else
-                    {
+                        if (!matchesFilter(label))
+                            return;
+                        if (primitiveTileIndex > 0 && (primitiveTileIndex % columns) != 0)
+                            ImGui::SameLine(0.0f, kTileSpacing);
+                        const ImTextureID thumb = GetAssetThumbnailTexture(assetId, "Assets/Textures/crate.png");
+                        if (DrawAssetTile(assetId, label, ICON_FA_CUBE, payloadType, label, std::strlen(label) + 1u, g_SelectedAssetId == assetId, thumb))
+                            g_SelectedAssetId = assetId;
+                        ++primitiveTileIndex;
+                    };
+
+                    drawPrimitive("PrimitiveCube", "Cube", kSceneCreateCubePayload);
+                    drawPrimitive("PrimitiveSphere", "Sphere", kSceneCreateSpherePayload);
+                    drawPrimitive("PrimitivePlane", "Plane", kSceneCreatePlanePayload);
+                    drawPrimitive("PrimitiveCylinder", "Cylinder", kSceneCreateCylinderPayload);
+
+                    if (primitiveTileIndex == 0)
                         ImGui::TextDisabled("No primitive assets match the filter.");
-                    }
                 }
 
                 if (showPrefabs)
                 {
                     DrawAssetSectionHeader("Prefabs");
                     const auto prefabAssets = EnumeratePrefabAssets();
+                    const std::filesystem::path prefabRoot = std::filesystem::path("Assets") / "Prefabs";
                     int tileIndex = 0;
                     bool anyPrefabShown = false;
                     for (const auto& prefabPath : prefabAssets)
                     {
-                        const std::string label = prefabPath.stem().stem().string();
+                        const std::string label = prefabPath.lexically_relative(prefabRoot).generic_string();
                         if (!matchesFilter(label))
                             continue;
 
@@ -1407,12 +1704,87 @@ namespace EditorPanels
                     if (!anyPrefabShown)
                     {
                         if (prefabAssets.empty())
-                            ImGui::TextDisabled("No prefabs saved yet.");
+                            ImGui::TextDisabled("No prefabs were found in Assets/Prefabs.");
                         else
-                            ImGui::TextDisabled("No prefabs match the filter.");
+                            ImGui::TextDisabled("No prefab assets match the filter.");
                     }
                 }
 
+                if (showTextures)
+                {
+                    DrawAssetSectionHeader("Textures");
+                    const auto textureAssets = EnumerateTextureAssets();
+                    const std::filesystem::path assetRoot = std::filesystem::path("Assets");
+                    int tileIndex = 0;
+                    bool anyTextureShown = false;
+                    for (const auto& texturePath : textureAssets)
+                    {
+                        const std::string label = texturePath.lexically_relative(assetRoot).generic_string();
+                        if (!matchesFilter(label))
+                            continue;
+
+                        if (tileIndex > 0 && (tileIndex % columns) != 0)
+                            ImGui::SameLine(0.0f, kTileSpacing);
+
+                        const std::string texturePathString = texturePath.string();
+                        const ImTextureID textureThumb = GetAssetThumbnailTexture(texturePathString, texturePathString);
+                        if (DrawAssetTile(texturePathString.c_str(), label.c_str(), ICON_FA_FOLDER_OPEN, kAssetTexturePayload, nullptr, 0, g_SelectedAssetId == texturePathString, textureThumb))
+                            g_SelectedAssetId = texturePathString;
+                        ++tileIndex;
+                        anyTextureShown = true;
+                    }
+
+                    if (!anyTextureShown)
+                    {
+                        if (textureAssets.empty())
+                            ImGui::TextDisabled("No textures were found under Assets.");
+                        else
+                            ImGui::TextDisabled("No texture assets match the filter.");
+                    }
+                }
+
+                if (showMaterials)
+                {
+                    DrawAssetSectionHeader("Materials");
+                    MaterialManager& materialManager = MaterialManager::GetInstance();
+                    int tileIndex = 0;
+                    bool anyMaterialShown = false;
+                    extern Engine* g_engineInstance;
+                    for (int i = 0; i < materialManager.GetMaterialCount(); ++i)
+                    {
+                        const std::string* materialNamePtr = materialManager.GetMaterialNameByIndex(i);
+                        Material* material = materialManager.GetMaterialByIndex(i);
+                        if (!materialNamePtr || !material)
+                            continue;
+
+                        const std::string label = *materialNamePtr;
+                        if (!matchesFilter(label))
+                            continue;
+
+                        if (tileIndex > 0 && (tileIndex % columns) != 0)
+                            ImGui::SameLine(0.0f, kTileSpacing);
+
+                        const std::string materialId = std::format("Material:{}", label);
+                        const std::string thumbPath = (material->albedo && !material->albedo->sourcePath.empty()) ? material->albedo->sourcePath : "Assets/Textures/crate.png";
+                        const ImTextureID materialThumb = GetAssetThumbnailTexture(materialId, thumbPath);
+                        if (DrawAssetTile(materialId.c_str(), label.c_str(), ICON_FA_GEAR, kAssetMaterialPayload, nullptr, 0, g_SelectedAssetId == materialId, materialThumb))
+                        {
+                            g_SelectedAssetId = materialId;
+                            if (g_engineInstance)
+                            {
+                                EditorState& editor = g_engineInstance->GetEditorState();
+                                editor.focusedMaterialIndex = i;
+                                Inspector().open = true;
+                                MaterialPreview().open = true;
+                            }
+                        }
+                        ++tileIndex;
+                        anyMaterialShown = true;
+                    }
+
+                    if (!anyMaterialShown)
+                        ImGui::TextDisabled("No material assets match the filter.");
+                }
                 ImGui::EndChild();
             }
             ImGui::End();
@@ -1430,9 +1802,65 @@ namespace EditorPanels
 
             if (ImGui::Begin(panel.name, &panel.open))
             {
-                ImGui::Text("ImGui is rendering");
+                extern Engine* g_engineInstance;
+                EditorState* editor = g_engineInstance ? &g_engineInstance->GetEditorState() : nullptr;
+                Graphics& gfx = Graphics::GetInstance();
+                SceneCamera& sceneCamera = gfx.GetSceneCamera();
+                const SceneStats stats = Scene::GetLastStats();
+                DirectX::XMFLOAT3 cameraTarget{};
+                DirectX::XMStoreFloat3(&cameraTarget, sceneCamera.GetTarget());
+                const SceneInstance* selected = Scene::GetSelectedInstance();
+
+                if (g_UIFontBold) ImGui::PushFont(g_UIFontBold);
+                ImGui::TextUnformatted("Debug Overlay");
+                if (g_UIFontBold) ImGui::PopFont();
                 ImGui::Separator();
-                ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+
+                const float fps = ImGui::GetIO().Framerate;
+                const float frameMs = (fps > 0.0f) ? (1000.0f / fps) : 0.0f;
+                ImGui::Text("FPS: %.1f", fps);
+                ImGui::Text("Frame Time: %.2f ms", frameMs);
+                ImGui::Separator();
+
+                ImGui::Text("Scene Objects: %u", stats.totalObjects);
+                ImGui::Text("Visible Objects: %u", stats.visibleObjects);
+                ImGui::Text("Draw Calls: %u", stats.drawCalls);
+                ImGui::Text("Selected Count: %zu", Scene::GetSelectedInstanceIds().size());
+                ImGui::Text("Hovered Instance ID: %u", Scene::GetHoveredInstanceId());
+                ImGui::Separator();
+
+                ImGui::Text("Selection: %s", selected ? (selected->name.empty() ? "(unnamed)" : selected->name.c_str()) : "None");
+                if (selected)
+                {
+                    const char* primitiveLabel = "Cube";
+                    switch (selected->primitive)
+                    {
+                    case ScenePrimitive::Sphere: primitiveLabel = "Sphere"; break;
+                    case ScenePrimitive::Plane: primitiveLabel = "Plane"; break;
+                    case ScenePrimitive::Cylinder: primitiveLabel = "Cylinder"; break;
+                    case ScenePrimitive::Cube:
+                    default: primitiveLabel = "Cube"; break;
+                    }
+                    ImGui::Text("Primitive: %s", primitiveLabel);
+                    ImGui::Text("Position: %.2f %.2f %.2f", selected->position.x, selected->position.y, selected->position.z);
+                }
+                ImGui::Separator();
+
+                ImGui::Text("Camera Freelook: %s", sceneCamera.IsFreelooking() ? "Yes" : "No");
+                ImGui::Text("Camera Yaw/Pitch: %.3f / %.3f", sceneCamera.GetYaw(), sceneCamera.GetPitch());
+                ImGui::Text("Camera Distance: %.3f", sceneCamera.GetDistance());
+                ImGui::Text("Camera Target: %.2f %.2f %.2f", cameraTarget.x, cameraTarget.y, cameraTarget.z);
+                ImGui::Separator();
+
+                if (editor)
+                {
+                    ImGui::Text("Black Flame Access: %s", editor->currentBlackFlameAccess == BlackFlameAccessLevel::Admin ? "Admin" : "User");
+                    ImGui::Text("Black Flame Mode: %s",
+                        editor->blackFlameAI.GetMode() == BlackFlameMode::Conversation ? "Conversation" :
+                        (editor->blackFlameAI.GetMode() == BlackFlameMode::Hybrid ? "Hybrid" : "Engine"));
+                    ImGui::Text("Black Flame State: %d", (int)editor->blackFlameAI.GetState());
+                    ImGui::Text("Undo / Redo: %zu / %zu", editor->undoSceneSnapshots.size(), editor->redoSceneSnapshots.size());
+                }
             }
             ImGui::End();
         }
@@ -1491,9 +1919,37 @@ namespace EditorPanels
 
     static ImTextureID GetAssetThumbnailTexture(const std::string& assetId, const std::string& fallbackTexturePath)
     {
-        (void)assetId;
-        (void)fallbackTexturePath;
-        return 0;
+        if (assetId.empty() && fallbackTexturePath.empty())
+            return 0;
+
+        const std::string cacheKey = assetId.empty() ? fallbackTexturePath : assetId;
+        if (auto it = g_AssetThumbnailCache.find(cacheKey); it != g_AssetThumbnailCache.end())
+            return it->second;
+
+        auto tryLoadTexture = [](const std::string& path) -> ImTextureID
+        {
+            if (path.empty())
+                return 0;
+            std::error_code ec;
+            if (!std::filesystem::exists(path, ec) || ec)
+                return 0;
+            if (Texture* texture = TextureManager::GetInstance().LoadTexture(path))
+            {
+                if (texture->srvGPU.ptr != 0)
+                    return (ImTextureID)texture->srvGPU.ptr;
+            }
+            return 0;
+        };
+
+        ImTextureID thumbnail = 0;
+        thumbnail = tryLoadTexture(assetId);
+        if (!thumbnail)
+            thumbnail = tryLoadTexture(fallbackTexturePath);
+        if (!thumbnail && assetId != fallbackTexturePath)
+            thumbnail = tryLoadTexture("Assets/Textures/crate.png");
+
+        g_AssetThumbnailCache[cacheKey] = thumbnail;
+        return thumbnail;
     }
 
     static bool DrawAssetTile(const char* id, const char* title, const char* icon, const char* payloadType, const void* payloadData, size_t payloadSize, bool selected, ImTextureID thumbnailTexture)
@@ -1543,7 +1999,15 @@ namespace EditorPanels
 
         const ImVec2 titleSize = ImGui::CalcTextSize(title);
         const ImVec2 titlePos(min.x + 10.0f, min.y + 58.0f);
-        const char* typeLabel = (std::strcmp(payloadType, kSceneCreateCubePayload) == 0) ? "Primitive" : "Prefab";
+        const char* typeLabel = "Asset";
+        if (payloadType && std::strcmp(payloadType, kSceneCreateCubePayload) == 0)
+            typeLabel = "Primitive";
+        else if (payloadType && std::strcmp(payloadType, kSceneCreatePrefabPayload) == 0)
+            typeLabel = "Prefab";
+        else if (payloadType && std::strcmp(payloadType, kAssetTexturePayload) == 0)
+            typeLabel = "Texture";
+        else if (payloadType && std::strcmp(payloadType, kAssetMaterialPayload) == 0)
+            typeLabel = "Material";
         const ImVec2 typeSize = ImGui::CalcTextSize(typeLabel);
         const ImVec2 typePos(min.x + 10.0f, max.y - typeSize.y - 8.0f);
 
@@ -1551,11 +2015,9 @@ namespace EditorPanels
         draw->AddText(typePos, subTextColor, typeLabel);
 
         if (titleSize.x > (kTileWidth - 20.0f))
-        {
             draw->AddLine(ImVec2(min.x + 10.0f, min.y + 74.0f), ImVec2(max.x - 10.0f, min.y + 74.0f), IM_COL32(255, 255, 255, 18), 1.0f);
-        }
 
-        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+        if (payloadType && payloadData && payloadSize > 0 && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
         {
             ImGui::SetDragDropPayload(payloadType, payloadData, payloadSize);
             ImGui::TextUnformatted(title);
@@ -1576,12 +2038,15 @@ namespace EditorPanels
     static std::vector<std::filesystem::path> EnumerateTextureAssets()
     {
         std::vector<std::filesystem::path> result;
-        const std::filesystem::path textureDir = std::filesystem::path("Assets") / "Textures";
-        if (!std::filesystem::exists(textureDir))
+        const std::filesystem::path assetRoot = std::filesystem::path("Assets");
+        if (!std::filesystem::exists(assetRoot))
             return result;
 
-        for (const auto& entry : std::filesystem::directory_iterator(textureDir))
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(assetRoot, ec))
         {
+            if (ec)
+                break;
             if (!entry.is_regular_file())
                 continue;
 

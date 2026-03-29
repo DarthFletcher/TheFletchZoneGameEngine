@@ -6,6 +6,7 @@
 #include <string>
 
 #include "EditorCommon.h"
+#include "BlackFlameAI.h"
 
 // Forward declare to avoid heavy includes.
 // Your Entity class exists already in your project.
@@ -18,7 +19,8 @@ enum class CameraNavMode : uint8_t
 {
     Unity_AltMouse = 0,   // Alt + LMB/MMB/RMB
     Blender_MMB,          // MMB orbit/pan
-    TFZ_RMB               // RMB orbit + MMB pan (TFZ style)
+    TFZ_RMB,              // RMB orbit + MMB pan (TFZ style)
+    Laptop_Friendly       // Alt + LMB orbit, Shift + LMB pan, Alt + RMB dolly
 };
 
 enum class GridMode : uint8_t
@@ -110,6 +112,11 @@ struct SceneHistoryEntry
 };
 
 // =====================================================
+// Editor interaction timing
+// =====================================================
+inline constexpr float kEditorControlTickSeconds = 1.0f / 60.0f;
+
+// =====================================================
 // Main Editor State
 // =====================================================
 struct EditorState
@@ -120,10 +127,15 @@ struct EditorState
     ViewMode viewMode = ViewMode::Mode3D;
     GizmoPivotMode gizmoPivotMode = GizmoPivotMode::Center;
 
+    BlackFlameAI blackFlameAI;
+    SceneEventDispatcher sceneEvents;
+    BlackFlameAccessLevel currentBlackFlameAccess = BlackFlameAccessLevel::Admin;
+
     // Camera feel
     bool invertLookX = false;
     bool invertLookY = false;
     bool smoothLook = true;
+    bool enableGamepadCamera = true;
     float lookSmoothing = 0.22f;
     float flyLookSpeed = 0.0018f;
     float orbitLookSpeed = 0.0055f;
@@ -132,6 +144,7 @@ struct EditorState
     // Core interaction state
     EditorSelection selection;
     GizmoInteraction gizmo;
+    int focusedMaterialIndex = -1;
 
     // TFZ mode (optional)
     TFZGrabState grab;

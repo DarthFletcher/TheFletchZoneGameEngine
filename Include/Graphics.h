@@ -8,6 +8,7 @@
 #include <combaseapi.h>
 #include <chrono>
 #include <array>
+#include <DirectXMath.h>
 
 #include "Utils.h"
 #include "HintMacros.h"
@@ -34,6 +35,8 @@
 
 extern HWND mainHwnd;
 extern ID3D12DescriptorHeap* g_SRVHeap;
+
+struct Texture;
 
 // Forward declaration (definition in `Mesh.h`).
 
@@ -74,6 +77,17 @@ public:
     static constexpr UINT SceneRootParamInstanceSRV = 1;
     static constexpr UINT SceneRootParamMaterialCB = 2;
     static constexpr UINT SceneRootParamMaterialAlbedoSRV = 3;
+    static constexpr UINT SceneRootParamMaterialNormalSRV = 4;
+    static constexpr UINT SceneRootParamMaterialMetallicSRV = 5;
+    static constexpr UINT SceneRootParamMaterialRoughnessSRV = 6;
+
+    struct DirectionalLight
+    {
+        DirectX::XMFLOAT3 direction = { 0.5f, -1.0f, 0.3f };
+        float intensity = 1.0f;
+        DirectX::XMFLOAT3 color = { 1.0f, 1.0f, 1.0f };
+        float ambient = 0.12f;
+    };
 
     void EnsureValidCommandQueue();
     Graphics();
@@ -87,14 +101,22 @@ public:
 
     struct alignas(256) MaterialCBData
     {
+        DirectX::XMFLOAT4 baseColor = { 0.78f, 0.80f, 0.84f, 1.0f };
         float metallic = 0.0f;
         float roughness = 1.0f;
         float useAlbedoTexture = 0.0f;
-        float padding[61]{};
+        float useMetallicTexture = 0.0f;
+        float useRoughnessTexture = 0.0f;
+        float flipNormalGreen = 0.0f;
+        float padding[54]{};
     };
 
     CBAllocation AllocateFrameCB(size_t size);
     void BindMaterial(Material* material);
+    DirectionalLight& GetDirectionalLight() { return directionalLight; }
+    const DirectionalLight& GetDirectionalLight() const { return directionalLight; }
+    bool& GetFlipNormalGreenChannel() { return flipNormalGreenChannel; }
+    bool GetFlipNormalGreenChannel() const { return flipNormalGreenChannel; }
 
     void ToggleVSync(bool enable);
     static bool lockResolutionWhenMaximized;
@@ -237,6 +259,7 @@ public:
     bool IsSceneViewportCameraInputAllowed() const { return sceneViewportAllowCameraInput; }
     ImTextureID GetSceneImGuiTextureID() const { return sceneImGuiTextureID; }
     ImVec2 GetSceneRenderTargetSize() const { return ImVec2((float)sceneRTWidth, (float)sceneRTHeight); }
+    ImTextureID GetBlackFlameEffectTextureID() const { return blackFlameImGuiTextureID; }
 
     // Editor access
     SceneCamera& GetSceneCamera() { return sceneCamera; }
@@ -285,6 +308,13 @@ public:
     DeferredReleaseDebugStats drStats;
     uint64_t frameCounter = 0;
 #endif
+
+    struct DeferredReleaseItem
+    {
+        UINT64 fenceValue = 0;
+        Microsoft::WRL::ComPtr<IUnknown> object;
+        const char* tag = nullptr;
+    };
 
     template<typename T>
     void EnqueueDeferredRelease(Microsoft::WRL::ComPtr<T>& obj)
@@ -336,6 +366,9 @@ public:
     void ProcessDeferredReleases();
 
     const MeshData& GetCubeMesh() const { return m_cubeMesh; }
+    const MeshData& GetSphereMesh() const { return m_sphereMesh; }
+    const MeshData& GetPlaneMesh() const { return m_planeMesh; }
+    const MeshData& GetCylinderMesh() const { return m_cylinderMesh; }
 
     // CP9-B: one-shot staged upload into a GPU-local DEFAULT buffer (uses uploadCommandList/uploadAllocator).
     void UploadBufferToDefault(ID3D12Resource* dstDefault, const void* srcData, size_t numBytes);
@@ -365,6 +398,11 @@ private:
 
     // Graphics owns GPU geometry (Phase 4A)
     MeshData m_cubeMesh;
+    MeshData m_sphereMesh;
+    MeshData m_planeMesh;
+    MeshData m_cylinderMesh;
+    DirectionalLight directionalLight{};
+    bool flipNormalGreenChannel = false;
 
     bool fontUploaded = false;
     HWND hWnd = nullptr;
@@ -491,12 +529,40 @@ private:
     D3D12_VERTEX_BUFFER_VIEW sceneAxesVBV = {};
     UINT sceneAxesVertexCount = 0;
 
-    struct DeferredReleaseItem
+    struct alignas(256) BlackFlameFxCBData
     {
-        UINT64 fenceValue = 0;
-        Microsoft::WRL::ComPtr<IUnknown> object;
-        const char* tag = nullptr;
+        float time = 0.0f;
+        float state = 0.0f;
+        float pulse = 0.0f;
+        float visualProfile = 0.0f;
+        float resolution[2] = { 512.0f, 512.0f };
+        float execPulse = 0.0f;
+        float denyPulse = 0.0f;
+        float adminPulse = 0.0f;
+        float colorBias[3] = { 1.0f, 1.0f, 1.0f };
+        float lightInfluence = 0.0f;
+        float focusPulse = 0.0f;
+        float glitchIntensity = 0.0f;
+        float stability = 1.0f;
+        float padding1[48]{};
     };
+
+    void EnsureBlackFlamePanelEffect();
+    void RenderBlackFlamePanelEffect();
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> blackFlameRenderTarget;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> blackFlameRtvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE blackFlameRtvHandle = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE blackFlameSrvCpu = {};
+    D3D12_GPU_DESCRIPTOR_HANDLE blackFlameSrvGpu = {};
+    ImTextureID blackFlameImGuiTextureID = (ImTextureID)0;
+    D3D12_RESOURCE_STATES blackFlameRTState = D3D12_RESOURCE_STATE_COMMON;
+    UINT blackFlameRTWidth = 512;
+    UINT blackFlameRTHeight = 512;
+    Texture* blackFlameCardTexture = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> blackFlameRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> blackFlamePSO;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> blackFlameHaloPSO;
 
     std::vector<DeferredReleaseItem> deferredReleases;
 

@@ -3,6 +3,8 @@
 #include <chrono>
 #include <thread>
 
+extern Engine* g_engineInstance;
+
 // TEMPORARY CONTRACT RESTORATION LAYER
 // Functions in this compilation unit exist only to satisfy legacy link contracts
 // during refactors. They should migrate back to their owning subsystem over time.
@@ -11,6 +13,9 @@
 
 void Graphics::HandleDeviceLost(HWND hWnd)
 {
+    if (g_engineInstance)
+        g_engineInstance->GetEditorState().blackFlameAI.OnEngineEvent(EngineEventType::DeviceLost);
+
     Logger::Log(LogLevel::Error, "HandleDeviceLost called. Attempting full Graphics reset.", "[DX12]");
 
     Shutdown();
@@ -29,6 +34,9 @@ void Graphics::HandleDeviceLost(HWND hWnd)
 
         if (Initialize(hWnd))
         {
+            if (g_engineInstance)
+                g_engineInstance->GetEditorState().blackFlameAI.OnEngineEvent(EngineEventType::DeviceRecovered);
+
             Logger::Log(LogLevel::Info, "[DeviceLost] Graphics successfully reinitialized.", "[DX12]");
             return;
         }

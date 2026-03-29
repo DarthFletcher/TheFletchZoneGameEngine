@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <windows.h>
 #include "Graphics.h"
@@ -36,6 +36,8 @@ public:
 
     EditorState& GetEditorState() { return editorState; }
     const EditorState& GetEditorState() const { return editorState; }
+    Input& GetInput() { return input; }
+    const Input& GetInput() const { return input; }
 
 private:
     // Initialization

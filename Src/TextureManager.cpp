@@ -275,7 +275,7 @@ Texture* TextureManager::LoadTexture(const std::string& path)
     int width = 0;
     int height = 0;
     int channels = 0;
-    unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+    unsigned char* pixels = stbi_load(normalizedPath.c_str(), &width, &height, &channels, STBI_rgb_alpha);
     if (!pixels)
     {
         const char* reason = stbi_failure_reason();
@@ -305,6 +305,12 @@ Texture* TextureManager::GetWhiteTexture()
 {
     static constexpr unsigned char kWhitePixel[4] = { 255, 255, 255, 255 };
     return CreateTextureFromPixels("__builtin__/white", kWhitePixel, 1, 1);
+}
+
+Texture* TextureManager::GetDefaultNormalTexture()
+{
+    static constexpr unsigned char kDefaultNormalPixel[4] = { 128, 128, 255, 255 };
+    return CreateTextureFromPixels("__builtin__/default_normal", kDefaultNormalPixel, 1, 1);
 }
 
 void TextureManager::Shutdown()

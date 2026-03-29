@@ -443,6 +443,7 @@ namespace UI {
             ImGui::DockBuilderDockWindow(EditorPanels::LogViewer().name, dock_bottom);
             ImGui::DockBuilderDockWindow(EditorPanels::Diagnostics().name, dock_bottom);
             ImGui::DockBuilderDockWindow(EditorPanels::Instancing().name, dock_bottom);
+            ImGui::DockBuilderDockWindow(EditorPanels::BlackFlame().name, dock_bottom);
 
             ImGui::DockBuilderFinish(dockspaceID);
          }
@@ -685,6 +686,22 @@ namespace UI {
     void UI::DrawEditorPanels()
     {
         EditorPanels::DrawAll();
+
+        auto& materialPreview = EditorPanels::MaterialPreview();
+        if (materialPreview.open)
+            materialPreview.draw();
+
+        auto& blackFlame = EditorPanels::BlackFlame();
+        if (blackFlame.open)
+            blackFlame.draw();
+
+        auto& promptHelper = EditorPanels::PromptHelper();
+        if (promptHelper.open)
+            promptHelper.draw();
+
+        auto& prefabWorkflow = EditorPanels::PrefabWorkflow();
+        if (prefabWorkflow.open)
+            prefabWorkflow.draw();
     }
 
      // 🧭 Main Menu Bar
@@ -693,10 +710,6 @@ namespace UI {
          static int selectedGPUIndex = 0;
          static bool openAbout = false;
          static bool showCustomSizePopup = false;
-
-         Logger::Log(LogLevel::Trace,
-             std::format("🧭 MenuBar viewport ID=0x{:X}",
-                 ImGui::GetWindowViewport()->ID));
 
          // 📁 File
          if (ImGui::BeginMenu("File")) {
@@ -717,14 +730,29 @@ namespace UI {
          }
 
          if (ImGui::BeginMenu("Create")) {
-             if (ImGui::MenuItem("Cube"))
-             {
-                 PushUndoSnapshot();
-                 Scene::CreateCube();
-             }
-             ImGui::EndMenu();
-         }
- 
+              if (ImGui::MenuItem("Cube"))
+              {
+                  PushUndoSnapshot();
+                  Scene::CreateCube();
+              }
+              if (ImGui::MenuItem("Sphere"))
+              {
+                  PushUndoSnapshot();
+                  Scene::CreateSphere();
+              }
+              if (ImGui::MenuItem("Plane"))
+              {
+                  PushUndoSnapshot();
+                  Scene::CreatePlane();
+              }
+              if (ImGui::MenuItem("Cylinder"))
+              {
+                  PushUndoSnapshot();
+                  Scene::CreateCylinder();
+              }
+              ImGui::EndMenu();
+          }
+
          // 🖥️ Graphics
          if (ImGui::BeginMenu("Graphics")) {
              ImGui::Text("Select GPU:");
@@ -747,274 +775,289 @@ namespace UI {
              extern Engine* g_engineInstance;
              EditorState& editor = ::g_engineInstance->GetEditorState();
 
-             if (ImGui::BeginMenu("Camera Navigation"))
+             auto drawStepFloat = [](const char* label, float& value, float minValue, float maxValue, float step, const char* format)
              {
-                 const bool isUnity = (editor.cameraNavMode == CameraNavMode::Unity_AltMouse);
-                 const bool isBlender = (editor.cameraNavMode == CameraNavMode::Blender_MMB);
-                 const bool isTFZ = (editor.cameraNavMode == CameraNavMode::TFZ_RMB);
-
-                 if (ImGui::MenuItem("Unity (Alt + Mouse)", nullptr, isUnity))
-                     editor.cameraNavMode = CameraNavMode::Unity_AltMouse;
-                 if (ImGui::MenuItem("Blender (MMB)", nullptr, isBlender))
-                     editor.cameraNavMode = CameraNavMode::Blender_MMB;
-                 if (ImGui::MenuItem("TFZ (RMB)", nullptr, isTFZ))
-                     editor.cameraNavMode = CameraNavMode::TFZ_RMB;
-
-                 ImGui::Separator();
-                 ImGui::MenuItem("Invert Look X", nullptr, &editor.invertLookX);
-                 ImGui::MenuItem("Invert Look Y", nullptr, &editor.invertLookY);
-                 ImGui::MenuItem("Smooth Look", nullptr, &editor.smoothLook);
-                 ImGui::SliderFloat("Look Smoothing", &editor.lookSmoothing, 0.0f, 0.90f, "%.2f");
-                 ImGui::SliderFloat("Fly Look Speed", &editor.flyLookSpeed, 0.0005f, 0.0060f, "%.4f");
-                 ImGui::SliderFloat("Orbit Look Speed", &editor.orbitLookSpeed, 0.0010f, 0.0120f, "%.4f");
-                 ImGui::SliderFloat("Fly Move Speed", &editor.flyMoveSpeed, 1.0f, 50.0f, "%.1f");
-
-                 ImGui::EndMenu();
-             }
-
-             if (ImGui::BeginMenu("View Mode"))
-             {
-                 auto& gfx = Graphics::GetInstance();
-                 auto& sceneCamera = gfx.GetSceneCamera();
-                 const bool is3D = (gfx.GetViewMode() == ViewMode::Mode3D);
-                 const bool is2D = (gfx.GetViewMode() == ViewMode::Mode2D);
-
-                 if (ImGui::MenuItem("3D", nullptr, is3D))
+                 ImGui::PushID(label);
+                 ImGui::TextUnformatted(label);
+                 ImGui::SameLine();
+                 if (ImGui::SmallButton("-"))
                  {
-                     gfx.SetViewMode(ViewMode::Mode3D);
-                     sceneCamera.SetViewPreset(SceneCamera::ViewPreset::View3D);
+                     value -= step;
+                     if (value < minValue)
+                         value = minValue;
                  }
-                 if (ImGui::MenuItem("2D", nullptr, is2D))
+                 ImGui::SameLine();
+                 ImGui::Text(format, value);
+                 ImGui::SameLine();
+                 if (ImGui::SmallButton("+"))
                  {
-                     gfx.SetViewMode(ViewMode::Mode2D);
-                     sceneCamera.SetViewPreset(SceneCamera::ViewPreset::View2D);
+                     value += step;
+                     if (value > maxValue)
+                         value = maxValue;
                  }
+                 ImGui::PopID();
+             };
 
-                 ImGui::EndMenu();
-             }
-
-             if (ImGui::BeginMenu("Projection"))
+             if (ImGui::BeginMenu("Lighting"))
              {
-                 auto& sceneCamera = Graphics::GetInstance().GetSceneCamera();
-                 const bool isPerspective = (sceneCamera.GetProjectionMode() == SceneCamera::ProjectionMode::Perspective);
-                 const bool isOrtho = (sceneCamera.GetProjectionMode() == SceneCamera::ProjectionMode::Orthographic);
-
-                 if (ImGui::MenuItem("Perspective", nullptr, isPerspective, !sceneCamera.Is2DMode()))
-                    sceneCamera.SetProjectionMode(SceneCamera::ProjectionMode::Perspective);
-                 if (ImGui::MenuItem("Orthographic", nullptr, isOrtho))
-                    sceneCamera.SetProjectionMode(SceneCamera::ProjectionMode::Orthographic);
-
-                 ImGui::EndMenu();
-             }
-
-             // Custom Themes
-             if (ImGui::BeginMenu("Theme")) {
-                 if (ImGui::MenuItem("Dark", nullptr, currentTheme == Theme::Dark))         ApplyTheme(Theme::Dark);
-                 if (ImGui::MenuItem("Light", nullptr, currentTheme == Theme::Light))       ApplyTheme(Theme::Light);
-                 if (ImGui::MenuItem("Classic", nullptr, currentTheme == Theme::Classic))   ApplyTheme(Theme::Classic);
-                 if (ImGui::MenuItem("Synthwave", nullptr, currentTheme == Theme::Synthwave)) ApplyTheme(Theme::Synthwave);
-                 if (ImGui::MenuItem("Magenta", nullptr, currentTheme == Theme::Magenta))   ApplyTheme(Theme::Magenta);
-                 ImGui::EndMenu();
-             }
-
-             if (ImGui::BeginMenu("Panels")) {
-                 auto& scene = EditorPanels::Scene();
-                 auto& hierarchy = EditorPanels::Hierarchy();
-                 auto& inspector = EditorPanels::Inspector();
-                 auto& assets = EditorPanels::Assets();
-                 auto& instancing = EditorPanels::Instancing();
-                 auto& debugOverlay = EditorPanels::DebugOverlay();
-                 auto& diagnostics = EditorPanels::Diagnostics();
-                 auto& logViewer = EditorPanels::LogViewer();
-
-                 ImGui::MenuItem(scene.name, nullptr, &scene.open);
-                 ImGui::MenuItem(hierarchy.name, nullptr, &hierarchy.open);
-                 ImGui::MenuItem(inspector.name, nullptr, &inspector.open);
-                 ImGui::MenuItem(assets.name, nullptr, &assets.open);
-                 ImGui::MenuItem(instancing.name, nullptr, &instancing.open);
+                 auto& light = Graphics::GetInstance().GetDirectionalLight();
+                 drawStepFloat("Direction X", light.direction.x, -1.0f, 1.0f, 0.1f, "%.2f");
+                 drawStepFloat("Direction Y", light.direction.y, -1.0f, 1.0f, 0.1f, "%.2f");
+                 drawStepFloat("Direction Z", light.direction.z, -1.0f, 1.0f, 0.1f, "%.2f");
                  ImGui::Separator();
-                 ImGui::MenuItem(debugOverlay.name, nullptr, &debugOverlay.open);
-                 ImGui::MenuItem(diagnostics.name, nullptr, &diagnostics.open);
-                 ImGui::MenuItem(logViewer.name, nullptr, &logViewer.open);
+                 drawStepFloat("Color R", light.color.x, 0.0f, 4.0f, 0.05f, "%.2f");
+                 drawStepFloat("Color G", light.color.y, 0.0f, 4.0f, 0.05f, "%.2f");
+                 drawStepFloat("Color B", light.color.z, 0.0f, 4.0f, 0.05f, "%.2f");
                  ImGui::Separator();
-                 ImGui::MenuItem("Command Strip", nullptr, &g_showCommandStrip);
-                 ImGui::MenuItem("Frame Diagnostics", nullptr, &g_showFrameDiag);
+                 drawStepFloat("Intensity", light.intensity, 0.0f, 8.0f, 0.1f, "%.2f");
+                 drawStepFloat("Ambient", light.ambient, 0.0f, 1.0f, 0.02f, "%.2f");
                  ImGui::EndMenu();
              }
 
-            ImGui::Separator();
-            if (ImGui::MenuItem("Reset Layout")) {
-                UI::RequestResetLayout();
-            }
-            if (ImGui::MenuItem("Save Layout")) {
-                UI::SaveLayoutToDisk("imgui.ini");
-            }
+              if (ImGui::BeginMenu("Camera Navigation"))
+              {
+                  const bool isUnity = (editor.cameraNavMode == CameraNavMode::Unity_AltMouse);
+                  const bool isBlender = (editor.cameraNavMode == CameraNavMode::Blender_MMB);
+                  const bool isTFZ = (editor.cameraNavMode == CameraNavMode::TFZ_RMB);
+                  const bool isLaptopFriendly = (editor.cameraNavMode == CameraNavMode::Laptop_Friendly);
 
-            // Custom Font Size
-            static float fontSize = 16.0f;
-            if (ImGui::BeginMenu("Font Size")) {
-                if (ImGui::MenuItem("Small (14px)", nullptr, fontSize == 14.0f)) {
-                    fontSize = 14.0f;
-                    RELOAD_IMGUI_FONT(fontSize);
-                }
-                if (ImGui::MenuItem("Medium (16px)", nullptr, fontSize == 16.0f)) {
-                    fontSize = 16.0f;
-                    RELOAD_IMGUI_FONT(fontSize);
-                }
-                if (ImGui::MenuItem("Large (18px)", nullptr, fontSize == 18.0f)) {
-                    fontSize = 18.0f;
-                    RELOAD_IMGUI_FONT(fontSize);
-                }
-                if (ImGui::MenuItem("Extra Large (20px)", nullptr, fontSize == 20.0f)) {
-                    fontSize = 20.0f;
-                    RELOAD_IMGUI_FONT(fontSize);
-                }
-                ImGui::EndMenu();
-            }
+                  if (ImGui::MenuItem("Unity (Alt + Mouse)", nullptr, isUnity))
+                      editor.cameraNavMode = CameraNavMode::Unity_AltMouse;
+                  if (ImGui::MenuItem("Blender (MMB)", nullptr, isBlender))
+                      editor.cameraNavMode = CameraNavMode::Blender_MMB;
+                  if (ImGui::MenuItem("TFZ (RMB)", nullptr, isTFZ))
+                      editor.cameraNavMode = CameraNavMode::TFZ_RMB;
+                  if (ImGui::MenuItem("Laptop-Friendly", nullptr, isLaptopFriendly))
+                      editor.cameraNavMode = CameraNavMode::Laptop_Friendly;
 
-            // Custom Window Size
-            if (ImGui::BeginMenu("Window Size")) {
-                if (ImGui::MenuItem("1280 x 720")) {
-                    SetWindowPos(GetActiveWindow(), 0, 100, 100, 1280, 720, SWP_NOZORDER | SWP_SHOWWINDOW);
-                    Logger::Log(LogLevel::Info, "📐 Resolution set to 1280x720");
-                }
-                if (ImGui::MenuItem("1600 x 900")) {
-                    SetWindowPos(GetActiveWindow(), 0, 100, 100, 1600, 900, SWP_NOZORDER | SWP_SHOWWINDOW);
-                    Logger::Log(LogLevel::Info, "📐 Resolution set to 1600x900");
-                }
-                if (ImGui::MenuItem("1920 x 1080")) {
-                    SetWindowPos(GetActiveWindow(), 0, 100, 100, 1920, 1080, SWP_NOZORDER | SWP_SHOWWINDOW);
-                    Logger::Log(LogLevel::Info, "📐 Resolution set to 1920x1080");
-                }
-                if (ImGui::MenuItem("2560 x 1440")) {
-                    SetWindowPos(GetActiveWindow(), 0, 100, 100, 2560, 1440, SWP_NOZORDER | SWP_SHOWWINDOW);
-                    Logger::Log(LogLevel::Info, "📐 Resolution set to 2560x1440");
-                }
-                if (ImGui::MenuItem("Custom...")) {
-                    ImGui::SetNextWindowPos(ImGui::GetMousePos(), ImGuiCond_Appearing, ImVec2(0.0f, 0.0f));
-                    showCustomSizePopup = true;
-                }
-                ImGui::EndMenu();
-            }
+                  ImGui::Separator();
+                  ImGui::MenuItem("Enable Gamepad Camera", nullptr, &editor.enableGamepadCamera);
+                  ImGui::MenuItem("Invert Look X", nullptr, &editor.invertLookX);
+                  ImGui::MenuItem("Invert Look Y", nullptr, &editor.invertLookY);
+                  ImGui::MenuItem("Smooth Look", nullptr, &editor.smoothLook);
+                  drawStepFloat("Look Smoothing", editor.lookSmoothing, 0.0f, 0.90f, 0.05f, "%.2f");
+                  drawStepFloat("Fly Look Speed", editor.flyLookSpeed, 0.0005f, 0.0060f, 0.0005f, "%.4f");
+                  drawStepFloat("Orbit Look Speed", editor.orbitLookSpeed, 0.0010f, 0.0120f, 0.0005f, "%.4f");
+                  drawStepFloat("Fly Move Speed", editor.flyMoveSpeed, 1.0f, 50.0f, 1.0f, "%.1f");
 
-            ImGui::EndMenu();
-         }
+                  ImGui::EndMenu();
+              }
 
-         // ❓ Help
-         if (ImGui::BeginMenu("Help")) {
-             ImGui::MenuItem("ImGui Demo", nullptr, &g_showImGuiDemo);
-             ImGui::MenuItem("ImGui Metrics/Debugger", nullptr, &g_showImGuiMetrics);
-             ImGui::Separator();
-             if (ImGui::MenuItem("About")) {
-                 openAbout = true;
-             }
-             ImGui::EndMenu();
-         }
+              if (ImGui::BeginMenu("View Mode"))
+              {
+                  auto& gfx = Graphics::GetInstance();
+                  auto& sceneCamera = gfx.GetSceneCamera();
+                  const bool is3D = (gfx.GetViewMode() == ViewMode::Mode3D);
+                  const bool is2D = (gfx.GetViewMode() == ViewMode::Mode2D);
 
-         // ✅ Defer popup open outside the menu
-         if (openAbout) {
-             ImGui::OpenPopup("AboutPopup");
-             openAbout = false;
-         }
+                  if (ImGui::MenuItem("3D", nullptr, is3D))
+                  {
+                      gfx.SetViewMode(ViewMode::Mode3D);
+                      sceneCamera.SetViewPreset(SceneCamera::ViewPreset::View3D);
+                  }
+                  if (ImGui::MenuItem("2D", nullptr, is2D))
+                  {
+                      gfx.SetViewMode(ViewMode::Mode2D);
+                      sceneCamera.SetViewPreset(SceneCamera::ViewPreset::View2D);
+                  }
 
-         if (showCustomSizePopup) {
-             ImGui::OpenPopup("Custom Size");
-             showCustomSizePopup = false;
-         }
+                  ImGui::EndMenu();
+              }
 
-         // 📦 About Modal
-         if (ImGui::BeginPopupModal("AboutPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-             ImGui::Text("TheFletchZone Game Engine");
-             ImGui::Text("Version 1.0");
-             ImGui::Spacing();
-             ImGui::Text("Built with love and DirectX 12!");
+              if (ImGui::BeginMenu("Projection"))
+              {
+                  auto& sceneCamera = Graphics::GetInstance().GetSceneCamera();
+                  const bool isPerspective = (sceneCamera.GetProjectionMode() == SceneCamera::ProjectionMode::Perspective);
+                  const bool isOrtho = (sceneCamera.GetProjectionMode() == SceneCamera::ProjectionMode::Orthographic);
 
-             if (ImGui::Button("Close")) {
-                 ImGui::CloseCurrentPopup();
-             }
-             ImGui::EndPopup();
-         }
+                  if (ImGui::MenuItem("Perspective", nullptr, isPerspective, !sceneCamera.Is2DMode()))
+                     sceneCamera.SetProjectionMode(SceneCamera::ProjectionMode::Perspective);
+                  if (ImGui::MenuItem("Orthographic", nullptr, isOrtho))
+                     sceneCamera.SetProjectionMode(SceneCamera::ProjectionMode::Orthographic);
 
-         // Custom Size Modal
-         static int customWidth = 1280;
-         static int customHeight = 720;
-         if (ImGui::BeginPopupModal("Custom Size", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-             ImGui::InputInt("Width", &customWidth);
-             ImGui::InputInt("Height", &customHeight);
-             ImGui::Spacing();
+                  ImGui::EndMenu();
+              }
 
-             if (ImGui::Button("Apply")) {
-                 SetMainWindowSize(customWidth, customHeight);
-                 Logger::Log(LogLevel::Info, "📐 Custom resolution set to " + std::to_string(customWidth) + "x" + std::to_string(customHeight));
-                 ImGui::CloseCurrentPopup();
-             }
-             ImGui::SameLine();
-             if (ImGui::Button("Cancel")) {
-                 ImGui::CloseCurrentPopup();
-             }
+              if (ImGui::BeginMenu("Theme")) {
+                  if (ImGui::MenuItem("Dark", nullptr, currentTheme == Theme::Dark))         ApplyTheme(Theme::Dark);
+                  if (ImGui::MenuItem("Light", nullptr, currentTheme == Theme::Light))       ApplyTheme(Theme::Light);
+                  if (ImGui::MenuItem("Classic", nullptr, currentTheme == Theme::Classic))   ApplyTheme(Theme::Classic);
+                  if (ImGui::MenuItem("Synthwave", nullptr, currentTheme == Theme::Synthwave)) ApplyTheme(Theme::Synthwave);
+                  if (ImGui::MenuItem("Magenta", nullptr, currentTheme == Theme::Magenta))   ApplyTheme(Theme::Magenta);
+                  ImGui::EndMenu();
+              }
 
-             ImGui::EndPopup();
-         }
+              if (ImGui::BeginMenu("Panels")) {
+                  auto& scene = EditorPanels::Scene();
+                  auto& hierarchy = EditorPanels::Hierarchy();
+                  auto& inspector = EditorPanels::Inspector();
+                  auto& assets = EditorPanels::Assets();
+                  auto& instancing = EditorPanels::Instancing();
+                  auto& materialPreview = EditorPanels::MaterialPreview();
+                  auto& blackFlame = EditorPanels::BlackFlame();
+                  auto& promptHelper = EditorPanels::PromptHelper();
+                  auto& prefabWorkflow = EditorPanels::PrefabWorkflow();
+                  auto& debugOverlay = EditorPanels::DebugOverlay();
+                  auto& diagnostics = EditorPanels::Diagnostics();
+                  auto& logViewer = EditorPanels::LogViewer();
+
+                  ImGui::MenuItem(scene.name, nullptr, &scene.open);
+                  ImGui::MenuItem(hierarchy.name, nullptr, &hierarchy.open);
+                  ImGui::MenuItem(inspector.name, nullptr, &inspector.open);
+                  ImGui::MenuItem(assets.name, nullptr, &assets.open);
+                  ImGui::MenuItem(instancing.name, nullptr, &instancing.open);
+                  ImGui::MenuItem(materialPreview.name, nullptr, &materialPreview.open);
+                  ImGui::MenuItem(blackFlame.name, nullptr, &blackFlame.open);
+                  ImGui::MenuItem(promptHelper.name, nullptr, &promptHelper.open);
+                  ImGui::MenuItem(prefabWorkflow.name, nullptr, &prefabWorkflow.open);
+                  ImGui::Separator();
+                  ImGui::MenuItem(debugOverlay.name, nullptr, &debugOverlay.open);
+                  ImGui::MenuItem(diagnostics.name, nullptr, &diagnostics.open);
+                  ImGui::MenuItem(logViewer.name, nullptr, &logViewer.open);
+                  ImGui::Separator();
+                  ImGui::MenuItem("Command Strip", nullptr, &g_showCommandStrip);
+                  ImGui::MenuItem("Frame Diagnostics", nullptr, &g_showFrameDiag);
+                  ImGui::EndMenu();
+               }
+
+               EditorPanels::DrawPrefabOptionsMenu();
+
+               ImGui::Separator();
+               if (ImGui::MenuItem("Reset Layout")) {
+                   UI::RequestResetLayout();
+               }
+               if (ImGui::MenuItem("Save Layout")) {
+                   UI::SaveLayoutToDisk("imgui.ini");
+               }
+
+               // Custom Font Size
+               static float fontSize = 16.0f;
+               if (ImGui::BeginMenu("Font Size")) {
+                   if (ImGui::MenuItem("Small (14px)", nullptr, fontSize == 14.0f)) {
+                       fontSize = 14.0f;
+                       RELOAD_IMGUI_FONT(fontSize);
+                   }
+                   if (ImGui::MenuItem("Medium (16px)", nullptr, fontSize == 16.0f)) {
+                       fontSize = 16.0f;
+                       RELOAD_IMGUI_FONT(fontSize);
+                   }
+                   if (ImGui::MenuItem("Large (18px)", nullptr, fontSize == 18.0f)) {
+                       fontSize = 18.0f;
+                       RELOAD_IMGUI_FONT(fontSize);
+                   }
+                   if (ImGui::MenuItem("Extra Large (20px)", nullptr, fontSize == 20.0f)) {
+                       fontSize = 20.0f;
+                       RELOAD_IMGUI_FONT(fontSize);
+                   }
+                   ImGui::EndMenu();
+               }
+
+               // Custom Window Size
+               if (ImGui::BeginMenu("Window Size")) {
+                   if (ImGui::MenuItem("1280 x 720")) {
+                       SetWindowPos(GetActiveWindow(), 0, 100, 100, 1280, 720, SWP_NOZORDER | SWP_SHOWWINDOW);
+                       Logger::Log(LogLevel::Info, "📐 Resolution set to 1280x720");
+                   }
+                   if (ImGui::MenuItem("1600 x 900")) {
+                       SetWindowPos(GetActiveWindow(), 0, 100, 100, 1600, 900, SWP_NOZORDER | SWP_SHOWWINDOW);
+                       Logger::Log(LogLevel::Info, "📐 Resolution set to 1600x900");
+                   }
+                   if (ImGui::MenuItem("1920 x 1080")) {
+                       SetWindowPos(GetActiveWindow(), 0, 100, 100, 1920, 1080, SWP_NOZORDER | SWP_SHOWWINDOW);
+                       Logger::Log(LogLevel::Info, "📐 Resolution set to 1920x1080");
+                   }
+                   if (ImGui::MenuItem("2560 x 1440")) {
+                       SetWindowPos(GetActiveWindow(), 0, 100, 100, 2560, 1440, SWP_NOZORDER | SWP_SHOWWINDOW);
+                       Logger::Log(LogLevel::Info, "📐 Resolution set to 2560x1440");
+                   }
+                   if (ImGui::MenuItem("Custom...")) {
+                       ImGui::SetNextWindowPos(ImGui::GetMousePos(), ImGuiCond_Appearing, ImVec2(0.0f, 0.0f));
+                       showCustomSizePopup = true;
+                   }
+                   ImGui::EndMenu();
+               }
+
+               ImGui::EndMenu();
+           }
+
+           // ❓ Help
+           if (ImGui::BeginMenu("Help")) {
+               ImGui::MenuItem("ImGui Demo", nullptr, &g_showImGuiDemo);
+               ImGui::MenuItem("ImGui Metrics/Debugger", nullptr, &g_showImGuiMetrics);
+               ImGui::Separator();
+               if (ImGui::MenuItem("About")) {
+                   openAbout = true;
+               }
+               ImGui::EndMenu();
+           }
+
+           // ✅ Defer popup open outside the menu
+           if (openAbout) {
+               ImGui::OpenPopup("AboutPopup");
+               openAbout = false;
+           }
+
+           if (showCustomSizePopup) {
+               ImGui::OpenPopup("Custom Size");
+               showCustomSizePopup = false;
+           }
+
+           // 📦 About Modal
+           if (ImGui::BeginPopupModal("AboutPopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+               ImGui::Text("TheFletchZone Game Engine");
+               ImGui::Text("Version 1.0");
+               ImGui::Spacing();
+               ImGui::Text("Built with love and DirectX 12!");
+
+               if (ImGui::Button("Close")) {
+                   ImGui::CloseCurrentPopup();
+               }
+               ImGui::EndPopup();
+           }
+
+           // Custom Size Modal
+           static int customWidth = 1280;
+           static int customHeight = 720;
+           if (ImGui::BeginPopupModal("Custom Size", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+               ImGui::InputInt("Width", &customWidth);
+               ImGui::InputInt("Height", &customHeight);
+               ImGui::Spacing();
+
+               if (ImGui::Button("Apply")) {
+                   SetMainWindowSize(customWidth, customHeight);
+                   Logger::Log(LogLevel::Info, "📐 Custom resolution set to " + std::to_string(customWidth) + "x" + std::to_string(customHeight));
+                   ImGui::CloseCurrentPopup();
+               }
+               ImGui::SameLine();
+               if (ImGui::Button("Cancel")) {
+                   ImGui::CloseCurrentPopup();
+               }
+
+               ImGui::EndPopup();
+           }
+       }
+
+       static const char* ViewModeLabel(ViewMode m)
+       {
+           switch (m)
+           {
+           case ViewMode::Mode2D: return "2D";
+           case ViewMode::Mode3D:
+           default: return "3D";
+           }
+       }
+
+       void DrawMainMenuBar()
+       {
+       }
+
+       // 🔍 Optional Debug Overlay
+       void DrawOverlays() {
+           // Debug overlay is now a dockable panel (see EditorPanels::DebugOverlay()).
+       }
+
+       void DrawSplashOverlay()
+       {
+         SplashScreen::DrawSplash();
+       }
     }
-
-    static const char* ViewModeLabel(ViewMode m)
-    {
-        switch (m)
-        {
-        case ViewMode::Mode2D: return "2D";
-        case ViewMode::Mode3D:
-        default: return "3D";
-        }
-    }
-
-    void DrawMainMenuBar()
-    {
-        if (!ImGui::BeginMainMenuBar())
-            return;
-
-        if (ImGui::BeginMenu("Options"))
-        {
-            if (ImGui::BeginMenu("View Mode"))
-            {
-                auto& gfx = Graphics::GetInstance();
-                auto& sceneCamera = gfx.GetSceneCamera();
-                const bool is3D = (gfx.GetViewMode() == ViewMode::Mode3D);
-                const bool is2D = (gfx.GetViewMode() == ViewMode::Mode2D);
-
-                if (ImGui::MenuItem("3D", nullptr, is3D))
-                {
-                    gfx.SetViewMode(ViewMode::Mode3D);
-                    sceneCamera.SetViewPreset(SceneCamera::ViewPreset::View3D);
-                }
-                if (ImGui::MenuItem("2D", nullptr, is2D))
-                {
-                    gfx.SetViewMode(ViewMode::Mode2D);
-                    sceneCamera.SetViewPreset(SceneCamera::ViewPreset::View2D);
-                }
-
-                ImGui::EndMenu();
-            }
-            ImGui::EndMenu();
-        }
-
-        // Lightweight indicator in the menu bar.
-        ImGui::SameLine();
-        {
-            auto& gfx = Graphics::GetInstance();
-            const char* projectionText = (gfx.GetSceneCamera().GetProjectionMode() == SceneCamera::ProjectionMode::Perspective) ? "Persp" : "Ortho";
-            ImGui::Text("View: %s | %s", ViewModeLabel(gfx.GetViewMode()), projectionText);
-        }
-
-        ImGui::EndMainMenuBar();
-    }
-
-    // 🔍 Optional Debug Overlay
-    void DrawOverlays() {
-        // Debug overlay is now a dockable panel (see EditorPanels::DebugOverlay()).
-    }
-
-    void DrawSplashOverlay()
-    {
-      SplashScreen::DrawSplash();
-    }
-}

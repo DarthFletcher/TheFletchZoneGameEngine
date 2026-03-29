@@ -61,6 +61,26 @@ static ATOM g_ImGuiPlatformWindowClass = 0;
 static HINSTANCE g_hInstance = nullptr;
 static int g_PlatformWindowsCreated = 0;
 
+static const char* ImGui_ImplWin32_DebugMouseMessageName(UINT msg)
+{
+    switch (msg)
+    {
+    case WM_MOUSEMOVE: return "WM_MOUSEMOVE";
+    case WM_LBUTTONDOWN: return "WM_LBUTTONDOWN";
+    case WM_LBUTTONUP: return "WM_LBUTTONUP";
+    case WM_RBUTTONDOWN: return "WM_RBUTTONDOWN";
+    case WM_RBUTTONUP: return "WM_RBUTTONUP";
+    case WM_MBUTTONDOWN: return "WM_MBUTTONDOWN";
+    case WM_MBUTTONUP: return "WM_MBUTTONUP";
+    case WM_XBUTTONDOWN: return "WM_XBUTTONDOWN";
+    case WM_XBUTTONUP: return "WM_XBUTTONUP";
+    case WM_CAPTURECHANGED: return "WM_CAPTURECHANGED";
+    case WM_SETFOCUS: return "WM_SETFOCUS";
+    case WM_KILLFOCUS: return "WM_KILLFOCUS";
+    default: return "WM_UNKNOWN";
+    }
+}
+
 // -----------------------------------------------------------------------------
 // 📦 Custom platform backend data (Win32)
 // -----------------------------------------------------------------------------
@@ -72,20 +92,20 @@ struct ImGui_ImplWin32_PlatformData
     ImVec2 LastMousePos = ImVec2(-FLT_MAX, -FLT_MAX);
     bool WantUpdateMonitors = true;
     bool WantUpdateDpi = true;
+    int MouseButtonsDown = 0;
 };
 
-
-    // -----------------------------------------------------------------------------
-    // 📦 Custom viewport backend data (Win32)
-    // -----------------------------------------------------------------------------
-    struct ImGui_ImplWin32_ViewportData
-    {
-        HWND Hwnd = nullptr;
-        bool WindowOwned = false;
-        ImVec2 LastSize = ImVec2(0, 0);
-        ImVec2 LastPos = ImVec2(0, 0);
-        // Add more fields as needed for your backend
-    };
+// -----------------------------------------------------------------------------
+// 📦 Custom viewport backend data (Win32)
+// -----------------------------------------------------------------------------
+struct ImGui_ImplWin32_ViewportData
+{
+    HWND Hwnd = nullptr;
+    bool WindowOwned = false;
+    ImVec2 LastSize = ImVec2(0, 0);
+    ImVec2 LastPos = ImVec2(0, 0);
+    // Add more fields as needed for your backend
+};
 
 
 //====================================
@@ -106,6 +126,7 @@ struct ImGui_ImplWin32_PlatformData
         auto* platform_data = new ImGui_ImplWin32_PlatformData();
         platform_data->Hwnd = g_hWnd;
         platform_data->Time = 0.0;
+        platform_data->MouseButtonsDown = 0;
         QueryPerformanceFrequency((LARGE_INTEGER*)&platform_data->TicksPerSecond);
 
         io.BackendPlatformUserData = platform_data;
@@ -240,7 +261,7 @@ void ImGui_ImplWin32_Shutdown()
     // 🧼 Clear main backend user data (only if not already destroyed)
     if (io.BackendPlatformUserData)
     {
-        IM_DELETE(static_cast<ImGui_ImplWin32_ViewportData*>(io.BackendPlatformUserData));
+        IM_DELETE(static_cast<ImGui_ImplWin32_PlatformData*>(io.BackendPlatformUserData));
         io.BackendPlatformUserData = nullptr;
     }
 
@@ -286,17 +307,33 @@ void ImGui_ImplWin32_NewFrame()
     // causes ImGui to effectively double-scale on high DPI and can look "zoomed" on maximize.
     io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
 
-    // 🖱️ Update mouse position
+    // 🖱️ Update mouse position in client space through the event queue API.
+    ImVec2 mousePos(-FLT_MAX, -FLT_MAX);
     POINT pos;
     if (GetCursorPos(&pos) && ScreenToClient(bd->Hwnd, &pos))
-        io.MousePos = ImVec2((float)pos.x, (float)pos.y);
-    else
-        io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
+        mousePos = ImVec2((float)pos.x, (float)pos.y);
 
-    // 🖱️ Update mouse buttons
-    io.MouseDown[0] = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    io.MouseDown[1] = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-    io.MouseDown[2] = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+    if (mousePos.x != bd->LastMousePos.x || mousePos.y != bd->LastMousePos.y)
+    {
+        io.AddMousePosEvent(mousePos.x, mousePos.y);
+        if (bd->MouseButtonsDown != 0)
+        {
+            static int s_newFrameMouseTraceCounter = 0;
+            if ((++s_newFrameMouseTraceCounter % 8) == 0)
+            {
+                Logger::Log(LogLevel::Verbose, std::format(
+                    "🖱 NewFrame AddMousePosEvent hwnd=0x{:X} capture=0x{:X} buttons=0x{:X} pos=({:.1f}, {:.1f}) last=({:.1f}, {:.1f})",
+                    (uintptr_t)bd->Hwnd,
+                    (uintptr_t)::GetCapture(),
+                    bd->MouseButtonsDown,
+                    mousePos.x,
+                    mousePos.y,
+                    bd->LastMousePos.x,
+                    bd->LastMousePos.y));
+            }
+        }
+        bd->LastMousePos = mousePos;
+    }
 
     // 🩺 Throttled platform health log (helps diagnose "draws happen but nothing visible" by verifying platform state)
     {
@@ -980,7 +1017,7 @@ void ImGui_ImplWin32_SetWindowTitle(ImGuiViewport* viewport, const char* title)
 }
 
 
-//===============================================================
+///===============================================================
 // Set Window Alpha Function
 //===============================================================
 void ImGui_ImplWin32_SetWindowAlpha(ImGuiViewport* viewport, float alpha)
@@ -1529,6 +1566,7 @@ LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         return 0;
 
     ImGuiIO& io = ImGui::GetIO();
+    ImGui_ImplWin32_PlatformData* bd = static_cast<ImGui_ImplWin32_PlatformData*>(io.BackendPlatformUserData);
 
     switch (msg)
     {
@@ -1539,15 +1577,13 @@ LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARA
     {
         float delta = (float)GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
         io.AddMouseWheelEvent(0.0f, delta);
-        Logger::Log(LogLevel::Verbose, std::format("🌀 Vertical Mouse Wheel: delta={}", delta));
-        return 1;
+        return 0;
     }
     case WM_MOUSEHWHEEL:
     {
         float delta = -(float)GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
         io.AddMouseWheelEvent(delta, 0.0f);
-        Logger::Log(LogLevel::Verbose, std::format("🌀 Horizontal Mouse Wheel: delta={}", delta));
-        return 1;
+        return 0;
     }
 
     // =========================
@@ -1563,9 +1599,19 @@ LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         else if (msg == WM_XBUTTONDOWN) button = (GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? 3 : 4);
 
         io.AddMouseButtonEvent(button, true);
-        ::SetCapture(hWnd);
-        Logger::Log(LogLevel::Verbose, std::format("🖱️ Mouse Button Down: button={}", button));
-        return 1;
+        if (bd)
+            bd->MouseButtonsDown |= (1 << button);
+        Logger::Log(LogLevel::Verbose, std::format(
+            "🖱 WndProc {} hwnd=0x{:X} capture=0x{:X} buttons=0x{:X} pos=({}, {}) wParam=0x{:X} lParam=0x{:X}",
+            ImGui_ImplWin32_DebugMouseMessageName(msg),
+            (uintptr_t)hWnd,
+            (uintptr_t)::GetCapture(),
+            bd ? bd->MouseButtonsDown : 0,
+            GET_X_LPARAM(lParam),
+            GET_Y_LPARAM(lParam),
+            (uintptr_t)wParam,
+            (uintptr_t)lParam));
+        return 0;
     }
 
     case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP:
@@ -1578,22 +1624,66 @@ LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         else if (msg == WM_XBUTTONUP) button = (GET_XBUTTON_WPARAM(wParam) == XBUTTON1 ? 3 : 4);
 
         io.AddMouseButtonEvent(button, false);
-        if (!(wParam & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)))
-            ::ReleaseCapture();
-        Logger::Log(LogLevel::Verbose, std::format("🖱️ Mouse Button Up: button={}", button));
-        return 1;
+        if (bd)
+            bd->MouseButtonsDown &= ~(1 << button);
+        Logger::Log(LogLevel::Verbose, std::format(
+            "🖱 WndProc {} hwnd=0x{:X} capture=0x{:X} buttons=0x{:X} pos=({}, {}) wParam=0x{:X} lParam=0x{:X}",
+            ImGui_ImplWin32_DebugMouseMessageName(msg),
+            (uintptr_t)hWnd,
+            (uintptr_t)::GetCapture(),
+            bd ? bd->MouseButtonsDown : 0,
+            GET_X_LPARAM(lParam),
+            GET_Y_LPARAM(lParam),
+            (uintptr_t)wParam,
+            (uintptr_t)lParam));
+        return 0;
     }
 
-    // =========================
-    // 🎯 Mouse Position Tracking
-    // =========================
+    case WM_CAPTURECHANGED:
+        Logger::Log(LogLevel::Verbose, std::format(
+            "🖱 WndProc {} hwnd=0x{:X} capture=0x{:X} buttons=0x{:X} pos=({}, {}) wParam=0x{:X} lParam=0x{:X}",
+            ImGui_ImplWin32_DebugMouseMessageName(msg),
+            (uintptr_t)hWnd,
+            (uintptr_t)::GetCapture(),
+            bd ? bd->MouseButtonsDown : 0,
+            GET_X_LPARAM(lParam),
+            GET_Y_LPARAM(lParam),
+            (uintptr_t)wParam,
+            (uintptr_t)lParam));
+        if (bd)
+            bd->MouseButtonsDown = 0;
+        return 0;
+
+        // =========================
+        // 🎯 Mouse Position Tracking
+        // =========================
     case WM_MOUSEMOVE:
     {
-        POINT pos = { (LONG)GET_X_LPARAM(lParam), (LONG)GET_Y_LPARAM(lParam) };
-        ::ClientToScreen(hWnd, &pos);
-        io.AddMousePosEvent((float)pos.x, (float)pos.y);
-        Logger::Log(LogLevel::Verbose, std::format("📍 Mouse Move: screen_pos=({}, {})", pos.x, pos.y));
-        return 1;
+        const float x = (float)GET_X_LPARAM(lParam);
+        const float y = (float)GET_Y_LPARAM(lParam);
+        io.AddMousePosEvent(x, y);
+        if (bd)
+        {
+            bd->LastMousePos = ImVec2(x, y);
+            if (bd->MouseButtonsDown != 0)
+            {
+                static int s_wndProcMouseMoveTraceCounter = 0;
+                if ((++s_wndProcMouseMoveTraceCounter % 8) == 0)
+                {
+                    Logger::Log(LogLevel::Verbose, std::format(
+                        "🖱 WndProc {} hwnd=0x{:X} capture=0x{:X} buttons=0x{:X} pos=({}, {}) wParam=0x{:X} lParam=0x{:X}",
+                        ImGui_ImplWin32_DebugMouseMessageName(msg),
+                        (uintptr_t)hWnd,
+                        (uintptr_t)::GetCapture(),
+                        bd->MouseButtonsDown,
+                        GET_X_LPARAM(lParam),
+                        GET_Y_LPARAM(lParam),
+                        (uintptr_t)wParam,
+                        (uintptr_t)lParam));
+                }
+            }
+        }
+        return 0;
     }
 
     // =========================
@@ -1606,8 +1696,7 @@ LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         const ImGuiKey key = ImGui_ImplWin32_VkToImGuiKey(wParam);
         if (key != ImGuiKey_None)
             io.AddKeyEvent(key, true);
-        Logger::Log(LogLevel::Verbose, std::format("⌨️ Key Down: VK=0x{:X}", (int)wParam));
-        return 1;
+        return 0;
     }
 
     case WM_KEYUP:
@@ -1617,16 +1706,14 @@ LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         const ImGuiKey key = ImGui_ImplWin32_VkToImGuiKey(wParam);
         if (key != ImGuiKey_None)
             io.AddKeyEvent(key, false);
-        Logger::Log(LogLevel::Verbose, std::format("⌨️ Key Up: VK=0x{:X}", (int)wParam));
-        return 1;
+        return 0;
     }
 
     case WM_CHAR:
         if (wParam > 0 && wParam < 0x10000)
         {
             io.AddInputCharacterUTF16((ImWchar)wParam);
-            Logger::Log(LogLevel::Verbose, std::format("🔤 Char Input: '{}'", (char)wParam));
-            return 1;
+            return 0;
         }
         break;
 
@@ -1635,13 +1722,33 @@ LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARA
         // =========================
     case WM_SETFOCUS:
         io.AddFocusEvent(true);
-        Logger::Log(LogLevel::Verbose, "🎯 Focus Gained");
-        return 1;
+        Logger::Log(LogLevel::Verbose, std::format(
+            "🖱 WndProc {} hwnd=0x{:X} capture=0x{:X} buttons=0x{:X} pos=({}, {}) wParam=0x{:X} lParam=0x{:X}",
+            ImGui_ImplWin32_DebugMouseMessageName(msg),
+            (uintptr_t)hWnd,
+            (uintptr_t)::GetCapture(),
+            bd ? bd->MouseButtonsDown : 0,
+            GET_X_LPARAM(lParam),
+            GET_Y_LPARAM(lParam),
+            (uintptr_t)wParam,
+            (uintptr_t)lParam));
+        return 0;
 
     case WM_KILLFOCUS:
         io.AddFocusEvent(false);
-        Logger::Log(LogLevel::Verbose, "🚫 Focus Lost");
-        return 1;
+        Logger::Log(LogLevel::Verbose, std::format(
+            "🖱 WndProc {} hwnd=0x{:X} capture=0x{:X} buttons=0x{:X} pos=({}, {}) wParam=0x{:X} lParam=0x{:X}",
+            ImGui_ImplWin32_DebugMouseMessageName(msg),
+            (uintptr_t)hWnd,
+            (uintptr_t)::GetCapture(),
+            bd ? bd->MouseButtonsDown : 0,
+            GET_X_LPARAM(lParam),
+            GET_Y_LPARAM(lParam),
+            (uintptr_t)wParam,
+            (uintptr_t)lParam));
+        if (bd)
+            bd->MouseButtonsDown = 0;
+        return 0;
     }
 
     return 0;
