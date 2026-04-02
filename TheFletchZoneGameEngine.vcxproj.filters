@@ -195,6 +195,9 @@
     <ClInclude Include="Include\BlackFlameAudio.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Include\MaterialContracts.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui_demo.cpp">
@@ -369,6 +372,13 @@
     <None Include="shaders\scene_triangle_ps.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="shaders\scene_selection_overlay_ps.hlsli" />
+    <None Include="docs\CurrentArchitecture.md" />
+    <None Include="docs\RenderingStatus.md" />
+    <None Include="docs\EditorWorkflow.md" />
+    <None Include="docs\Roadmap.md" />
+    <None Include="shaders\scene_cb.hlsli" />
+    <None Include="shaders\material_cb.hlsli" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />

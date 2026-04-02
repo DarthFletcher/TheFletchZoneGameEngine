@@ -46,6 +46,8 @@ public:
 
     Material* CreateMaterial(const std::string& name);
     Material* DuplicateMaterial(const Material& source, const std::string& newName = "");
+    bool RenameMaterialByIndex(int index, const std::string& requestedName, std::string& outRenamedName);
+    bool DeleteMaterialByIndex(int index);
     Material* GetMaterial(const std::string& name);
     Material* GetMaterialByIndex(int index);
     const std::string* GetMaterialNameByIndex(int index) const;

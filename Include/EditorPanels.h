@@ -12,6 +12,7 @@ struct EditorPanel
 namespace EditorPanels
 {
     EditorPanel& Scene();
+    EditorPanel& Game();
     EditorPanel& Hierarchy();
     EditorPanel& Inspector();
     EditorPanel& Assets();

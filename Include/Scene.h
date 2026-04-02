@@ -15,12 +15,34 @@ struct ID3D12GraphicsCommandList;
 
 struct CameraData;
 
+struct SceneGridSettings
+{
+    bool fadeEnabled = true;
+    bool majorLinesEnabled = true;
+    float fadeDistance = 40.0f;
+    float visibility = 1.0f;
+    float majorLineBoost = 1.35f;
+    float axisEmphasis = 1.25f;
+    float extent = 10.0f;
+    int divisions = 20;
+};
+
 enum class ScenePrimitive : uint8_t
 {
     Cube = 0,
     Sphere,
     Plane,
-    Cylinder
+    Cylinder,
+    Empty
+};
+
+struct CameraComponent
+{
+    bool enabled = false;
+    bool isMain = false;
+    float fovY = DirectX::XMConvertToRadians(60.0f);
+    float nearClip = 0.1f;
+    float farClip = 100.0f;
 };
 
 struct SceneInstance
@@ -35,6 +57,7 @@ struct SceneInstance
     bool visible = true;
     int materialIndex = 0;
     ScenePrimitive primitive = ScenePrimitive::Cube;
+    CameraComponent camera;
 };
 
 struct SceneStats
@@ -95,6 +118,8 @@ public:
     static void InitializeResources(ID3D12Device* device);
     static bool IsReady();
     static SceneStats GetLastStats();
+    static void SetGridSettings(const SceneGridSettings& settings);
+    static SceneGridSettings GetGridSettings();
     static void SetTargetInstanceCount(uint32_t count);
     static uint32_t GetTargetInstanceCount();
     static void UpdateLastRenderCameraData(const CameraData& camera);
@@ -119,6 +144,7 @@ public:
     static void RestoreSelectionState(uint32_t activeInstanceId, const std::vector<uint32_t>& selectedInstanceIds);
     static const std::vector<uint32_t>& GetSelectedInstanceIds();
     static bool TryGetSelectionCenter(DirectX::XMFLOAT3& outCenter);
+    static bool TryGetSelectionBounds(DirectX::XMFLOAT3& outCenter, float& outRadius);
     static DirectX::XMFLOAT3 GetSelectionCenterOrActivePosition();
     static bool CanParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId);
     static bool SetParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId, bool keepWorldTransform = true);
@@ -130,15 +156,21 @@ public:
     static SceneInstance* GetSelectedInstance();
     static SceneInstance* GetInstance(size_t index);
     static const std::vector<SceneInstance>& GetInstances();
+    static SceneInstance* GetMainCameraInstanceMutable();
+    static const SceneInstance* GetMainCameraInstance();
+    static bool TryBuildMainCameraData(float aspect, CameraData& outCameraData);
     static bool TryGetLastRenderCameraData(CameraData& outCamera);
     static void RebuildRenderInstancesFromSceneData();
     static void DeleteSelectedInstance();
     static void DuplicateSelectedInstance();
+    static void CreateEmpty(const DirectX::XMFLOAT3& position = { 0.0f, 0.0f, 0.0f });
+    static void CreateCamera(const DirectX::XMFLOAT3& position = { 0.0f, 2.0f, -5.0f });
     static void CreateCube(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
     static void CreateSphere(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
     static void CreatePlane(const DirectX::XMFLOAT3& position = { 0.0f, 0.0f, 0.0f });
     static void CreateCylinder(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
     static void CreatePrimitive(ScenePrimitive primitive, const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
+    static void NewScene();
     static bool SaveSelectedAsPrefab(const std::string& path);
     static bool InstantiatePrefab(const std::string& path, const DirectX::XMFLOAT3& position);
     static bool ApplySelectedToPrefab();

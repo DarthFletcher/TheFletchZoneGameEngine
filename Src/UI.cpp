@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include "Utils.h"
 #include <Windows.h>
+#include <commdlg.h>
 #include <string>
 #include <Engine.h>
 #include <Graphics.h>
@@ -9,6 +10,7 @@
 #include "EditorPanels.h"
 #include "EditorState.h"
 #include "EditorIcons.h"
+#include <filesystem>
 
 ImFont* g_UIFont = nullptr;
 ImFont* g_UIFontBold = nullptr;
@@ -53,6 +55,7 @@ namespace UI {
     static bool g_showImGuiDemo = false;
     static bool g_showImGuiMetrics = false;
     static bool g_showFrameDiag = false;
+    static std::string g_CurrentScenePath;
 
     // Command strip visibility (treated like a panel toggle)
     static bool g_showCommandStrip = true;
@@ -63,6 +66,115 @@ namespace UI {
     static int g_editorShellFrameCounter = 0;
     static bool g_dockspaceTouchedThisFrame = false;
     static bool g_commandStripTouchedThisFrame = false;
+
+    static std::filesystem::path GetDefaultSceneDirectory()
+    {
+        return std::filesystem::path("Assets") / "Scenes";
+    }
+
+    static std::string GetDefaultScenePathString()
+    {
+        return (GetDefaultSceneDirectory() / "NewScene.scene").string();
+    }
+
+    static bool ShowSceneFileDialog(bool saveDialog, std::string& inOutPath)
+    {
+        char fileBuffer[MAX_PATH] = {};
+        const std::string initialPath = inOutPath.empty() ? GetDefaultScenePathString() : inOutPath;
+        strncpy_s(fileBuffer, initialPath.c_str(), _TRUNCATE);
+
+        const std::filesystem::path initialDir = initialPath.empty()
+            ? GetDefaultSceneDirectory()
+            : std::filesystem::path(initialPath).parent_path();
+
+        OPENFILENAMEA ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = Graphics::GetInstance().GetHWND();
+        ofn.lpstrFile = fileBuffer;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.lpstrFilter = "Scene Files (*.scene)\0*.scene\0JSON Scene Files (*.json)\0*.json\0All Files (*.*)\0*.*\0";
+        ofn.nFilterIndex = 1;
+        const std::string initialDirString = initialDir.string();
+        ofn.lpstrInitialDir = initialDirString.empty() ? nullptr : initialDirString.c_str();
+        ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (saveDialog)
+            ofn.Flags |= OFN_OVERWRITEPROMPT;
+        else
+            ofn.Flags |= OFN_FILEMUSTEXIST;
+        ofn.lpstrDefExt = "scene";
+
+        const BOOL result = saveDialog ? GetSaveFileNameA(&ofn) : GetOpenFileNameA(&ofn);
+        if (!result)
+            return false;
+
+        inOutPath = fileBuffer;
+        return true;
+    }
+
+    static bool SaveSceneWithPath(const std::string& path)
+    {
+        if (path.empty())
+            return false;
+        if (!Scene::SaveToFile(path))
+            return false;
+        g_CurrentScenePath = path;
+        return true;
+    }
+
+    static bool SaveSceneAs()
+    {
+        std::string path = g_CurrentScenePath.empty() ? GetDefaultScenePathString() : g_CurrentScenePath;
+        if (!ShowSceneFileDialog(true, path))
+            return false;
+        return SaveSceneWithPath(path);
+    }
+
+    static bool LoadSceneFromDialog()
+    {
+        std::string path = g_CurrentScenePath.empty() ? GetDefaultScenePathString() : g_CurrentScenePath;
+        if (!ShowSceneFileDialog(false, path))
+            return false;
+        if (!Scene::LoadFromFile(path))
+            return false;
+        g_CurrentScenePath = path;
+        if (g_engineInstance)
+            g_engineInstance->GetEditorState().selection.Clear();
+        return true;
+    }
+
+    bool LoadSceneAssetFromPath(const std::string& path)
+    {
+        if (path.empty())
+            return false;
+        if (!Scene::LoadFromFile(path))
+            return false;
+        g_CurrentScenePath = path;
+        if (g_engineInstance)
+            g_engineInstance->GetEditorState().selection.Clear();
+        return true;
+    }
+
+    bool SaveCurrentSceneAsset()
+    {
+        if (g_CurrentScenePath.empty())
+            return SaveSceneAs();
+        return SaveSceneWithPath(g_CurrentScenePath);
+    }
+
+    bool SaveCurrentSceneAssetAs()
+    {
+        return SaveSceneAs();
+    }
+
+    std::string GetCurrentSceneAssetPath()
+    {
+        return g_CurrentScenePath;
+    }
+
+    void SetCurrentSceneAssetPath(const std::string& path)
+    {
+        g_CurrentScenePath = path;
+    }
 
     bool IsImGuiDemoVisible() { return g_showImGuiDemo; }
     bool IsImGuiMetricsVisible() { return g_showImGuiMetrics; }
@@ -435,6 +547,7 @@ namespace UI {
 
             // Names must match ImGui::Begin("...") titles
             ImGui::DockBuilderDockWindow(EditorPanels::Scene().name, dock_main);
+            ImGui::DockBuilderDockWindow(EditorPanels::Game().name, dock_main);
             ImGui::DockBuilderDockWindow(EditorPanels::Hierarchy().name, dock_left);
             ImGui::DockBuilderDockWindow(EditorPanels::Inspector().name, dock_right);
 
@@ -451,12 +564,59 @@ namespace UI {
         // Command strip contents
         static void DrawCommandStripContents()
          {
+             static char s_projectNameBuffer[128] = "MyProject";
+
+             const Engine::State s = Engine::GetState();
+             const bool playing = (s == Engine::State::Playing);
+             const bool paused = (s == Engine::State::Paused);
+             const bool runtimeActive = playing || paused;
+
              // Left
-             if (ImGui::Button(ICON_FA_BARS " Project")) { /* popup later */ }
+             if (ImGui::Button(ICON_FA_BARS " Project##CmdProject"))
+                 ImGui::OpenPopup("Project##CmdProjectPopup");
+             if (ImGui::BeginPopup("Project##CmdProjectPopup"))
+             {
+                 ImGui::InputTextWithHint("##ProjectName", "Project name", s_projectNameBuffer, IM_ARRAYSIZE(s_projectNameBuffer));
+                 if (ImGui::MenuItem("Create Project (Stub)"))
+                 {
+                     const std::filesystem::path projectRoot = std::filesystem::path("Projects") / (s_projectNameBuffer[0] ? s_projectNameBuffer : "MyProject");
+                     std::error_code ec;
+                     std::filesystem::create_directories(projectRoot / "Assets", ec);
+                     std::filesystem::create_directories(projectRoot / "Scenes", ec);
+                     Logger::Log(LogLevel::Info, std::format("Project stub prepared at {}", projectRoot.string()), "[Project]");
+                 }
+                 ImGui::MenuItem("Open Project (Stub)", nullptr, false, false);
+                 ImGui::EndPopup();
+             }
              ImGui::SameLine();
-             if (ImGui::Button("Scene")) {}
+
+             if (ImGui::Button("Scene##CmdScene"))
+                 ImGui::OpenPopup("Scene##CmdScenePopup");
+             if (ImGui::BeginPopup("Scene##CmdScenePopup"))
+             {
+                 if (runtimeActive)
+                     ImGui::BeginDisabled();
+                 if (ImGui::MenuItem("New Scene"))
+                     Engine::NewScene();
+                 if (ImGui::MenuItem("Save Scene"))
+                     Engine::SaveScene();
+                 if (ImGui::MenuItem("Save Scene As..."))
+                     SaveSceneAs();
+                 if (ImGui::MenuItem("Load Scene..."))
+                     LoadSceneFromDialog();
+                 if (runtimeActive)
+                     ImGui::EndDisabled();
+                 ImGui::EndPopup();
+             }
              ImGui::SameLine();
-             if (ImGui::Button("Build")) {}
+
+             if (ImGui::Button("Build##CmdBuild"))
+             {
+                 const std::filesystem::path buildRoot = std::filesystem::path("Build");
+                 std::error_code ec;
+                 std::filesystem::create_directories(buildRoot, ec);
+                 Logger::Log(LogLevel::Info, std::format("Build stub executed at {}", buildRoot.string()), "[Build]");
+             }
 
              // Compute layout metrics
              const ImGuiStyle& style = ImGui::GetStyle();
@@ -468,20 +628,15 @@ namespace UI {
                  return ImGui::CalcTextSize(label).x + framePadX * 2.0f;
              };
 
-             // Engine state
-             const Engine::State s = Engine::GetState();
-             const bool playing = (s == Engine::State::Playing);
-             const bool paused = (s == Engine::State::Paused);
-
              // Use visible labels, but add hidden IDs to keep them unique/stable.
              const char* playLabel = ICON_FA_PLAY " Play##CmdPlay";
-             const char* pauseLabel = ICON_FA_PAUSE " Pause##CmdPause";
+             const char* pauseLabel = paused ? ICON_FA_PLAY " Resume##CmdPause" : ICON_FA_PAUSE " Pause##CmdPause";
              const char* stopLabel = ICON_FA_STOP " Stop##CmdStop";
              const char* settingsLabel = ICON_FA_GEAR " Settings##CmdSettings";
 
              // NOTE: width calculations must use the visible portion, not the hidden IDs.
              const char* playVisible = ICON_FA_PLAY " Play";
-             const char* pauseVisible = ICON_FA_PAUSE " Pause";
+             const char* pauseVisible = paused ? ICON_FA_PLAY " Resume" : ICON_FA_PAUSE " Pause";
              const char* stopVisible = ICON_FA_STOP " Stop";
              const char* settingsVisible = ICON_FA_GEAR " Settings";
 
@@ -529,23 +684,31 @@ namespace UI {
              if (playing)
                  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.70f, 0.20f, 1.0f));
              if (ImGui::Button(playLabel))
-                 Engine::SetState(Engine::State::Playing);
+                  Engine::StartPlayMode();
              if (playing)
                  ImGui::PopStyleColor();
 
              ImGui::SameLine();
 
-             if (paused)
+              if (!runtimeActive)
+                  ImGui::BeginDisabled();
+              if (paused)
                  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80f, 0.70f, 0.10f, 1.0f));
              if (ImGui::Button(pauseLabel))
-                 Engine::SetState(Engine::State::Paused);
+                  Engine::TogglePauseMode();
              if (paused)
                  ImGui::PopStyleColor();
+              if (!runtimeActive)
+                  ImGui::EndDisabled();
 
              ImGui::SameLine();
 
-             if (ImGui::Button(stopLabel))
-                 Engine::SetState(Engine::State::Editing);
+              if (!runtimeActive)
+                  ImGui::BeginDisabled();
+              if (ImGui::Button(stopLabel))
+                  Engine::StopPlayMode();
+              if (!runtimeActive)
+                  ImGui::EndDisabled();
 
             // Right (only right-align if it won't overlap the center group)
             const float afterCenterX = ImGui::GetCursorPosX();
@@ -554,7 +717,26 @@ namespace UI {
             else
                 ImGui::SameLine();
 
-            (void)ImGui::Button(settingsLabel);
+            if (ImGui::Button(settingsLabel))
+                ImGui::OpenPopup("Settings##CmdSettingsPopup");
+            if (ImGui::BeginPopup("Settings##CmdSettingsPopup"))
+            {
+                EditorState* editor = g_engineInstance ? &g_engineInstance->GetEditorState() : nullptr;
+                ImGui::MenuItem("Command Strip", nullptr, &g_showCommandStrip);
+                if (editor)
+                {
+                    ImGui::Separator();
+                    ImGui::MenuItem("Enable Gamepad Camera", nullptr, &editor->enableGamepadCamera);
+                    ImGui::MenuItem("Editor Scene View Culling", nullptr, &editor->enableSceneViewCulling);
+                    ImGui::MenuItem("Invert Look X", nullptr, &editor->invertLookX);
+                    ImGui::MenuItem("Invert Look Y", nullptr, &editor->invertLookY);
+                    ImGui::MenuItem("Smooth Look", nullptr, &editor->smoothLook);
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Reset Layout"))
+                    RequestResetLayout();
+                ImGui::EndPopup();
+            }
          }
      }
 
@@ -713,10 +895,32 @@ namespace UI {
 
          // 📁 File
          if (ImGui::BeginMenu("File")) {
-             if (ImGui::MenuItem("Load Scene", "Ctrl+L")) Scene::LoadFromFile("Assets/Scenes/scene.json");
-             if (ImGui::MenuItem("Save Scene", "Ctrl+S")) Scene::SaveToFile("Assets/Scenes/scene.json");
-             ImGui::Separator();
-             if (ImGui::MenuItem("Exit", "Alt+F4")) PostQuitMessage(0);
+              if (ImGui::MenuItem("New Scene", "Ctrl+N"))
+              {
+                  PushUndoSnapshot();
+                  Scene::NewScene();
+                  g_CurrentScenePath.clear();
+                  if (g_engineInstance)
+                      g_engineInstance->GetEditorState().selection.Clear();
+              }
+              if (ImGui::MenuItem("Load Scene...", "Ctrl+L"))
+                  LoadSceneFromDialog();
+              if (ImGui::MenuItem("Save Scene", "Ctrl+S"))
+              {
+                  if (g_CurrentScenePath.empty())
+                      SaveSceneAs();
+                  else
+                      SaveSceneWithPath(g_CurrentScenePath);
+              }
+              if (ImGui::MenuItem("Save Scene As...", "Ctrl+Shift+S"))
+                  SaveSceneAs();
+              ImGui::Separator();
+              if (ImGui::MenuItem("Exit", "Alt+F4"))
+             {
+                 const HWND exitWindow = Graphics::GetInstance().GetHWND();
+                 if (exitWindow)
+                     PostMessage(exitWindow, WM_CLOSE, 0, 0);
+             }
              ImGui::EndMenu();
          }
 
@@ -730,11 +934,21 @@ namespace UI {
          }
 
          if (ImGui::BeginMenu("Create")) {
-              if (ImGui::MenuItem("Cube"))
-              {
-                  PushUndoSnapshot();
-                  Scene::CreateCube();
-              }
+               if (ImGui::MenuItem("Empty Object"))
+               {
+                   PushUndoSnapshot();
+                   Scene::CreateEmpty();
+               }
+               if (ImGui::MenuItem("Camera"))
+               {
+                   PushUndoSnapshot();
+                   Scene::CreateCamera();
+               }
+               if (ImGui::MenuItem("Cube"))
+               {
+                   PushUndoSnapshot();
+                   Scene::CreateCube();
+               }
               if (ImGui::MenuItem("Sphere"))
               {
                   PushUndoSnapshot();
@@ -797,6 +1011,28 @@ namespace UI {
                  }
                  ImGui::PopID();
              };
+              auto drawStepInt = [](const char* label, int& value, int minValue, int maxValue, int step)
+              {
+                  ImGui::PushID(label);
+                  ImGui::TextUnformatted(label);
+                  ImGui::SameLine();
+                  if (ImGui::SmallButton("-"))
+                  {
+                      value -= step;
+                      if (value < minValue)
+                          value = minValue;
+                  }
+                  ImGui::SameLine();
+                  ImGui::Text("%d", value);
+                  ImGui::SameLine();
+                  if (ImGui::SmallButton("+"))
+                  {
+                      value += step;
+                      if (value > maxValue)
+                          value = maxValue;
+                  }
+                  ImGui::PopID();
+              };
 
              if (ImGui::BeginMenu("Lighting"))
              {
@@ -817,12 +1053,15 @@ namespace UI {
               if (ImGui::BeginMenu("Camera Navigation"))
               {
                   const bool isUnity = (editor.cameraNavMode == CameraNavMode::Unity_AltMouse);
+                  const bool isUnityWASD = (editor.cameraNavMode == CameraNavMode::Unity_WASDMouse);
                   const bool isBlender = (editor.cameraNavMode == CameraNavMode::Blender_MMB);
                   const bool isTFZ = (editor.cameraNavMode == CameraNavMode::TFZ_RMB);
                   const bool isLaptopFriendly = (editor.cameraNavMode == CameraNavMode::Laptop_Friendly);
 
                   if (ImGui::MenuItem("Unity (Alt + Mouse)", nullptr, isUnity))
                       editor.cameraNavMode = CameraNavMode::Unity_AltMouse;
+                  if (ImGui::MenuItem("Unity (WASD + Mouse)", nullptr, isUnityWASD))
+                      editor.cameraNavMode = CameraNavMode::Unity_WASDMouse;
                   if (ImGui::MenuItem("Blender (MMB)", nullptr, isBlender))
                       editor.cameraNavMode = CameraNavMode::Blender_MMB;
                   if (ImGui::MenuItem("TFZ (RMB)", nullptr, isTFZ))
@@ -832,6 +1071,7 @@ namespace UI {
 
                   ImGui::Separator();
                   ImGui::MenuItem("Enable Gamepad Camera", nullptr, &editor.enableGamepadCamera);
+                  ImGui::MenuItem("Editor Scene View Culling", nullptr, &editor.enableSceneViewCulling);
                   ImGui::MenuItem("Invert Look X", nullptr, &editor.invertLookX);
                   ImGui::MenuItem("Invert Look Y", nullptr, &editor.invertLookY);
                   ImGui::MenuItem("Smooth Look", nullptr, &editor.smoothLook);
@@ -839,6 +1079,41 @@ namespace UI {
                   drawStepFloat("Fly Look Speed", editor.flyLookSpeed, 0.0005f, 0.0060f, 0.0005f, "%.4f");
                   drawStepFloat("Orbit Look Speed", editor.orbitLookSpeed, 0.0010f, 0.0120f, 0.0005f, "%.4f");
                   drawStepFloat("Fly Move Speed", editor.flyMoveSpeed, 1.0f, 50.0f, 1.0f, "%.1f");
+                  if (editor.enableGamepadCamera)
+                  {
+                      ImGui::Separator();
+                      ImGui::TextUnformatted("Gamepad Camera");
+                      drawStepFloat("Stick Deadzone", editor.gamepadStickDeadzone, 0.05f, 0.35f, 0.01f, "%.2f");
+                      drawStepFloat("Look Sensitivity", editor.gamepadLookSensitivity, 0.25f, 3.0f, 0.05f, "%.2f");
+                      drawStepFloat("Move Sensitivity", editor.gamepadMoveSensitivity, 0.25f, 3.0f, 0.05f, "%.2f");
+                      drawStepFloat("Zoom Sensitivity", editor.gamepadZoomSensitivity, 0.25f, 3.0f, 0.05f, "%.2f");
+                  }
+
+                  ImGui::Separator();
+                  if (ImGui::BeginMenu("Grid"))
+                  {
+                      ImGui::MenuItem("Enable Distance Fade", nullptr, &editor.gridFadeEnabled);
+                      ImGui::MenuItem("Strengthen Major Lines", nullptr, &editor.gridMajorLinesEnabled);
+                      drawStepFloat("Fade Distance", editor.gridFadeDistance, 5.0f, 200.0f, 5.0f, "%.0f");
+                      drawStepFloat("Visibility", editor.gridVisibility, 0.10f, 2.00f, 0.05f, "%.2f");
+                      drawStepFloat("Major Line Boost", editor.gridMajorLineBoost, 1.00f, 3.00f, 0.05f, "%.2f");
+                      drawStepFloat("Axis Emphasis", editor.gridAxisEmphasis, 1.00f, 3.00f, 0.05f, "%.2f");
+                      drawStepFloat("Grid Extent", editor.gridExtent, 1.0f, 200.0f, 1.0f, "%.0f");
+                      drawStepInt("Grid Divisions", editor.gridDivisions, 2, 200, 2);
+                      ImGui::Separator();
+                      if (ImGui::MenuItem("Reset Grid Defaults"))
+                      {
+                          editor.gridFadeEnabled = true;
+                          editor.gridMajorLinesEnabled = true;
+                          editor.gridFadeDistance = 40.0f;
+                          editor.gridVisibility = 1.0f;
+                          editor.gridMajorLineBoost = 1.35f;
+                          editor.gridAxisEmphasis = 1.25f;
+                          editor.gridExtent = 10.0f;
+                          editor.gridDivisions = 20;
+                      }
+                      ImGui::EndMenu();
+                  }
 
                   ImGui::EndMenu();
               }
@@ -878,6 +1153,55 @@ namespace UI {
                   ImGui::EndMenu();
               }
 
+              if (ImGui::BeginMenu("Debug Views"))
+              {
+                  const bool isLit = (editor.sceneDebugViewMode == SceneDebugViewMode::Lit);
+                  const bool isAlbedo = (editor.sceneDebugViewMode == SceneDebugViewMode::Albedo);
+                  const bool isNormals = (editor.sceneDebugViewMode == SceneDebugViewMode::Normals);
+                  const bool isMetallic = (editor.sceneDebugViewMode == SceneDebugViewMode::Metallic);
+                  const bool isRoughness = (editor.sceneDebugViewMode == SceneDebugViewMode::Roughness);
+                  const bool isLightingOnly = (editor.sceneDebugViewMode == SceneDebugViewMode::LightingOnly);
+                  const bool isAmbientOnly = (editor.sceneDebugViewMode == SceneDebugViewMode::AmbientOnly);
+                  const bool isSpecularOnly = (editor.sceneDebugViewMode == SceneDebugViewMode::SpecularOnly);
+                  const bool isSelectionMask = (editor.sceneDebugViewMode == SceneDebugViewMode::SelectionMask);
+                  const bool isDepth = (editor.sceneDebugViewMode == SceneDebugViewMode::Depth);
+                  const bool isLinearDepth = (editor.sceneDebugViewMode == SceneDebugViewMode::LinearDepth);
+                  const bool isWorldPosition = (editor.sceneDebugViewMode == SceneDebugViewMode::WorldPosition);
+                  const bool isUVs = (editor.sceneDebugViewMode == SceneDebugViewMode::UVs);
+                  const bool isLightDirection = (editor.sceneDebugViewMode == SceneDebugViewMode::LightDirection);
+
+                  if (ImGui::MenuItem("Lit", nullptr, isLit))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::Lit;
+                  if (ImGui::MenuItem("Albedo", nullptr, isAlbedo))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::Albedo;
+                  if (ImGui::MenuItem("Normals", nullptr, isNormals))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::Normals;
+                  if (ImGui::MenuItem("Metallic", nullptr, isMetallic))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::Metallic;
+                  if (ImGui::MenuItem("Roughness", nullptr, isRoughness))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::Roughness;
+                  if (ImGui::MenuItem("Lighting Only", nullptr, isLightingOnly))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::LightingOnly;
+                  if (ImGui::MenuItem("Ambient Only", nullptr, isAmbientOnly))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::AmbientOnly;
+                  if (ImGui::MenuItem("Specular Only", nullptr, isSpecularOnly))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::SpecularOnly;
+                  if (ImGui::MenuItem("Selection Mask", nullptr, isSelectionMask))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::SelectionMask;
+                  if (ImGui::MenuItem("Depth", nullptr, isDepth))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::Depth;
+                  if (ImGui::MenuItem("Linear Depth", nullptr, isLinearDepth))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::LinearDepth;
+                  if (ImGui::MenuItem("World Position", nullptr, isWorldPosition))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::WorldPosition;
+                  if (ImGui::MenuItem("UVs", nullptr, isUVs))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::UVs;
+                  if (ImGui::MenuItem("Light Direction", nullptr, isLightDirection))
+                      editor.sceneDebugViewMode = SceneDebugViewMode::LightDirection;
+
+                  ImGui::EndMenu();
+              }
+
               if (ImGui::BeginMenu("Theme")) {
                   if (ImGui::MenuItem("Dark", nullptr, currentTheme == Theme::Dark))         ApplyTheme(Theme::Dark);
                   if (ImGui::MenuItem("Light", nullptr, currentTheme == Theme::Light))       ApplyTheme(Theme::Light);
@@ -889,6 +1213,7 @@ namespace UI {
 
               if (ImGui::BeginMenu("Panels")) {
                   auto& scene = EditorPanels::Scene();
+                  auto& game = EditorPanels::Game();
                   auto& hierarchy = EditorPanels::Hierarchy();
                   auto& inspector = EditorPanels::Inspector();
                   auto& assets = EditorPanels::Assets();
@@ -902,6 +1227,7 @@ namespace UI {
                   auto& logViewer = EditorPanels::LogViewer();
 
                   ImGui::MenuItem(scene.name, nullptr, &scene.open);
+                  ImGui::MenuItem(game.name, nullptr, &game.open);
                   ImGui::MenuItem(hierarchy.name, nullptr, &hierarchy.open);
                   ImGui::MenuItem(inspector.name, nullptr, &inspector.open);
                   ImGui::MenuItem(assets.name, nullptr, &assets.open);

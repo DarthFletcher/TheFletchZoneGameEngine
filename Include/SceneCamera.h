@@ -38,7 +38,8 @@ public:
     void SetProjectionMode(ProjectionMode mode) { projectionMode_ = mode; }
     ProjectionMode GetProjectionMode() const { return projectionMode_; }
     void ToggleProjectionMode() { projectionMode_ = (projectionMode_ == ProjectionMode::Perspective) ? ProjectionMode::Orthographic : ProjectionMode::Perspective; }
-    void SetNavigationTuning(bool invertX, bool invertY, bool smoothLook, float lookSmoothing, float flyLookSpeed, float orbitLookSpeed, float flyMoveSpeed);
+    void SetNavigationTuning(bool invertX, bool invertY, bool smoothLook, float lookSmoothing, float flyLookSpeed, float orbitLookSpeed, float flyMoveSpeed,
+        float gamepadStickDeadzone, float gamepadLookSensitivity, float gamepadMoveSensitivity, float gamepadZoomSensitivity);
 
     void SetViewPreset(ViewPreset preset);
     ViewPreset GetViewPreset() const { return viewPreset_; }
@@ -94,6 +95,10 @@ private:
     float flyLookSpeed_ = 0.0018f;
     float orbitLookSpeed_ = 0.0055f;
     float flyMoveSpeed_ = 8.0f;
+    float gamepadStickDeadzone_ = 0.18f;
+    float gamepadLookSensitivity_ = 1.0f;
+    float gamepadMoveSensitivity_ = 1.0f;
+    float gamepadZoomSensitivity_ = 1.0f;
     bool orbitInteracting_ = false;
     bool gamepadFocusPressed_ = false;
     DirectX::XMFLOAT2 smoothedLookDelta_{ 0.0f, 0.0f };

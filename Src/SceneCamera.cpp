@@ -20,6 +20,34 @@ namespace
         return XMVector3Normalize(v);
     }
 
+    static float ApplyGamepadResponse(float value, float deadzone, float exponent = 1.6f)
+    {
+        const float sign = (value < 0.0f) ? -1.0f : 1.0f;
+        const float magnitude = std::fabs(value);
+        if (magnitude <= deadzone)
+            return 0.0f;
+
+        const float normalized = (magnitude - deadzone) / (1.0f - deadzone);
+        return sign * std::pow((std::clamp)(normalized, 0.0f, 1.0f), exponent);
+    }
+
+    static float ApplyGamepadTriggerResponse(float value, float deadzone, float exponent = 1.35f)
+    {
+        if (value <= deadzone)
+            return 0.0f;
+        const float normalized = (value - deadzone) / (1.0f - deadzone);
+        return std::pow((std::clamp)(normalized, 0.0f, 1.0f), exponent);
+    }
+
+    static float ComputeOrbitMinDistance()
+    {
+        DirectX::XMFLOAT3 selectionCenter{};
+        float selectionRadius = 0.0f;
+        if (Scene::TryGetSelectionBounds(selectionCenter, selectionRadius))
+            return (std::clamp)(selectionRadius * 0.6f, 0.5f, 50.0f);
+        return 0.25f;
+    }
+
     static void SyncYawPitchFromView(XMVECTOR eye, XMVECTOR target, float& yaw, float& pitch);
 
     static bool TryGetPrimaryGamepad(const Input*& outInput, int& outControllerId)
@@ -217,7 +245,8 @@ void SceneCamera::SetViewPreset(ViewPreset preset)
     }
 }
 
-void SceneCamera::SetNavigationTuning(bool invertX, bool invertY, bool smoothLook, float lookSmoothing, float flyLookSpeed, float orbitLookSpeed, float flyMoveSpeed)
+void SceneCamera::SetNavigationTuning(bool invertX, bool invertY, bool smoothLook, float lookSmoothing, float flyLookSpeed, float orbitLookSpeed, float flyMoveSpeed,
+    float gamepadStickDeadzone, float gamepadLookSensitivity, float gamepadMoveSensitivity, float gamepadZoomSensitivity)
 {
     invertLookX_ = invertX;
     invertLookY_ = invertY;
@@ -226,6 +255,10 @@ void SceneCamera::SetNavigationTuning(bool invertX, bool invertY, bool smoothLoo
     flyLookSpeed_ = (std::max)(flyLookSpeed, 0.0001f);
     orbitLookSpeed_ = (std::max)(orbitLookSpeed, 0.0001f);
     flyMoveSpeed_ = (std::max)(flyMoveSpeed, 0.1f);
+    gamepadStickDeadzone_ = (std::clamp)(gamepadStickDeadzone, 0.05f, 0.35f);
+    gamepadLookSensitivity_ = (std::clamp)(gamepadLookSensitivity, 0.25f, 3.0f);
+    gamepadMoveSensitivity_ = (std::clamp)(gamepadMoveSensitivity, 0.25f, 3.0f);
+    gamepadZoomSensitivity_ = (std::clamp)(gamepadZoomSensitivity, 0.25f, 3.0f);
 }
 
 DirectX::XMFLOAT3 SceneCamera::GetPosition() const
@@ -264,7 +297,7 @@ DirectX::XMFLOAT3 SceneCamera::GetUp() const
 
 void SceneCamera::FocusOn(const XMFLOAT3& position, float distance)
 {
-    distance_ = (std::clamp)(distance, 0.25f, 500.0f);
+    distance_ = (std::clamp)(distance, ComputeOrbitMinDistance(), 500.0f);
 
     orbitPivot_ = XMVectorSet(position.x, position.y, position.z, 1.0f);
     XMVECTOR forward = NormalizeOrFallback(target_ - eye_, XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f));
@@ -314,11 +347,19 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
     const Input* gamepadInput = nullptr;
     int controllerId = -1;
     const bool hasGamepad = TryGetPrimaryGamepad(gamepadInput, controllerId);
-    const float gamepadLeftX = hasGamepad ? gamepadInput->GetGamepadLeftStickX(controllerId) : 0.0f;
-    const float gamepadLeftY = hasGamepad ? gamepadInput->GetGamepadLeftStickY(controllerId) : 0.0f;
-    const float gamepadRightX = hasGamepad ? gamepadInput->GetGamepadRightStickX(controllerId) : 0.0f;
-    const float gamepadRightY = hasGamepad ? gamepadInput->GetGamepadRightStickY(controllerId) : 0.0f;
-    const float gamepadZoom = hasGamepad ? (gamepadInput->GetGamepadRightTrigger(controllerId) - gamepadInput->GetGamepadLeftTrigger(controllerId)) : 0.0f;
+    const float rawGamepadLeftX = hasGamepad ? gamepadInput->GetGamepadLeftStickX(controllerId) : 0.0f;
+    const float rawGamepadLeftY = hasGamepad ? gamepadInput->GetGamepadLeftStickY(controllerId) : 0.0f;
+    const float rawGamepadRightX = hasGamepad ? gamepadInput->GetGamepadRightStickX(controllerId) : 0.0f;
+    const float rawGamepadRightY = hasGamepad ? gamepadInput->GetGamepadRightStickY(controllerId) : 0.0f;
+    const float rawGamepadZoom = hasGamepad ? (gamepadInput->GetGamepadRightTrigger(controllerId) - gamepadInput->GetGamepadLeftTrigger(controllerId)) : 0.0f;
+    const float gamepadLeftX = ApplyGamepadResponse(rawGamepadLeftX, gamepadStickDeadzone_, 1.55f);
+    const float gamepadLeftY = ApplyGamepadResponse(rawGamepadLeftY, gamepadStickDeadzone_, 1.55f);
+    const float gamepadRightX = ApplyGamepadResponse(rawGamepadRightX, (std::clamp)(gamepadStickDeadzone_ + 0.04f, 0.08f, 0.40f), 1.85f);
+    const float gamepadRightY = ApplyGamepadResponse(rawGamepadRightY, (std::clamp)(gamepadStickDeadzone_ + 0.04f, 0.08f, 0.40f), 1.85f);
+    const float gamepadZoom = hasGamepad
+        ? ((ApplyGamepadTriggerResponse(gamepadInput->GetGamepadRightTrigger(controllerId), 0.08f, 1.3f)
+            - ApplyGamepadTriggerResponse(gamepadInput->GetGamepadLeftTrigger(controllerId), 0.08f, 1.3f)) * gamepadZoomSensitivity_)
+        : 0.0f;
     const bool gamepadSlow = hasGamepad && gamepadInput->IsGamepadButtonPressed(controllerId, XINPUT_GAMEPAD_LEFT_SHOULDER);
     const bool gamepadFast = hasGamepad && gamepadInput->IsGamepadButtonPressed(controllerId, XINPUT_GAMEPAD_RIGHT_SHOULDER);
     const bool gamepadFocus = hasGamepad && gamepadInput->IsGamepadButtonPressed(controllerId, XINPUT_GAMEPAD_A);
@@ -330,7 +371,7 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
     {
         DirectX::XMFLOAT3 focusPoint{};
         if (Scene::TryGetSelectionCenter(focusPoint))
-            FocusOnPoint(focusPoint, (std::max)(distance_, 5.0f));
+            FocusOnPoint(focusPoint, (std::max)(distance_, ComputeOrbitMinDistance() * 2.0f));
     }
     gamepadFocusPressed_ = gamepadFocus;
 
@@ -342,7 +383,7 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
 
         if (tickMouseWheel != 0.0f || gamepadZoomActive)
         {
-            const float zoomInput = tickMouseWheel + gamepadZoom * (tickDeltaTime * 6.0f);
+            const float zoomInput = tickMouseWheel + gamepadZoom * (tickDeltaTime * 4.0f);
             const float zoomSpeed = (io.KeyShift || gamepadFast) ? 0.08f : 0.12f;
             orthoHeight_ *= (1.0f - zoomInput * zoomSpeed);
             orthoHeight_ = (std::clamp)(orthoHeight_, 0.05f, 5000.0f);
@@ -356,8 +397,8 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
             if (gamepadSlow)
                 panScale *= 0.35f;
 
-            const float panDeltaX = tickMouseDeltaX + gamepadLeftX * (220.0f * tickDeltaTime);
-            const float panDeltaY = tickMouseDeltaY + (-gamepadLeftY * (220.0f * tickDeltaTime));
+            const float panDeltaX = tickMouseDeltaX + gamepadLeftX * (160.0f * gamepadMoveSensitivity_ * tickDeltaTime);
+            const float panDeltaY = tickMouseDeltaY + (-gamepadLeftY * (160.0f * gamepadMoveSensitivity_ * tickDeltaTime));
             const XMVECTOR panOffset = XMVectorSet(-panDeltaX * panScale, panDeltaY * panScale, 0.0f, 0.0f);
             eye_ += panOffset;
             orbitPivot_ += panOffset;
@@ -373,7 +414,7 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
     const bool alt = io.KeyAlt;
     const bool ctrl = io.KeyCtrl;
     const bool shift = io.KeyShift;
-    const bool orbitMode = (navMode == CameraNavMode::Unity_AltMouse || navMode == CameraNavMode::Blender_MMB || navMode == CameraNavMode::Laptop_Friendly);
+    const bool orbitMode = (navMode == CameraNavMode::Unity_AltMouse || navMode == CameraNavMode::Unity_WASDMouse || navMode == CameraNavMode::Blender_MMB || navMode == CameraNavMode::Laptop_Friendly);
 
     bool orbit = false;
     bool pan = false;
@@ -386,6 +427,13 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
         orbit = alt && lmbDown;
         pan = alt && mmbDown;
         dolly = alt && rmbDown;
+        break;
+
+    case CameraNavMode::Unity_WASDMouse:
+        orbit = alt && lmbDown;
+        pan = alt && mmbDown;
+        dolly = alt && rmbDown;
+        fly = rmbDown && !alt;
         break;
 
     case CameraNavMode::Blender_MMB:
@@ -436,13 +484,13 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
     else if (!orbitInteracting_)
     {
         orbitPivot_ = target_;
-        distance_ = (std::max)(0.25f, XMVectorGetX(XMVector3Length(target_ - eye_)));
+        distance_ = (std::max)(ComputeOrbitMinDistance(), XMVectorGetX(XMVector3Length(target_ - eye_)));
         SyncYawPitchFromView(eye_, target_, yaw_, pitch_);
         orbitInteracting_ = true;
     }
 
-    float lookDeltaX = tickMouseDeltaX + gamepadRightX * (220.0f * tickDeltaTime);
-    float lookDeltaY = tickMouseDeltaY + (-gamepadRightY * (220.0f * tickDeltaTime));
+    float lookDeltaX = tickMouseDeltaX + gamepadRightX * (150.0f * gamepadLookSensitivity_ * tickDeltaTime);
+    float lookDeltaY = tickMouseDeltaY + (-gamepadRightY * (150.0f * gamepadLookSensitivity_ * tickDeltaTime));
     if (smoothLook_ && lookActive)
     {
         const float rawAlpha = 1.0f - lookSmoothing_;
@@ -468,7 +516,7 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
     {
         if (projectionMode_ == ProjectionMode::Orthographic)
         {
-            const float zoomInput = tickMouseWheel + gamepadZoom * (tickDeltaTime * 6.0f);
+            const float zoomInput = tickMouseWheel + gamepadZoom * (tickDeltaTime * 4.0f);
             const float zoomSpeed = (shift || gamepadFast) ? 0.08f : 0.12f;
             orthoHeight_ *= (1.0f - zoomInput * zoomSpeed);
             orthoHeight_ = (std::clamp)(orthoHeight_, 0.05f, 5000.0f);
@@ -480,7 +528,7 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
             {
                 const float zoomFactor = 1.0f - zoomInput * (shift ? 0.06f : 0.10f);
                 distance_ *= zoomFactor;
-                distance_ = (std::clamp)(distance_, 0.25f, 500.0f);
+                distance_ = (std::clamp)(distance_, ComputeOrbitMinDistance(), 500.0f);
                 eye_ = orbitPivot_ - forward * distance_;
                 target_ = orbitPivot_;
             }
@@ -500,10 +548,10 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
     {
         if (orbitMode)
         {
-            const float zoomInput = tickMouseDeltaY - gamepadZoom * (tickDeltaTime * 120.0f);
+            const float zoomInput = tickMouseDeltaY - gamepadZoom * (tickDeltaTime * 90.0f);
             const float zoomFactor = 1.0f + zoomInput * ((shift || gamepadFast) ? 0.01f : 0.02f);
             distance_ *= zoomFactor;
-            distance_ = (std::clamp)(distance_, 0.25f, 500.0f);
+            distance_ = (std::clamp)(distance_, ComputeOrbitMinDistance(), 500.0f);
             eye_ = orbitPivot_ - forward * distance_;
             target_ = orbitPivot_;
         }
@@ -512,7 +560,7 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
             float dollySpeed = ((shift || gamepadFast) ? 0.02f : 0.035f) * (std::max)(distance_, 0.25f);
             if (gamepadSlow)
                 dollySpeed *= 0.35f;
-            const XMVECTOR dollyOffset = forward * ((-tickMouseDeltaY + gamepadZoom * (tickDeltaTime * 120.0f)) * dollySpeed);
+            const XMVECTOR dollyOffset = forward * ((-tickMouseDeltaY + gamepadZoom * (tickDeltaTime * 90.0f)) * dollySpeed);
             eye_ += dollyOffset;
             target_ += dollyOffset;
         }
@@ -541,8 +589,8 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
             panScale *= 2.0f;
         if (gamepadSlow)
             panScale *= 0.35f;
-        const float panDeltaX = tickMouseDeltaX + gamepadLeftX * (220.0f * tickDeltaTime);
-        const float panDeltaY = tickMouseDeltaY + (-gamepadLeftY * (220.0f * tickDeltaTime));
+        const float panDeltaX = tickMouseDeltaX + gamepadLeftX * (170.0f * gamepadMoveSensitivity_ * tickDeltaTime);
+        const float panDeltaY = tickMouseDeltaY + (-gamepadLeftY * (170.0f * gamepadMoveSensitivity_ * tickDeltaTime));
         const XMVECTOR panOffset = (right * (-panDeltaX * panScale)) + (up * (panDeltaY * panScale));
         eye_ += panOffset;
         if (orbitMode)
@@ -578,8 +626,8 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
         if (ImGui::IsKeyDown(ImGuiKey_D)) move += right * speed;
         if (ImGui::IsKeyDown(ImGuiKey_Q)) move -= worldUp * speed;
         if (ImGui::IsKeyDown(ImGuiKey_E)) move += worldUp * speed;
-        move += forward * (gamepadLeftY * speed);
-        move += right * (gamepadLeftX * speed);
+        move += forward * (gamepadLeftY * speed * gamepadMoveSensitivity_);
+        move += right * (gamepadLeftX * speed * gamepadMoveSensitivity_);
 
         eye_ += move;
         const float flyTargetDistance = (std::max)(distance_, 5.0f);
@@ -591,7 +639,7 @@ void SceneCamera::UpdateEditorNavigation(float deltaTime, bool allowInput, Camer
     if (!fly && !orbit && !orbitMode)
     {
         const XMVECTOR viewDir = NormalizeOrFallback(target_ - eye_, XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f));
-        distance_ = (std::max)(0.25f, XMVectorGetX(XMVector3Length(target_ - eye_)));
+        distance_ = (std::max)(ComputeOrbitMinDistance(), XMVectorGetX(XMVector3Length(target_ - eye_)));
         target_ = eye_ + viewDir * distance_;
     }
 }

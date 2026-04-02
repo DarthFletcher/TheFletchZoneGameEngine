@@ -18,6 +18,7 @@ class Entity;
 enum class CameraNavMode : uint8_t
 {
     Unity_AltMouse = 0,   // Alt + LMB/MMB/RMB
+    Unity_WASDMouse,      // RMB look + WASD/QE fly, Alt + mouse orbit
     Blender_MMB,          // MMB orbit/pan
     TFZ_RMB,              // RMB orbit + MMB pan (TFZ style)
     Laptop_Friendly       // Alt + LMB orbit, Shift + LMB pan, Alt + RMB dolly
@@ -33,6 +34,24 @@ enum class GizmoPivotMode : uint8_t
 {
     Pivot = 0,
     Center
+};
+
+enum class SceneDebugViewMode : uint32_t
+{
+    Lit = 0,
+    Albedo,
+    Normals,
+    Metallic,
+    Roughness,
+    LightingOnly,
+    AmbientOnly,
+    SpecularOnly,
+    SelectionMask,
+    Depth,
+    LinearDepth,
+    WorldPosition,
+    UVs,
+    LightDirection
 };
 
 // =====================================================
@@ -136,10 +155,24 @@ struct EditorState
     bool invertLookY = false;
     bool smoothLook = true;
     bool enableGamepadCamera = true;
+    bool enableSceneViewCulling = false;
     float lookSmoothing = 0.22f;
     float flyLookSpeed = 0.0018f;
     float orbitLookSpeed = 0.0055f;
     float flyMoveSpeed = 8.0f;
+    float gamepadStickDeadzone = 0.18f;
+    float gamepadLookSensitivity = 1.0f;
+    float gamepadMoveSensitivity = 1.0f;
+    float gamepadZoomSensitivity = 1.0f;
+    bool gridFadeEnabled = true;
+    bool gridMajorLinesEnabled = true;
+    float gridFadeDistance = 40.0f;
+    float gridVisibility = 1.0f;
+    float gridMajorLineBoost = 1.35f;
+    float gridAxisEmphasis = 1.25f;
+    float gridExtent = 10.0f;
+    int gridDivisions = 20;
+    SceneDebugViewMode sceneDebugViewMode = SceneDebugViewMode::Lit;
 
     // Core interaction state
     EditorSelection selection;

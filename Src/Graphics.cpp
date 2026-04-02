@@ -103,7 +103,8 @@ static UINT g_SRVDescriptorIndex = 1; // slot 0 reserved for ImGui font
 // Reserve stable SRV slots for engine-owned ImGui textures to avoid descriptor leaks/overflow during resize spam.
 static constexpr UINT kSceneSrvDescriptorIndex = 1;
 static constexpr UINT kBlackFlameSrvDescriptorIndex = 2;
-static constexpr UINT kFirstDynamicSrvDescriptorIndex = kBlackFlameSrvDescriptorIndex + 1;
+static constexpr UINT kGameSrvDescriptorIndex = 3;
+static constexpr UINT kFirstDynamicSrvDescriptorIndex = kGameSrvDescriptorIndex + 1;
 static constexpr const char* kBlackFlameCardTexturePath = "Assets/Icons/The_Fletch_Zone_Icon.png";
 
 static void RequestScreenshot();
@@ -152,6 +153,203 @@ static const char* D3D12StateToString(D3D12_RESOURCE_STATES s)
     case D3D12_RESOURCE_STATE_COPY_SOURCE: return "COPY_SOURCE";
     default: return "(other)";
     }
+}
+
+void Graphics::EnsureGameRenderTarget(UINT width, UINT height)
+{
+    if (!device)
+        return;
+
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+
+    if (gameRenderTarget && gameRtvHeap && gameSrvCpu.ptr != 0 && gameSrvGpu.ptr != 0 &&
+        gameRTWidth == width && gameRTHeight == height)
+        return;
+
+    EnqueueDeferredRelease(gameRenderTarget);
+    EnqueueDeferredRelease(gameDepth);
+    gameRtvHeap.Reset();
+    gameDsvHeap.Reset();
+
+    gameRTWidth = width;
+    gameRTHeight = height;
+
+    {
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = width;
+        desc.Height = height;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+        static const float kGameClearColor[4] = { 0.05f, 0.07f, 0.12f, 1.0f };
+        D3D12_CLEAR_VALUE clear{};
+        clear.Format = desc.Format;
+        clear.Color[0] = kGameClearColor[0];
+        clear.Color[1] = kGameClearColor[1];
+        clear.Color[2] = kGameClearColor[2];
+        clear.Color[3] = kGameClearColor[3];
+
+        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+        const HRESULT hr = device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clear,
+            IID_PPV_ARGS(&gameRenderTarget));
+
+        if (FAILED(hr) || !gameRenderTarget)
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ EnsureGameRenderTarget: failed to create game RT HR=0x{:08X}", (UINT)hr));
+            gameRTWidth = gameRTHeight = 0;
+            return;
+        }
+
+        gameRTState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC rtvDesc{};
+        rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        rtvDesc.NumDescriptors = 1;
+        rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+        const HRESULT hr = device->CreateDescriptorHeap(&rtvDesc, IID_PPV_ARGS(&gameRtvHeap));
+        if (FAILED(hr) || !gameRtvHeap)
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ EnsureGameRenderTarget: failed to create game RTV heap HR=0x{:08X}", (UINT)hr));
+            gameRTWidth = gameRTHeight = 0;
+            gameRenderTarget.Reset();
+            return;
+        }
+
+        gameRtvHandle = gameRtvHeap->GetCPUDescriptorHandleForHeapStart();
+        device->CreateRenderTargetView(gameRenderTarget.Get(), nullptr, gameRtvHandle);
+    }
+
+    {
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = width;
+        desc.Height = height;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_D32_FLOAT;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+        D3D12_CLEAR_VALUE clear{};
+        clear.Format = DXGI_FORMAT_D32_FLOAT;
+        clear.DepthStencil.Depth = 1.0f;
+        clear.DepthStencil.Stencil = 0;
+
+        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
+        const HRESULT hr = device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &desc,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            &clear,
+            IID_PPV_ARGS(&gameDepth));
+
+        if (FAILED(hr) || !gameDepth)
+        {
+            Logger::Log(LogLevel::Error, std::format("❌ EnsureGameRenderTarget: failed to create game depth HR=0x{:08X}", (UINT)hr));
+            gameDsvHeap.Reset();
+            gameDsvHandle = {};
+            gameDepthState = D3D12_RESOURCE_STATE_COMMON;
+        }
+        else
+        {
+            gameDepthState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+
+            D3D12_DESCRIPTOR_HEAP_DESC dsvDesc{};
+            dsvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+            dsvDesc.NumDescriptors = 1;
+            dsvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+            const HRESULT hrH = device->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(&gameDsvHeap));
+            if (FAILED(hrH) || !gameDsvHeap)
+            {
+                Logger::Log(LogLevel::Error, std::format("❌ EnsureGameRenderTarget: failed to create game DSV heap HR=0x{:08X}", (UINT)hrH));
+                EnqueueDeferredRelease(gameDepth);
+                gameDsvHandle = {};
+                gameDepthState = D3D12_RESOURCE_STATE_COMMON;
+            }
+            else
+            {
+                gameDsvHandle = gameDsvHeap->GetCPUDescriptorHandleForHeapStart();
+                D3D12_DEPTH_STENCIL_VIEW_DESC view{};
+                view.Format = DXGI_FORMAT_D32_FLOAT;
+                view.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+                view.Flags = D3D12_DSV_FLAG_NONE;
+                device->CreateDepthStencilView(gameDepth.Get(), &view, gameDsvHandle);
+            }
+        }
+    }
+
+    {
+        gameSrvCpu = {};
+        gameSrvGpu = {};
+        gameImGuiTextureID = (ImTextureID)0;
+
+        if (imguiHeap)
+        {
+            const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = imguiHeap->GetCPUDescriptorHandleForHeapStart();
+            const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = imguiHeap->GetGPUDescriptorHandleForHeapStart();
+            gameSrvCpu.ptr = cpuStart.ptr + (SIZE_T)kGameSrvDescriptorIndex * (SIZE_T)inc;
+            gameSrvGpu.ptr = gpuStart.ptr + (UINT64)kGameSrvDescriptorIndex * (UINT64)inc;
+            gameImGuiTextureID = (ImTextureID)gameSrvGpu.ptr;
+            if (g_SRVDescriptorIndex <= kGameSrvDescriptorIndex)
+                g_SRVDescriptorIndex = kFirstDynamicSrvDescriptorIndex;
+
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MipLevels = 1;
+            device->CreateShaderResourceView(gameRenderTarget.Get(), &srvDesc, gameSrvCpu);
+        }
+    }
+}
+
+void Graphics::RequestGameRenderTargetResize(UINT width, UINT height)
+{
+    RequestGameRenderTargetResize(width, height, ResizeSource::Unknown);
+}
+
+void Graphics::RequestGameRenderTargetResize(UINT width, UINT height, ResizeSource source)
+{
+    width = (std::max)(1u, width);
+    height = (std::max)(1u, height);
+
+    if (gameRTWidth == width && gameRTHeight == height && !pendingGameRTResize)
+        return;
+
+    pendingGameRTW = width;
+    pendingGameRTH = height;
+    pendingGameRTResize = true;
+    pendingGameRTResizeSource = source;
+}
+
+void Graphics::ProcessPendingGameRenderTargetResize()
+{
+    if (!pendingGameRTResize)
+        return;
+
+    EnsureGameRenderTarget(pendingGameRTW, pendingGameRTH);
+    pendingGameRTResize = false;
+    pendingGameRTW = 0;
+    pendingGameRTH = 0;
+    pendingGameRTResizeSource = ResizeSource::Unknown;
 }
 
 // Debug utilities for D3D12 InfoQueue (debug builds only)
@@ -374,6 +572,8 @@ void Graphics::AssertNotInRender(const char* reason)
 
 Graphics::Graphics() : commandListOpen(false) {
     frameStart = std::chrono::high_resolution_clock::now();
+    gameCamera.SetLookAt(DirectX::XMFLOAT3(0.0f, 5.0f, -10.0f), DirectX::XMFLOAT3(0.0f, 0.5f, 0.0f), DirectX::XMFLOAT3(0.0f, 1.0f, 0.0f));
+    gameCamera.SetPerspective(DirectX::XMConvertToRadians(60.0f), 1.0f, 0.1f, 100.0f);
 }
 
 Graphics::~Graphics() {
@@ -1470,6 +1670,7 @@ void Graphics::BeginFrame(HWND hWnd)
 
     // Process any pending scene RT resize before we open/reset the command list for this frame.
     ProcessPendingSceneRenderTargetResize();
+    ProcessPendingGameRenderTargetResize();
 
     // Scene GPU resources must be created outside the render phase.
     Scene::InitializeResources(device.Get());
@@ -2162,20 +2363,21 @@ void Graphics::BindMaterial(Material* material)
     if (!commandList)
         return;
 
-    MaterialCBData cb{};
+    MaterialCB materialContract{};
     if (material)
     {
-        cb.baseColor = { material->baseColor.x, material->baseColor.y, material->baseColor.z, 1.0f };
-        cb.metallic = material->metallic;
-        cb.roughness = material->roughness;
-        cb.useAlbedoTexture = material->albedo ? 1.0f : 0.0f;
-        cb.useMetallicTexture = material->metallicMap ? 1.0f : 0.0f;
-        cb.useRoughnessTexture = material->roughnessMap ? 1.0f : 0.0f;
+        materialContract.SetBaseColor(material->baseColor);
+        materialContract.SetMetallic(material->metallic);
+        materialContract.SetRoughness(material->roughness);
+        materialContract.SetUseAlbedoTexture(material->albedo != nullptr);
+        materialContract.SetUseNormalTexture(material->normal != nullptr);
+        materialContract.SetUseMetallicTexture(material->metallicMap != nullptr);
+        materialContract.SetUseRoughnessTexture(material->roughnessMap != nullptr);
     }
-    cb.flipNormalGreen = flipNormalGreenChannel ? 1.0f : 0.0f;
+    materialContract.SetFlipNormalGreen(flipNormalGreenChannel);
 
-    const auto alloc = AllocateFrameCB(sizeof(MaterialCBData));
-    std::memcpy(alloc.CpuPtr, &cb, sizeof(cb));
+    const auto alloc = AllocateFrameCB(sizeof(MaterialCB));
+    std::memcpy(alloc.CpuPtr, &materialContract, sizeof(materialContract));
     commandList->SetGraphicsRootConstantBufferView(SceneRootParamMaterialCB, alloc.GpuAddress);
 
     TextureManager& textureManager = TextureManager::GetInstance();
@@ -2859,6 +3061,69 @@ void Graphics::RenderSceneToTarget()
     transitionResource(sceneRenderTarget.Get(), sceneRTState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 }
 
+void Graphics::RenderGameViewToTarget()
+{
+    if (Engine::GetState() == Engine::State::Editing)
+        return;
+
+    if (!gameRenderTarget || gameRtvHandle.ptr == 0 || gameRTWidth == 0 || gameRTHeight == 0)
+    {
+        const UINT w = (UINT)(std::max)(1, screenWidth);
+        const UINT h = (UINT)(std::max)(1, screenHeight);
+        EnsureGameRenderTarget(w, h);
+    }
+
+    if (!gameRenderTarget || gameRtvHandle.ptr == 0 || gameRTWidth == 0 || gameRTHeight == 0)
+        return;
+
+    ScopedRenderPass pass(commandList.Get(), "GameViewPass");
+
+    auto transitionResource = [&](ID3D12Resource* resource, D3D12_RESOURCE_STATES& currentState, D3D12_RESOURCE_STATES targetState)
+    {
+        if (!resource || currentState == targetState)
+            return;
+
+        const CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(resource, currentState, targetState);
+        commandList->ResourceBarrier(1, &barrier);
+        currentState = targetState;
+    };
+
+    transitionResource(gameRenderTarget.Get(), gameRTState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (gameDepth)
+        transitionResource(gameDepth.Get(), gameDepthState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    commandList->OMSetRenderTargets(1, &gameRtvHandle, FALSE, gameDsvHandle.ptr != 0 ? &gameDsvHandle : nullptr);
+
+    const bool paused = (Engine::GetState() == Engine::State::Paused);
+    const float clearColor[4] = {
+        paused ? 0.16f : 0.08f,
+        paused ? 0.11f : 0.12f,
+        paused ? 0.08f : 0.18f,
+        1.0f };
+    commandList->ClearRenderTargetView(gameRtvHandle, clearColor, 0, nullptr);
+    if (gameDsvHandle.ptr != 0)
+        commandList->ClearDepthStencilView(gameDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    const float aspect = (gameRTHeight > 0) ? ((float)gameRTWidth / (float)gameRTHeight) : 1.0f;
+    CameraData camera{};
+    if (!Scene::TryBuildMainCameraData(aspect, camera))
+    {
+        gameCamera.SetPerspective(DirectX::XMConvertToRadians(60.0f), aspect, 0.1f, 100.0f);
+        camera = gameCamera.BuildDataLH();
+    }
+
+    SceneRenderContext sceneCtx{};
+    sceneCtx.device = device.Get();
+    sceneCtx.commandList = commandList.Get();
+    sceneCtx.viewportWidth = gameRTWidth;
+    sceneCtx.viewportHeight = gameRTHeight;
+    sceneCtx.frameIndex = Logger::GetFrameNumber();
+    sceneCtx.camera = &camera;
+
+    Scene::Render(sceneCtx);
+
+    transitionResource(gameRenderTarget.Get(), gameRTState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+}
+
 void Graphics::Render(HWND hWnd)
 {
     (void)hWnd;
@@ -2877,16 +3142,31 @@ void Graphics::Render(HWND hWnd)
             editor.lookSmoothing,
             editor.flyLookSpeed,
             editor.orbitLookSpeed,
-            editor.flyMoveSpeed);
+            editor.flyMoveSpeed,
+            editor.gamepadStickDeadzone,
+            editor.gamepadLookSensitivity,
+            editor.gamepadMoveSensitivity,
+            editor.gamepadZoomSensitivity);
+        Scene::SetGridSettings({
+            editor.gridFadeEnabled,
+            editor.gridMajorLinesEnabled,
+            editor.gridFadeDistance,
+            editor.gridVisibility,
+            editor.gridMajorLineBoost,
+            editor.gridAxisEmphasis,
+            editor.gridExtent,
+            editor.gridDivisions });
     }
     sceneCamera.UpdateEditorNavigation(ImGui::GetIO().DeltaTime, sceneViewportAllowCameraInput, navMode);
 
 #ifndef NDEBUG
     if (!g_r_skipScene)
     {
+        RenderGameViewToTarget();
         RenderSceneToTarget();
     }
 #else
+    RenderGameViewToTarget();
     RenderSceneToTarget();
 #endif
 

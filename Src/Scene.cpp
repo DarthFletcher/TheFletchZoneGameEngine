@@ -32,6 +32,22 @@ namespace
 {
     using Microsoft::WRL::ComPtr;
 
+    static float GetPrimitiveLocalBoundingRadius(ScenePrimitive primitive)
+    {
+        switch (primitive)
+        {
+        case ScenePrimitive::Empty:
+            return 0.15f;
+        case ScenePrimitive::Plane:
+            return 0.70710678f;
+        case ScenePrimitive::Sphere:
+        case ScenePrimitive::Cylinder:
+        case ScenePrimitive::Cube:
+        default:
+            return 0.8660254f;
+        }
+    }
+
     static void EmitSceneEvent(SceneEventType type, SceneInstance* entity = nullptr, float strength = 1.0f)
     {
         if (!g_engineInstance)
@@ -131,6 +147,17 @@ namespace
         return false;
     }
 
+    static bool HasAnyEnabledCamera()
+    {
+        for (const auto& instance : Scene::GetInstances())
+        {
+            if (instance.camera.enabled)
+                return true;
+        }
+        return false;
+    }
+
+
     static bool DecomposeWorldToLocal(const DirectX::XMMATRIX& localMatrix, SceneInstance& instance)
     {
         using namespace DirectX;
@@ -169,10 +196,41 @@ namespace
         return std::format("Object {}", instanceId);
     }
 
+    static bool HasExplicitMainCamera()
+    {
+        for (const auto& instance : Scene::GetInstances())
+        {
+            if (instance.camera.enabled && instance.camera.isMain)
+                return true;
+        }
+        return false;
+    }
+
+    static SceneInstance CreateDefaultMainCameraInstance(uint32_t instanceId)
+    {
+        SceneInstance instance{};
+        instance.instanceId = instanceId;
+        instance.parentInstanceId = 0;
+        instance.name = "Main Camera";
+        instance.position = { 0.0f, 5.0f, -10.0f };
+        instance.rotation = { DirectX::XMConvertToRadians(26.565f), 0.0f, 0.0f };
+        instance.scale = { 1.0f, 1.0f, 1.0f };
+        instance.visible = false;
+        instance.materialIndex = 0;
+        instance.primitive = ScenePrimitive::Empty;
+        instance.camera.enabled = true;
+        instance.camera.isMain = true;
+        instance.camera.fovY = DirectX::XMConvertToRadians(60.0f);
+        instance.camera.nearClip = 0.1f;
+        instance.camera.farClip = 100.0f;
+        return instance;
+    }
+
     static const char* ScenePrimitiveToString(ScenePrimitive primitive)
     {
         switch (primitive)
         {
+        case ScenePrimitive::Empty: return "Empty";
         case ScenePrimitive::Sphere: return "Sphere";
         case ScenePrimitive::Plane: return "Plane";
         case ScenePrimitive::Cylinder: return "Cylinder";
@@ -185,12 +243,18 @@ namespace
     {
         switch (value)
         {
+        case 4: return ScenePrimitive::Empty;
         case 1: return ScenePrimitive::Sphere;
         case 2: return ScenePrimitive::Plane;
         case 3: return ScenePrimitive::Cylinder;
         case 0:
         default: return ScenePrimitive::Cube;
         }
+    }
+
+    static bool IsRenderablePrimitive(ScenePrimitive primitive)
+    {
+        return primitive != ScenePrimitive::Empty;
     }
 
     static const MeshData& GetMeshForPrimitive(ScenePrimitive primitive)
@@ -201,6 +265,7 @@ namespace
         case ScenePrimitive::Sphere: return gfx.GetSphereMesh();
         case ScenePrimitive::Plane: return gfx.GetPlaneMesh();
         case ScenePrimitive::Cylinder: return gfx.GetCylinderMesh();
+        case ScenePrimitive::Empty:
         case ScenePrimitive::Cube:
         default: return gfx.GetCubeMesh();
         }
@@ -285,9 +350,9 @@ namespace
         localRay.origin = localOrigin;
         localRay.direction = localDir;
 
-        const DirectX::XMFLOAT3 mins{ -0.5f, -0.5f, -0.5f };
+        const DirectX::XMFLOAT3 mons{ -0.5f, -0.5f, -0.5f };
         const DirectX::XMFLOAT3 maxs{ +0.5f, +0.5f, +0.5f };
-        return RayIntersectsAABB(localRay, mins, maxs, outT);
+        return RayIntersectsAABB(localRay, mons, maxs, outT);
     }
 
     static bool FindClosestInstanceHit(const Ray& ray, int& outBestIndex, float& outBestT)
@@ -298,7 +363,7 @@ namespace
         const auto& instances = Scene::GetInstances();
         for (size_t i = 0; i < instances.size(); ++i)
         {
-            if (!instances[i].visible)
+            if (!instances[i].visible || !IsRenderablePrimitive(instances[i].primitive))
                 continue;
 
             float t = 0.0f;
@@ -371,19 +436,53 @@ namespace
     }
 
     // Must exactly match `cbuffer SceneCB : register(b0)` layout in the HLSL.
+    // SceneCB v2 owns per-frame global render state only.
     struct alignas(256) SceneCB
     {
-        float viewProj[16];
-        float cameraPos[3];
-        float gridFadeDist = 0;
-        float lightDirection[3] = { 0.0f, -1.0f, 0.0f };
-        float lightIntensity = 1.0f;
-        float lightColor[3] = { 1.0f, 1.0f, 1.0f };
-        float ambientIntensity = 0.12f;
-        float pad[36]{};
+        float sceneView[16]{};
+        float sceneProjection[16]{};
+        float sceneViewProjection[16]{};
+        float sceneInvViewProjection[16]{};
+
+        float sceneCameraPosition[3] = { 0.0f, 0.0f, 0.0f };
+        float sceneNearZ = 0.1f;
+
+        float sceneViewportSize[2] = { 1.0f, 1.0f };
+        float sceneInvViewportSize[2] = { 1.0f, 1.0f };
+
+        float sceneFarZ = 100.0f;
+        float sceneFovY = DirectX::XMConvertToRadians(60.0f);
+        float sceneAspect = 1.0f;
+        float sceneTimeSeconds = 0.0f;
+
+        float sceneDeltaTime = 0.0f;
+        float sceneRenderScale = 1.0f;
+        uint32_t sceneFlags = 0;
+        float scenePad0 = 0.0f;
+
+        float sceneGridFadeDistance = 0.0f;
+        float sceneGridVisibility = 1.0f;
+        float sceneGridMajorLineBoost = 1.35f;
+        float sceneGridAxisEmphasis = 1.25f;
+
+        float sceneLightDirection[3] = { 0.0f, -1.0f, 0.0f };
+        float sceneLightIntensity = 1.0f;
+
+        float sceneLightColor[3] = { 1.0f, 1.0f, 1.0f };
+        float sceneAmbientIntensity = 0.12f;
+
+        float sceneShadowViewProjection[16]{};
+        float sceneShadowParams[4]{};
+        float scenePostProcessParams[4]{};
+        float sceneDebugParams[4]{};
+
+        uint32_t sceneInstanceOffset = 0;
+        uint32_t scenePadU32[3]{};
+
+        float sceneReserved[4]{};
     };
 
-    static_assert(sizeof(SceneCB) == 256, "SceneCB must be exactly 256 bytes");
+    static_assert(sizeof(SceneCB) == 512, "SceneCB v2 must be exactly 512 bytes");
 
     static constexpr UINT kSceneCbStride = Align256(sizeof(SceneCB));
     static constexpr UINT kMaxSceneObjects = 64;
@@ -408,6 +507,7 @@ namespace
         ComPtr<ID3D12PipelineState> gridPso;
         ComPtr<ID3D12Resource> gridVb;
         D3D12_VERTEX_BUFFER_VIEW gridVbv{};
+        UINT gridVbCapacityBytes = 0;
 
         ComPtr<ID3D12Resource> cb;
         SceneCB cbData{};
@@ -420,6 +520,8 @@ namespace
     static SceneDrawResources g_scene;
     static bool g_loggedInvalidCtx = false;
     static bool g_loggedMissingCamera = false;
+    static SceneGridSettings g_SceneGridSettings{};
+    static bool g_GridGeometryDirty = true;
 
     static void FillIdentity(float (&m)[16])
     {
@@ -453,6 +555,100 @@ namespace
         d.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         d.Flags = D3D12_RESOURCE_FLAG_NONE;
         return d;
+    }
+
+    static std::vector<VertexPC> BuildGridVertices(const SceneGridSettings& settings)
+    {
+        const int divisions = (std::clamp)(settings.divisions, 2, 200);
+        const float extent = (std::max)(settings.extent, 1.0f);
+        const float half = extent;
+        const float step = (extent * 2.0f) / (float)divisions;
+
+        std::vector<VertexPC> verts;
+        verts.reserve((size_t)(divisions + 1) * 4);
+
+        auto push = [&](float x, float y, float z, float r, float g, float b, float a)
+        {
+            VertexPC v{};
+            v.Position = { x, y, z };
+            v.Color = { r, g, b, a };
+            verts.push_back(v);
+        };
+
+        constexpr float kGridY = -0.01f;
+        for (int i = 0; i <= divisions; ++i)
+        {
+            const float t = -half + (float)i * step;
+
+            if (i == divisions / 2)
+            {
+                push(-half, kGridY, t, 0.95f, 0.25f, 0.25f, 1.0f);
+                push(+half, kGridY, t, 0.95f, 0.25f, 0.25f, 1.0f);
+                push(t, kGridY, -half, 0.25f, 0.45f, 0.95f, 1.0f);
+                push(t, kGridY, +half, 0.25f, 0.45f, 0.95f, 1.0f);
+            }
+            else
+            {
+                const float c = 0.40f;
+                const float a = 0.80f;
+                push(-half, kGridY, t, c, c, c, a);
+                push(+half, kGridY, t, c, c, c, a);
+                push(t, kGridY, -half, c, c, c, a);
+                push(t, kGridY, +half, c, c, c, a);
+            }
+        }
+
+        return verts;
+    }
+
+    static void UpdateGridGeometry(ID3D12Device* device)
+    {
+        if (!device || (!g_GridGeometryDirty && g_scene.gridVb))
+            return;
+
+        const std::vector<VertexPC> verts = BuildGridVertices(g_SceneGridSettings);
+        const UINT vbSize = (UINT)(sizeof(VertexPC) * verts.size());
+
+        if (!g_scene.gridVb || vbSize > g_scene.gridVbCapacityBytes)
+        {
+            const D3D12_HEAP_PROPERTIES heapProps = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
+            const D3D12_RESOURCE_DESC bufDesc = MakeBufferDesc((std::max)(vbSize, 1u));
+
+            g_scene.gridVb.Reset();
+            const HRESULT hrVB = device->CreateCommittedResource(
+                &heapProps,
+                D3D12_HEAP_FLAG_NONE,
+                &bufDesc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&g_scene.gridVb));
+
+            if (FAILED(hrVB) || !g_scene.gridVb)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, "CreateCommittedResource(GridVB) failed", "[Scene]");
+                return;
+            }
+
+            g_scene.gridVbCapacityBytes = vbSize;
+        }
+
+        void* mapped = nullptr;
+        const HRESULT hrMap = g_scene.gridVb->Map(0, nullptr, &mapped);
+        if (FAILED(hrMap) || !mapped)
+        {
+            g_scene.initFailed = true;
+            Logger::Log(LogLevel::Error, "GridVB Map failed", "[Scene]");
+            return;
+        }
+        if (vbSize > 0)
+            std::memcpy(mapped, verts.data(), vbSize);
+        g_scene.gridVb->Unmap(0, nullptr);
+
+        g_scene.gridVbv.BufferLocation = g_scene.gridVb->GetGPUVirtualAddress();
+        g_scene.gridVbv.SizeInBytes = vbSize;
+        g_scene.gridVbv.StrideInBytes = sizeof(VertexPC);
+        g_GridGeometryDirty = false;
     }
 
     static void EnsureSceneObjectsInitialized()
@@ -666,11 +862,19 @@ namespace
         // Constant Buffer (scene-owned) removed.
         // CB data is uploaded via `Graphics::AllocateFrameCB()` per-frame.
         // ---------------------------
-        if (!g_scene.cbData.viewProj[0])
+        if (!g_scene.cbData.sceneViewProjection[0])
         {
             g_scene.cbData = {};
-            FillIdentity(g_scene.cbData.viewProj);
-            g_scene.cbData.gridFadeDist = 10.0f;
+            FillIdentity(g_scene.cbData.sceneView);
+            FillIdentity(g_scene.cbData.sceneProjection);
+            FillIdentity(g_scene.cbData.sceneViewProjection);
+            FillIdentity(g_scene.cbData.sceneInvViewProjection);
+            FillIdentity(g_scene.cbData.sceneShadowViewProjection);
+            g_scene.cbData.sceneGridFadeDistance = g_SceneGridSettings.fadeDistance;
+            g_scene.cbData.sceneGridVisibility = g_SceneGridSettings.visibility;
+            g_scene.cbData.sceneGridMajorLineBoost = g_SceneGridSettings.majorLineBoost;
+            g_scene.cbData.sceneGridAxisEmphasis = g_SceneGridSettings.axisEmphasis;
+            g_scene.cbData.sceneRenderScale = 1.0f;
 
             const Graphics::DirectionalLight& light = Graphics::GetInstance().GetDirectionalLight();
             using namespace DirectX;
@@ -680,14 +884,14 @@ namespace
             const XMVECTOR lightDirVec = XMVector3Normalize(XMLoadFloat3(&lightDir));
             XMStoreFloat3(&lightDir, lightDirVec);
 
-            g_scene.cbData.lightDirection[0] = lightDir.x;
-            g_scene.cbData.lightDirection[1] = lightDir.y;
-            g_scene.cbData.lightDirection[2] = lightDir.z;
-            g_scene.cbData.lightIntensity = light.intensity;
-            g_scene.cbData.lightColor[0] = light.color.x;
-            g_scene.cbData.lightColor[1] = light.color.y;
-            g_scene.cbData.lightColor[2] = light.color.z;
-            g_scene.cbData.ambientIntensity = light.ambient;
+            g_scene.cbData.sceneLightDirection[0] = lightDir.x;
+            g_scene.cbData.sceneLightDirection[1] = lightDir.y;
+            g_scene.cbData.sceneLightDirection[2] = lightDir.z;
+            g_scene.cbData.sceneLightIntensity = light.intensity;
+            g_scene.cbData.sceneLightColor[0] = light.color.x;
+            g_scene.cbData.sceneLightColor[1] = light.color.y;
+            g_scene.cbData.sceneLightColor[2] = light.color.z;
+            g_scene.cbData.sceneAmbientIntensity = light.ambient;
         }
 
         // ---------------------------
@@ -737,9 +941,9 @@ namespace
             rast.DepthClipEnable = TRUE;
 
             D3D12_DEPTH_STENCIL_DESC ds{};
-            ds.DepthEnable = FALSE;
+            ds.DepthEnable = TRUE;
             ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-            ds.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+            ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
             ds.StencilEnable = FALSE;
 
             D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
@@ -756,7 +960,7 @@ namespace
             psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
             psoDesc.SampleDesc.Count = 1;
             psoDesc.SampleDesc.Quality = 0;
-            psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+            psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
             const HRESULT hrPSO = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&g_scene.gridPso));
             if (FAILED(hrPSO) || !g_scene.gridPso)
@@ -767,88 +971,7 @@ namespace
             }
         }
 
-        if (!g_scene.gridVb)
-        {
-            constexpr int kDiv = 20;
-            constexpr float kExtent = 10.0f;
-            constexpr float kHalf = kExtent;
-            constexpr float kStep = (kExtent * 2.0f) / (float)kDiv;
-
-            std::vector<VertexPC> verts;
-            verts.reserve((kDiv + 1) * 4);
-
-            auto push = [&](float x, float y, float z, float r, float g, float b, float a)
-            {
-                VertexPC v{};
-                v.Position = { x, y, z };
-                v.Color = { r, g, b, a };
-                verts.push_back(v);
-            };
-
-            for (int i = 0; i <= kDiv; ++i)
-            {
-                const float t = -kHalf + (float)i * kStep;
-
-                constexpr float kGridY = -0.01f;
-
-                if (i == kDiv / 2)
-                {
-                    // X axis
-                    push(-kHalf, kGridY, t, 0.95f, 0.25f, 0.25f, 0.95f);
-                    push(+kHalf, kGridY, t, 0.95f, 0.25f, 0.25f, 0.95f);
-
-                    // Z axis
-                    push(t, kGridY, -kHalf, 0.25f, 0.45f, 0.95f, 0.95f);
-                    push(t, kGridY, +kHalf, 0.25f, 0.45f, 0.95f, 0.95f);
-                }
-                else
-                {
-                    const float c = 0.40f;
-                    const float a = 0.65f;
-
-                    push(-kHalf, kGridY, t, c, c, c, a);
-                    push(+kHalf, kGridY, t, c, c, c, a);
-
-                    push(t, kGridY, -kHalf, c, c, c, a);
-                    push(t, kGridY, +kHalf, c, c, c, a);
-                }
-            }
-
-            const UINT vbSize = (UINT)(sizeof(VertexPC) * verts.size());
-
-            const D3D12_HEAP_PROPERTIES heapProps = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
-            const D3D12_RESOURCE_DESC bufDesc = MakeBufferDesc(vbSize);
-
-            const HRESULT hrVB = device->CreateCommittedResource(
-                &heapProps,
-                D3D12_HEAP_FLAG_NONE,
-                &bufDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(&g_scene.gridVb));
-
-            if (FAILED(hrVB) || !g_scene.gridVb)
-            {
-                g_scene.initFailed = true;
-                Logger::Log(LogLevel::Error, "CreateCommittedResource(GridVB) failed", "[Scene]");
-                return;
-            }
-
-            void* mapped = nullptr;
-            const HRESULT hrMap = g_scene.gridVb->Map(0, nullptr, &mapped);
-            if (FAILED(hrMap) || !mapped)
-            {
-                g_scene.initFailed = true;
-                Logger::Log(LogLevel::Error, "GridVB Map failed", "[Scene]");
-                return;
-            }
-            std::memcpy(mapped, verts.data(), vbSize);
-            g_scene.gridVb->Unmap(0, nullptr);
-
-            g_scene.gridVbv.BufferLocation = g_scene.gridVb->GetGPUVirtualAddress();
-            g_scene.gridVbv.SizeInBytes = vbSize;
-            g_scene.gridVbv.StrideInBytes = sizeof(VertexPC);
-        }
+        UpdateGridGeometry(device);
     }
 
     static bool ParseSceneInstanceFromJson(const std::string& content, SceneInstance& outInstance, bool readIdAndParent)
@@ -925,6 +1048,11 @@ namespace
         if (!readBool("\"visible\"", outInstance.visible)) return false;
         if (!readNumber("\"material\"", materialValue)) return false;
         readNumber("\"primitive\"", primitiveValue);
+        readBool("\"cameraEnabled\"", outInstance.camera.enabled);
+        readBool("\"cameraMain\"", outInstance.camera.isMain);
+        readNumber("\"cameraFovY\"", outInstance.camera.fovY);
+        readNumber("\"cameraNearClip\"", outInstance.camera.nearClip);
+        readNumber("\"cameraFarClip\"", outInstance.camera.farClip);
 
         outInstance.instanceId = static_cast<uint32_t>(idValue);
         outInstance.parentInstanceId = static_cast<uint32_t>(parentValue);
@@ -1010,7 +1138,12 @@ namespace
         file << "  \"scale\": [" << prefab.scale.x << ", " << prefab.scale.y << ", " << prefab.scale.z << "],\n";
         file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
         file << "  \"material\": " << prefab.materialIndex << ",\n";
-        file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << "\n";
+        file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << ",\n";
+        file << "  \"cameraEnabled\": " << (prefab.camera.enabled ? "true" : "false") << ",\n";
+        file << "  \"cameraMain\": " << (prefab.camera.isMain ? "true" : "false") << ",\n";
+        file << "  \"cameraFovY\": " << prefab.camera.fovY << ",\n";
+        file << "  \"cameraNearClip\": " << prefab.camera.nearClip << ",\n";
+        file << "  \"cameraFarClip\": " << prefab.camera.farClip << "\n";
         file << "}\n";
         return file.good();
     }
@@ -1059,6 +1192,72 @@ void Scene::MarkInstancesUploaded(uint64_t version) { s_InstancesDirty = false; 
 ID3D12Resource* Scene::GetInstanceDefaultBuffer() { return s_InstanceBufferDefault.Get(); }
 const std::vector<SceneInstance>& Scene::GetInstances() { return s_SceneInstances; }
 SceneInstance* Scene::GetInstance(size_t index) { return index < s_SceneInstances.size() ? &s_SceneInstances[index] : nullptr; }
+
+SceneInstance* Scene::GetMainCameraInstanceMutable()
+{
+    SceneInstance* firstEnabledCamera = nullptr;
+    for (auto& instance : s_SceneInstances)
+    {
+        if (!instance.camera.enabled)
+            continue;
+        if (!firstEnabledCamera)
+            firstEnabledCamera = &instance;
+        if (instance.camera.isMain)
+            return &instance;
+    }
+
+    return firstEnabledCamera;
+}
+
+const SceneInstance* Scene::GetMainCameraInstance()
+{
+    const SceneInstance* firstEnabledCamera = nullptr;
+    for (const auto& instance : s_SceneInstances)
+    {
+        if (!instance.camera.enabled)
+            continue;
+        if (!firstEnabledCamera)
+            firstEnabledCamera = &instance;
+        if (instance.camera.isMain)
+            return &instance;
+    }
+
+    return firstEnabledCamera;
+}
+
+bool Scene::TryBuildMainCameraData(float aspect, CameraData& outCameraData)
+{
+    using namespace DirectX;
+
+    const SceneInstance* cameraInstance = GetMainCameraInstance();
+    if (!cameraInstance)
+        return false;
+
+    XMFLOAT4X4 world{};
+    if (!TryGetInstanceWorldMatrix(cameraInstance->instanceId, world))
+        return false;
+
+    const XMMATRIX worldMatrix = XMLoadFloat4x4(&world);
+    const XMVECTOR eye = XMVector3TransformCoord(XMVectorZero(), worldMatrix);
+    const XMVECTOR forward = XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), worldMatrix));
+    const XMVECTOR up = XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), worldMatrix));
+
+    const XMMATRIX view = XMMatrixLookToLH(eye, forward, up);
+    const float resolvedAspect = (std::max)(aspect, 0.0001f);
+    const float resolvedNear = (std::max)(cameraInstance->camera.nearClip, 0.001f);
+    const float resolvedFar = (std::max)(cameraInstance->camera.farClip, resolvedNear + 0.001f);
+    const XMMATRIX proj = XMMatrixPerspectiveFovLH(cameraInstance->camera.fovY, resolvedAspect, resolvedNear, resolvedFar);
+
+    XMStoreFloat4x4(&outCameraData.view, view);
+    XMStoreFloat4x4(&outCameraData.proj, proj);
+    XMStoreFloat3(&outCameraData.position, eye);
+    outCameraData.fovY = cameraInstance->camera.fovY;
+    outCameraData.aspect = resolvedAspect;
+    outCameraData.nearZ = resolvedNear;
+    outCameraData.farZ = resolvedFar;
+    return true;
+}
+
 SceneInstance* Scene::GetSelectedInstance()
 {
     if (s_SelectedInstanceId == 0)
@@ -1191,15 +1390,13 @@ namespace
         return s;
     }
 
-    static Sphere ComputeInstanceSphereFromWorld(const DirectX::XMMATRIX& world)
+    static Sphere ComputeInstanceSphereFromWorld(const DirectX::XMMATRIX& world, ScenePrimitive primitive)
     {
-        static constexpr float kCubeLocalRadius = 0.8660254f;
-
         Sphere s{};
         DirectX::XMStoreFloat3(&s.Center, world.r[3]);
 
         const float maxScale = MaxBasisScaleFromWorld(world);
-        s.Radius = kCubeLocalRadius * maxScale;
+        s.Radius = GetPrimitiveLocalBoundingRadius(primitive) * maxScale;
         return s;
     }
 
@@ -1239,7 +1436,7 @@ void Scene::RebuildRenderInstancesFromSceneData()
             inst.Color = XMFLOAT4(1.0f, 0.62f, 0.20f, 2.0f);
 
         s_Instances.push_back(inst);
-        s_InstanceBounds.push_back(ComputeInstanceSphereFromWorld(world));
+        s_InstanceBounds.push_back(ComputeInstanceSphereFromWorld(world, sceneInstance.primitive));
     }
 }
 
@@ -1287,6 +1484,9 @@ void Scene::EnsureInstancesInitialized()
             break;
     }
 
+    if (!HasAnyEnabledCamera())
+        s_SceneInstances.push_back(CreateDefaultMainCameraInstance(s_NextInstanceId++));
+
     s_SceneLayoutDirty = false;
     RebuildRenderInstancesFromSceneData();
     MarkInstancesDirty();
@@ -1312,6 +1512,28 @@ bool Scene::IsReady()
 SceneStats Scene::GetLastStats()
 {
     return s_LastStats;
+}
+
+void Scene::SetGridSettings(const SceneGridSettings& settings)
+{
+    const float clampedExtent = (std::clamp)(settings.extent, 1.0f, 200.0f);
+    const int clampedDivisions = (std::clamp)(settings.divisions, 2, 200);
+    if (fabsf(g_SceneGridSettings.extent - clampedExtent) > 1e-4f || g_SceneGridSettings.divisions != clampedDivisions)
+        g_GridGeometryDirty = true;
+
+    g_SceneGridSettings.fadeEnabled = settings.fadeEnabled;
+    g_SceneGridSettings.majorLinesEnabled = settings.majorLinesEnabled;
+    g_SceneGridSettings.fadeDistance = (std::max)(settings.fadeDistance, 1.0f);
+    g_SceneGridSettings.visibility = (std::clamp)(settings.visibility, 0.1f, 2.0f);
+    g_SceneGridSettings.majorLineBoost = (std::clamp)(settings.majorLineBoost, 1.0f, 3.0f);
+    g_SceneGridSettings.axisEmphasis = (std::clamp)(settings.axisEmphasis, 1.0f, 3.0f);
+    g_SceneGridSettings.extent = clampedExtent;
+    g_SceneGridSettings.divisions = clampedDivisions;
+}
+
+SceneGridSettings Scene::GetGridSettings()
+{
+    return g_SceneGridSettings;
 }
 
 void Scene::SetTargetInstanceCount(uint32_t count)
@@ -1473,6 +1695,37 @@ bool Scene::TryGetSelectionCenter(DirectX::XMFLOAT3& outCenter)
 
     const float invCount = 1.0f / static_cast<float>(count);
     outCenter = { sum.x * invCount, sum.y * invCount, sum.z * invCount };
+    return true;
+}
+
+bool Scene::TryGetSelectionBounds(DirectX::XMFLOAT3& outCenter, float& outRadius)
+{
+    outCenter = {};
+    outRadius = 0.0f;
+
+    if (!TryGetSelectionCenter(outCenter))
+        return false;
+
+    bool any = false;
+    for (size_t i = 0; i < s_SceneInstances.size() && i < s_InstanceBounds.size(); ++i)
+    {
+        const SceneInstance& instance = s_SceneInstances[i];
+        if (!IsInstanceSelected(instance.instanceId))
+            continue;
+
+        const Sphere& bounds = s_InstanceBounds[i];
+        const float dx = bounds.Center.x - outCenter.x;
+        const float dy = bounds.Center.y - outCenter.y;
+        const float dz = bounds.Center.z - outCenter.z;
+        const float distanceToCenter = std::sqrt(dx * dx + dy * dy + dz * dz);
+        outRadius = (std::max)(outRadius, distanceToCenter + bounds.Radius);
+        any = true;
+    }
+
+    if (!any)
+        return false;
+
+    outRadius = (std::max)(outRadius, 0.5f);
     return true;
 }
 
@@ -1721,6 +1974,41 @@ void Scene::DuplicateSelectedInstance()
     MarkInstancesDirty();
 }
 
+void Scene::CreateEmpty(const DirectX::XMFLOAT3& position)
+{
+    CreatePrimitive(ScenePrimitive::Empty, position);
+}
+
+void Scene::CreateCamera(const DirectX::XMFLOAT3& position)
+{
+    SceneInstance instance{};
+    instance.instanceId = s_NextInstanceId++;
+    instance.parentInstanceId = 0;
+    instance.name = std::format("Camera {}", instance.instanceId);
+    instance.position = position;
+    instance.rotation = { DirectX::XMConvertToRadians(20.0f), 0.0f, 0.0f };
+    instance.scale = { 1.0f, 1.0f, 1.0f };
+    instance.visible = false;
+    instance.materialIndex = 0;
+    instance.primitive = ScenePrimitive::Empty;
+    instance.camera.enabled = true;
+    instance.camera.isMain = !HasExplicitMainCamera();
+    instance.camera.fovY = DirectX::XMConvertToRadians(60.0f);
+    instance.camera.nearClip = 0.1f;
+    instance.camera.farClip = 1000.0f;
+
+    s_SceneInstances.push_back(instance);
+    s_SelectedInstanceId = instance.instanceId;
+    s_SelectedInstanceIds = { instance.instanceId };
+    s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+
+    SceneInstance* createdInstance = s_SceneInstances.empty() ? nullptr : &s_SceneInstances.back();
+    EmitSceneEvent(SceneEventType::EntityCreated, createdInstance, 1.3f);
+    EmitSceneEvent(SceneEventType::EntitySelected, createdInstance, 0.8f);
+}
+
 void Scene::CreateCube(const DirectX::XMFLOAT3& position)
 {
     CreatePrimitive(ScenePrimitive::Cube, position);
@@ -1764,6 +2052,26 @@ void Scene::CreatePrimitive(ScenePrimitive primitive, const DirectX::XMFLOAT3& p
     SceneInstance* createdInstance = s_SceneInstances.empty() ? nullptr : &s_SceneInstances.back();
     EmitSceneEvent(SceneEventType::EntityCreated, createdInstance, 1.3f);
     EmitSceneEvent(SceneEventType::EntitySelected, createdInstance, 0.8f);
+}
+
+void Scene::NewScene()
+{
+    s_SceneInstances.clear();
+    s_Instances.clear();
+    s_InstanceBounds.clear();
+    s_VisibleInstanceIndices.clear();
+    s_VisibleInstancesScratch.clear();
+    s_SelectedInstanceId = 0;
+    s_HoveredInstanceId = 0;
+    s_SelectedInstanceIds.clear();
+    s_TargetInstanceCount = 0;
+    s_NextInstanceId = 1;
+    s_SceneLayoutDirty = false;
+    s_LastStats = {};
+    s_SceneInstances.push_back(CreateDefaultMainCameraInstance(s_NextInstanceId++));
+    MarkInstancesDirty();
+
+    Logger::Log(LogLevel::Info, "Created new empty scene", "[Scene]");
 }
 
 bool Scene::SaveSelectedAsPrefab(const std::string& path)
@@ -1986,7 +2294,12 @@ std::string Scene::SerializeToString()
         out << "      \"scale\": [" << inst.scale.x << ", " << inst.scale.y << ", " << inst.scale.z << "],\n";
         out << "      \"visible\": " << (inst.visible ? "true" : "false") << ",\n";
         out << "      \"material\": " << inst.materialIndex << ",\n";
-        out << "      \"primitive\": " << static_cast<int>(inst.primitive) << "\n";
+        out << "      \"primitive\": " << static_cast<int>(inst.primitive) << ",\n";
+        out << "      \"cameraEnabled\": " << (inst.camera.enabled ? "true" : "false") << ",\n";
+        out << "      \"cameraMain\": " << (inst.camera.isMain ? "true" : "false") << ",\n";
+        out << "      \"cameraFovY\": " << inst.camera.fovY << ",\n";
+        out << "      \"cameraNearClip\": " << inst.camera.nearClip << ",\n";
+        out << "      \"cameraFarClip\": " << inst.camera.farClip << "\n";
         out << "    }";
         if (i + 1 < s_SceneInstances.size())
             out << ",";
@@ -2022,6 +2335,8 @@ bool Scene::LoadFromString(const std::string& content)
     }
 
     s_NextInstanceId = maxId + 1;
+    if (!HasAnyEnabledCamera())
+        s_SceneInstances.push_back(CreateDefaultMainCameraInstance(s_NextInstanceId++));
     s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
     s_SceneLayoutDirty = false;
     ValidateSelection();
@@ -2136,6 +2451,7 @@ void Scene::Render(const SceneRenderContext& ctx)
 
     EnsureInstancesInitialized();
     RebuildRenderInstancesFromSceneData();
+    UpdateGridGeometry(ctx.device);
 
 #ifndef NDEBUG
     {
@@ -2157,8 +2473,6 @@ void Scene::Render(const SceneRenderContext& ctx)
         g_loggedPhase45 = true;
         Logger::Log(LogLevel::Info, "[Scene] Phase 4A.5 multi-instance rendering active");
     }
-
-    // Editor transforms are authoritative; do not mutate render instances during draw.
 
     // Clamp to guard against accidental invalid sizes.
     constexpr uint32_t kMin = 1u;
@@ -2183,10 +2497,41 @@ void Scene::Render(const SceneRenderContext& ctx)
 
         XMStoreFloat4x4(&viewProjF, viewProj);
 
-        g_scene.cbData.cameraPos[0] = ctx.camera->position.x;
-        g_scene.cbData.cameraPos[1] = ctx.camera->position.y;
-        g_scene.cbData.cameraPos[2] = ctx.camera->position.z;
-        g_scene.cbData.gridFadeDist = 10.0f;
+        DirectX::XMFLOAT4X4 viewStore{};
+        DirectX::XMFLOAT4X4 projStore{};
+        DirectX::XMFLOAT4X4 viewProjStore{};
+        DirectX::XMFLOAT4X4 invViewProjStore{};
+        XMStoreFloat4x4(&viewStore, XMMatrixTranspose(view));
+        XMStoreFloat4x4(&projStore, XMMatrixTranspose(proj));
+        XMStoreFloat4x4(&viewProjStore, XMMatrixTranspose(viewProj));
+        XMStoreFloat4x4(&invViewProjStore, XMMatrixTranspose(XMMatrixInverse(nullptr, viewProj)));
+
+        memcpy(g_scene.cbData.sceneView, &viewStore, sizeof(float) * 16);
+        memcpy(g_scene.cbData.sceneProjection, &projStore, sizeof(float) * 16);
+        memcpy(g_scene.cbData.sceneViewProjection, &viewProjStore, sizeof(float) * 16);
+        memcpy(g_scene.cbData.sceneInvViewProjection, &invViewProjStore, sizeof(float) * 16);
+
+        g_scene.cbData.sceneCameraPosition[0] = ctx.camera->position.x;
+        g_scene.cbData.sceneCameraPosition[1] = ctx.camera->position.y;
+        g_scene.cbData.sceneCameraPosition[2] = ctx.camera->position.z;
+        g_scene.cbData.sceneNearZ = ctx.camera->nearZ;
+        g_scene.cbData.sceneFarZ = ctx.camera->farZ;
+        g_scene.cbData.sceneFovY = ctx.camera->fovY;
+        g_scene.cbData.sceneAspect = ctx.camera->aspect;
+        g_scene.cbData.sceneViewportSize[0] = (float)(ctx.viewportWidth ? ctx.viewportWidth : 1u);
+        g_scene.cbData.sceneViewportSize[1] = (float)(ctx.viewportHeight ? ctx.viewportHeight : 1u);
+        g_scene.cbData.sceneInvViewportSize[0] = 1.0f / g_scene.cbData.sceneViewportSize[0];
+        g_scene.cbData.sceneInvViewportSize[1] = 1.0f / g_scene.cbData.sceneViewportSize[1];
+        g_scene.cbData.sceneGridFadeDistance = g_SceneGridSettings.fadeDistance;
+        g_scene.cbData.sceneGridVisibility = g_SceneGridSettings.visibility;
+        g_scene.cbData.sceneGridMajorLineBoost = g_SceneGridSettings.majorLineBoost;
+        g_scene.cbData.sceneGridAxisEmphasis = g_SceneGridSettings.axisEmphasis;
+        g_scene.cbData.sceneFlags = 0;
+        if (g_SceneGridSettings.fadeEnabled)
+            g_scene.cbData.sceneFlags |= 1u << 0;
+        if (g_SceneGridSettings.majorLinesEnabled)
+            g_scene.cbData.sceneFlags |= 1u << 1;
+        g_scene.cbData.sceneDebugParams[0] = g_engineInstance ? (float)g_engineInstance->GetEditorState().sceneDebugViewMode : 0.0f;
 
         const Graphics::DirectionalLight& light = Graphics::GetInstance().GetDirectionalLight();
         using namespace DirectX;
@@ -2196,27 +2541,61 @@ void Scene::Render(const SceneRenderContext& ctx)
         const XMVECTOR lightDirVec = XMVector3Normalize(XMLoadFloat3(&lightDir));
         XMStoreFloat3(&lightDir, lightDirVec);
 
-        g_scene.cbData.lightDirection[0] = lightDir.x;
-        g_scene.cbData.lightDirection[1] = lightDir.y;
-        g_scene.cbData.lightDirection[2] = lightDir.z;
-        g_scene.cbData.lightIntensity = light.intensity;
-        g_scene.cbData.lightColor[0] = light.color.x;
-        g_scene.cbData.lightColor[1] = light.color.y;
-        g_scene.cbData.lightColor[2] = light.color.z;
-        g_scene.cbData.ambientIntensity = light.ambient;
+        g_scene.cbData.sceneLightDirection[0] = lightDir.x;
+        g_scene.cbData.sceneLightDirection[1] = lightDir.y;
+        g_scene.cbData.sceneLightDirection[2] = lightDir.z;
+        g_scene.cbData.sceneLightIntensity = light.intensity;
+        g_scene.cbData.sceneLightColor[0] = light.color.x;
+        g_scene.cbData.sceneLightColor[1] = light.color.y;
+        g_scene.cbData.sceneLightColor[2] = light.color.z;
+        g_scene.cbData.sceneAmbientIntensity = light.ambient;
     }
 
-    // CP11-A: extract frustum planes from ViewProj (CPU-only; no filtering yet).
-    const Frustum fr = BuildFrustumFromViewProj(viewProjF);
+    (void)viewProjF;
 
-    // CP11-C: build visible list
+    // Editor scene view: prefer stable authoring visibility over aggressive frustum culling.
+    // Hidden objects still stay hidden, but visible scene objects are all rendered so they do
+    // not pop in/out while moving the camera or editing transforms.
+    const bool useEditorAuthoringVisibility = !g_engineInstance || !g_engineInstance->GetEditorState().enableSceneViewCulling;
+
     s_VisibleInstanceIndices.clear();
     s_VisibleInstanceIndices.reserve(s_InstanceBounds.size());
 
-    for (UINT i = 0; i < (UINT)s_InstanceBounds.size(); ++i)
+    if (useEditorAuthoringVisibility)
     {
-        if (i < s_SceneInstances.size() && s_SceneInstances[i].visible && SphereInsideFrustum(s_InstanceBounds[i], fr))
+        // Editor scene view: prefer stable authoring visibility over aggressive frustum culling.
+        // Hidden objects still stay hidden, but visible scene objects are all rendered so they do
+        // not pop in/out while moving the camera or editing transforms.
+        for (UINT i = 0; i < (UINT)s_InstanceBounds.size(); ++i)
+        {
+            if (i >= s_SceneInstances.size() || !s_SceneInstances[i].visible)
+                continue;
             s_VisibleInstanceIndices.push_back(i);
+        }
+    }
+    else
+    {
+        const Frustum fr = BuildFrustumFromViewProj(viewProjF);
+        constexpr float kCullingRadiusPadding = 0.08f;
+        constexpr float kCullingMinPadding = 0.05f;
+
+        for (UINT i = 0; i < (UINT)s_InstanceBounds.size(); ++i)
+        {
+            if (i >= s_SceneInstances.size() || !s_SceneInstances[i].visible)
+                continue;
+
+            const uint32_t instanceId = s_SceneInstances[i].instanceId;
+            if (IsInstanceSelected(instanceId))
+            {
+                s_VisibleInstanceIndices.push_back(i);
+                continue;
+            }
+
+            Sphere cullSphere = s_InstanceBounds[i];
+            cullSphere.Radius += (std::max)(kCullingMinPadding, cullSphere.Radius * kCullingRadiusPadding);
+            if (SphereInsideFrustum(cullSphere, fr))
+                s_VisibleInstanceIndices.push_back(i);
+        }
     }
 
 #ifndef NDEBUG
@@ -2301,40 +2680,13 @@ void Scene::Render(const SceneRenderContext& ctx)
     ctx.commandList->OMSetBlendFactor(blendFactor);
     ctx.commandList->OMSetStencilRef(0);
 
-    // Common CB: bind a fresh slice (shared root signature for both PSOs).
+    // Common CB data (shared fields). Per-draw instance offsets are bound inside the draw loop.
     {
-        Graphics& gfx = Graphics::GetInstance();
-
-        // Per-frame CB content: view-projection only (instancing supplies World/Color).
-        DirectX::XMFLOAT4X4 vpStore{};
-        DirectX::XMStoreFloat4x4(&vpStore, DirectX::XMMatrixTranspose(viewProj));
-        memcpy(g_scene.cbData.viewProj, &vpStore, sizeof(float) * 16);
-
-        const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
-        std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
-
-#ifndef NDEBUG
-        if ((alloc.GpuAddress & 0xFFull) != 0)
-        {
-            Logger::Log(LogLevel::Error,
-                std::format("[CBV] Misaligned CB GPU VA for b0: 0x{:X}", (uint64_t)alloc.GpuAddress),
-                "[Scene]");
-        }
-        else
-        {
-            Logger::Log(LogLevel::Debug,
-                std::format("[CBV] b0 GPU VA: 0x{:X}", (uint64_t)alloc.GpuAddress),
-                "[Scene]");
-        }
-#endif
-
-        ctx.commandList->SetGraphicsRootConstantBufferView(Graphics::SceneRootParamSceneCB, alloc.GpuAddress);
+        g_scene.cbData.sceneInstanceOffset = 0;
     }
 
-    Material* material = MaterialManager::GetInstance().GetMaterial(kSceneTestMaterialName);
-    if (!material)
-        material = MaterialManager::GetInstance().CreateMaterial(kSceneTestMaterialName);
-    Graphics::GetInstance().BindMaterial(material);
+    // Materials are bound per-object in the draw loop so each scene instance can use
+    // its own assigned material.
 
 #ifndef NDEBUG
     static auto s_lastInstancingCountsLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);
@@ -2368,6 +2720,11 @@ void Scene::Render(const SceneRenderContext& ctx)
         }
     }
 #endif
+    MaterialManager& materialManager = MaterialManager::GetInstance();
+    Material* fallbackMaterial = materialManager.GetMaterial(kSceneTestMaterialName);
+    if (!fallbackMaterial)
+        fallbackMaterial = materialManager.CreateMaterial(kSceneTestMaterialName);
+
     for (UINT visibleIndex = 0; visibleIndex < instanceCount; ++visibleIndex)
     {
         if (visibleIndex >= s_VisibleInstanceIndices.size())
@@ -2376,19 +2733,32 @@ void Scene::Render(const SceneRenderContext& ctx)
         if (sceneIndex >= s_SceneInstances.size())
             continue;
 
-        const MeshData& mesh = GetMeshForPrimitive(s_SceneInstances[sceneIndex].primitive);
+        Graphics& gfx = Graphics::GetInstance();
+            g_scene.cbData.sceneInstanceOffset = visibleIndex;
+        const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
+        std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
+        ctx.commandList->SetGraphicsRootConstantBufferView(Graphics::SceneRootParamSceneCB, alloc.GpuAddress);
+
+        const SceneInstance& sceneInstance = s_SceneInstances[sceneIndex];
+        if (!IsRenderablePrimitive(sceneInstance.primitive))
+            continue;
+        Material* material = materialManager.GetMaterialByIndex(sceneInstance.materialIndex);
+        gfx.BindMaterial(material ? material : fallbackMaterial);
+
+        const MeshData& mesh = GetMeshForPrimitive(sceneInstance.primitive);
         if (mesh.IndexCount == 0)
             continue;
 
         ctx.commandList->IASetVertexBuffers(0, 1, &mesh.VBV);
         ctx.commandList->IASetIndexBuffer(&mesh.IBV);
-        ctx.commandList->DrawIndexedInstanced(mesh.IndexCount, 1, 0, 0, visibleIndex);
+        ctx.commandList->DrawIndexedInstanced(mesh.IndexCount, 1, 0, 0, 0);
         s_LastStats.drawCalls++;
     }
 
     // For subsequent passes (grid), re-bind a fresh slice.
     {
         Graphics& gfx = Graphics::GetInstance();
+        g_scene.cbData.sceneInstanceOffset = 0;
         const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
         std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
 

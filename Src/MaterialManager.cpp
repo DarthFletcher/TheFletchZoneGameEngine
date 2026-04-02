@@ -1,6 +1,8 @@
 #include "MaterialManager.h"
 #include "Logger.h"
+#include "Scene.h"
 
+#include <algorithm>
 #include <format>
 
 namespace
@@ -139,6 +141,87 @@ Material* MaterialManager::DuplicateMaterial(const Material& source, const std::
 
     Logger::Log(LogLevel::Info, std::format("Duplicated material: {} -> {}", source.name, copyName), "Material");
     return outMaterial;
+}
+
+bool MaterialManager::RenameMaterialByIndex(int index, const std::string& requestedName, std::string& outRenamedName)
+{
+    outRenamedName.clear();
+    if (index < 0 || index >= static_cast<int>(m_MaterialOrder.size()))
+        return false;
+
+    std::string sanitized = requestedName;
+    sanitized.erase(sanitized.begin(), std::find_if(sanitized.begin(), sanitized.end(), [](unsigned char c) { return !std::isspace(c); }));
+    sanitized.erase(std::find_if(sanitized.rbegin(), sanitized.rend(), [](unsigned char c) { return !std::isspace(c); }).base(), sanitized.end());
+    if (sanitized.empty())
+        return false;
+
+    const std::string oldName = m_MaterialOrder[index];
+    auto it = m_Materials.find(oldName);
+    if (it == m_Materials.end() || !it->second)
+        return false;
+
+    const std::string newName = (sanitized == oldName) ? oldName : MakeUniqueMaterialName(sanitized);
+    if (newName == oldName)
+    {
+        outRenamedName = oldName;
+        return true;
+    }
+
+    std::unique_ptr<Material> material = std::move(it->second);
+    m_Materials.erase(it);
+    material->name = newName;
+    m_Materials.emplace(newName, std::move(material));
+    m_MaterialOrder[index] = newName;
+    outRenamedName = newName;
+
+    Logger::Log(LogLevel::Info, std::format("Renamed material: {} -> {}", oldName, newName), "Material");
+    return true;
+}
+
+bool MaterialManager::DeleteMaterialByIndex(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_MaterialOrder.size()))
+        return false;
+    if (m_MaterialOrder.size() <= 1)
+    {
+        Logger::Log(LogLevel::Warning, "Cannot delete the last material asset.", "Material");
+        return false;
+    }
+
+    const std::string removedName = m_MaterialOrder[index];
+    auto it = m_Materials.find(removedName);
+    if (it == m_Materials.end())
+        return false;
+
+    Material* removedMaterial = it->second.get();
+    m_PendingTextureLoads.erase(
+        std::remove_if(
+            m_PendingTextureLoads.begin(),
+            m_PendingTextureLoads.end(),
+            [removedMaterial](const PendingTextureLoad& pendingLoad)
+            {
+                return pendingLoad.material == removedMaterial;
+            }),
+        m_PendingTextureLoads.end());
+
+    for (UINT sceneIndex = 0; sceneIndex < Scene::GetInstanceCount(); ++sceneIndex)
+    {
+        if (SceneInstance* instance = Scene::GetInstance(sceneIndex))
+        {
+            if (instance->materialIndex == index)
+                instance->materialIndex = 0;
+            else if (instance->materialIndex > index)
+                --instance->materialIndex;
+        }
+    }
+
+    m_Materials.erase(it);
+    m_MaterialOrder.erase(m_MaterialOrder.begin() + index);
+    Scene::RebuildRenderInstancesFromSceneData();
+    Scene::MarkInstancesDirty();
+
+    Logger::Log(LogLevel::Info, std::format("Deleted material: {}", removedName), "Material");
+    return true;
 }
 
 Material* MaterialManager::GetMaterial(const std::string& name)

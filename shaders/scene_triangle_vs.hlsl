@@ -1,13 +1,4 @@
-cbuffer SceneCB : register(b0)
-{
-    float4x4 gViewProj;
-    float3 gCameraPos;
-    float  gGridFadeDist;
-    float3 gLightDirection;
-    float  gLightIntensity;
-    float3 gLightColor;
-    float  gAmbientIntensity;
-};
+#include "scene_cb.hlsli"
 
 struct InstanceData
 {
@@ -36,10 +27,10 @@ struct VSOutput
 
 VSOutput main(VSInput input, uint instanceID : SV_InstanceID)
 {
-    InstanceData inst = gInstances[instanceID];
+    InstanceData inst = gInstances[gSceneInstanceOffset + instanceID];
 
     float4 worldPos = mul(float4(input.pos, 1.0f), inst.World);
-    float4 clipPos = mul(worldPos, gViewProj);
+    float4 clipPos = mul(worldPos, gSceneViewProjection);
     float3x3 world3x3 = (float3x3)inst.World;
 
     VSOutput o;

@@ -47,6 +47,11 @@ namespace UI {
     void DrawEditorPanels();
     void ApplyTheme(Theme theme);
 	void SetMainWindowSize(int width, int height);
+    bool LoadSceneAssetFromPath(const std::string& path);
+    bool SaveCurrentSceneAsset();
+    bool SaveCurrentSceneAssetAs();
+    std::string GetCurrentSceneAssetPath();
+    void SetCurrentSceneAssetPath(const std::string& path);
 
     // Applies a pending default dock layout build. Call this once per frame AFTER windows are drawn.
     void EndDockSpaceFrame();
@@ -66,6 +71,12 @@ namespace GPUSelection {
     void ListAvailableGPUs();
     void SelectGPU(int index);
 }
+
+
+
+
+
+
 
 
 

@@ -340,16 +340,14 @@ namespace EditorPanels
         static std::string GetPromptConfidenceStarsText(float confidence)
         {
             const int stars = GetPromptConfidenceStars(confidence);
-            return std::string((size_t)stars, '\xE2') + ((stars > 0) ? "\x98\x85" : "");
+            return stars > 0 ? std::string((size_t)stars, '*') : std::string("-");
         }
 
         static bool DrawDynamicPromptButton(const BlackFlamePromptEntry& entry)
         {
             const float confidence = GetPromptConfidence(entry);
             const int stars = GetPromptConfidenceStars(confidence);
-            std::string starText;
-            for (int i = 0; i < stars; ++i)
-                starText += "\xE2\x98\x85";
+            const std::string starText = stars > 0 ? std::string((size_t)stars, '*') : std::string("-");
 
             const ImVec4 recommendedColor = ImVec4(0.52f, 0.24f, 0.08f, 1.0f);
             const ImVec4 normalColor = ImVec4(0.26f, 0.20f, 0.18f, 1.0f);
@@ -363,7 +361,7 @@ namespace EditorPanels
             const bool pressed = ImGui::Button(entry.Label.c_str(), ImVec2(-1.0f, 0.0f));
             ImGui::PopStyleColor(3);
 
-            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.22f, 1.0f), "%s", starText.c_str());
+            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.22f, 1.0f), "Confidence: %s", starText.c_str());
             ImGui::ProgressBar(confidence, ImVec2(-1.0f, 4.0f), "");
             ImGui::Spacing();
             ImGui::PopID();

@@ -1,9 +1,4 @@
-cbuffer SceneCB : register(b0)
-{
-    float4x4 gViewProj;
-    float3 gCameraPos;
-    float  gGridFadeDist;
-};
+#include "scene_cb.hlsli"
 
 struct VSInput
 {
@@ -26,7 +21,7 @@ VSOutput main(VSInput input)
     o.worldPos = input.pos;
 
     // Transform to clip space.
-    o.pos = mul(float4(input.pos, 1.0f), gViewProj);
+    o.pos = mul(float4(input.pos, 1.0f), gSceneViewProjection);
 
     o.color = input.color;
     return o;

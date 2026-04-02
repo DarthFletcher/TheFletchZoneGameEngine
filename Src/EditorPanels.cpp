@@ -22,7 +22,10 @@
 #include <cfloat>
 #include <cctype>
 #include <filesystem>
+#include <functional>
 #include <unordered_map>
+
+extern Engine* g_engineInstance;
 
 namespace EditorPanels
 {
@@ -31,6 +34,7 @@ namespace EditorPanels
         All,
         Primitives,
         Prefabs,
+        Scenes,
         Textures,
         Materials,
     };
@@ -41,19 +45,62 @@ namespace EditorPanels
     static constexpr const char* kSceneCreatePlanePayload = "SCENE_CREATE_PLANE";
     static constexpr const char* kSceneCreateCylinderPayload = "SCENE_CREATE_CYLINDER";
     static constexpr const char* kSceneCreatePrefabPayload = "SCENE_CREATE_PREFAB";
+    static constexpr const char* kSceneCreateEmptyPayload = "SCENE_CREATE_EMPTY";
     static constexpr const char* kAssetTexturePayload = "ASSET_TEXTURE";
     static constexpr const char* kAssetMaterialPayload = "ASSET_MATERIAL";
+    static constexpr const char* kAssetFolderPayload = "ASSET_FOLDER";
+    static constexpr const char* kAssetScenePayload = "ASSET_SCENE";
     static EditorGizmo g_EditorGizmo;
     static bool g_WasGizmoDragging = false;
     static AssetCategory g_SelectedAssetCategory = AssetCategory::All;
     static std::string g_SelectedAssetId;
     static char g_AssetSearch[128] = {};
+    static char g_FolderRenameBuffer[128] = {};
+    static char g_SceneRenameBuffer[128] = {};
+    static char g_AssetRenameBuffer[128] = {};
+    static char g_MaterialRenameBuffer[128] = {};
+    static std::filesystem::path g_AssetCurrentFolder = std::filesystem::path("Assets");
+    static std::filesystem::path g_PendingFolderRenamePath;
+    static std::filesystem::path g_PendingSceneRenamePath;
+    static std::filesystem::path g_PendingAssetRenamePath;
+    static std::filesystem::path g_PendingDeletePath;
+    static bool g_PendingDeleteIsFolder = false;
+    static const char* g_PendingDeleteKindLabel = "Asset";
+    static const char* g_PendingAssetRenameKindLabel = "asset";
+    static int g_PendingMaterialRenameIndex = -1;
+    static int g_PendingMaterialDeleteIndex = -1;
+    static std::string g_PendingAssetRevealId;
+    static bool g_RequestOpenRenameFolderPopup = false;
+    static bool g_RequestOpenRenameScenePopup = false;
+    static bool g_RequestOpenRenameAssetPopup = false;
+    static bool g_RequestOpenRenameMaterialPopup = false;
+    static bool g_RequestOpenDeleteAssetPopup = false;
+    static bool g_RequestOpenDeleteMaterialPopup = false;
     static std::unordered_map<std::string, ImTextureID> g_AssetThumbnailCache;
     static int GetAssetTileColumnCount(float availableWidth, float tileWidth, float spacing);
     static ImTextureID GetAssetThumbnailTexture(const std::string& assetId, const std::string& fallbackTexturePath);
     static bool DrawAssetTile(const char* id, const char* title, const char* icon, const char* payloadType, const void* payloadData, size_t payloadSize, bool selected, ImTextureID thumbnailTexture);
     static void DrawAssetSectionHeader(const char* label);
     static std::vector<std::filesystem::path> EnumerateTextureAssets();
+    static std::vector<std::filesystem::path> EnumerateSceneAssets();
+    static std::vector<std::filesystem::path> EnumerateAssetFolders();
+    static bool CreateAssetFolder(std::filesystem::path& outCreatedPath);
+    static bool RenameAssetFolder(const std::filesystem::path& sourcePath, const std::string& requestedName, std::filesystem::path& outRenamedPath);
+    static bool RenameSceneAsset(const std::filesystem::path& sourcePath, const std::string& requestedName, std::filesystem::path& outRenamedPath);
+    static bool RenameAssetFile(const std::filesystem::path& sourcePath, const std::string& requestedName, std::filesystem::path& outRenamedPath);
+    static bool DuplicateAssetFile(const std::filesystem::path& sourcePath, std::filesystem::path& outDuplicatedPath);
+    static bool MoveAssetFileToFolder(const std::filesystem::path& sourcePath, const std::filesystem::path& targetFolder, std::filesystem::path& outMovedPath);
+    static bool DeleteAssetPath(const std::filesystem::path& targetPath, bool isFolder);
+    static bool CanDeleteAssetPath(const std::filesystem::path& targetPath, bool isFolder, std::string& outReason);
+    static std::filesystem::path GetAssetRootPath();
+    static void EnsureAssetCurrentFolderValid();
+    static bool IsDirectChildOfFolder(const std::filesystem::path& path, const std::filesystem::path& folder);
+    static bool IsPathWithinFolder(const std::filesystem::path& path, const std::filesystem::path& folder);
+    static void QueueAssetSelection(const std::string& assetId);
+    static void QueueMaterialSelection(int materialIndex, const std::string& materialName);
+    static std::string FindFirstSelectableAssetIdInFolder(const std::filesystem::path& folder);
+    static bool ProjectWorldToSceneScreen(const DirectX::XMFLOAT3& worldPos, const CameraData& camera, ImVec2 sceneMin, ImVec2 sceneSize, ImVec2& outScreen);
+    static void DrawSceneCameraIcons(const CameraData& camera, ImDrawList* drawList, ImVec2 sceneMin, ImVec2 sceneSize);
 
     static const char* GetAssetCategoryLabel(AssetCategory category)
     {
@@ -61,6 +108,7 @@ namespace EditorPanels
         {
         case AssetCategory::Primitives: return "Primitives";
         case AssetCategory::Prefabs: return "Prefabs";
+        case AssetCategory::Scenes: return "Scenes";
         case AssetCategory::Textures: return "Textures";
         case AssetCategory::Materials: return "Materials";
         case AssetCategory::All:
@@ -92,12 +140,12 @@ namespace EditorPanels
     static std::vector<std::filesystem::path> EnumeratePrefabAssets()
     {
         std::vector<std::filesystem::path> result;
-        const std::filesystem::path prefabDir = std::filesystem::path("Assets") / "Prefabs";
-        if (!std::filesystem::exists(prefabDir))
+        const std::filesystem::path assetRoot = std::filesystem::path("Assets");
+        if (!std::filesystem::exists(assetRoot))
             return result;
 
         std::error_code ec;
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(prefabDir, ec))
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(assetRoot, ec))
         {
             if (ec)
                 break;
@@ -152,6 +200,219 @@ namespace EditorPanels
         }
         ImGui::PopID();
         return changed;
+    }
+
+    static const char* GetSceneDebugViewModeLabel(SceneDebugViewMode mode)
+    {
+        switch (mode)
+        {
+        case SceneDebugViewMode::Albedo: return "Albedo";
+        case SceneDebugViewMode::Normals: return "Normals";
+        case SceneDebugViewMode::Metallic: return "Metallic";
+        case SceneDebugViewMode::Roughness: return "Roughness";
+        case SceneDebugViewMode::LightingOnly: return "Lighting Only";
+        case SceneDebugViewMode::AmbientOnly: return "Ambient Only";
+        case SceneDebugViewMode::SpecularOnly: return "Specular Only";
+        case SceneDebugViewMode::SelectionMask: return "Selection Mask";
+        case SceneDebugViewMode::Depth: return "Depth";
+        case SceneDebugViewMode::LinearDepth: return "Linear Depth";
+        case SceneDebugViewMode::WorldPosition: return "World Position";
+        case SceneDebugViewMode::UVs: return "UVs";
+        case SceneDebugViewMode::LightDirection: return "Light Direction";
+        case SceneDebugViewMode::Lit:
+        default:
+            return "Lit";
+        }
+    }
+
+    static void DrawMaterialDebugViewControls(EditorState& editor, const char* idSuffix)
+    {
+        ImGui::PushID(idSuffix);
+        ImGui::TextUnformatted("Material Debug View");
+        const SceneDebugViewMode currentMode = editor.sceneDebugViewMode;
+        if (ImGui::BeginCombo("##MaterialDebugView", GetSceneDebugViewModeLabel(currentMode)))
+        {
+            const SceneDebugViewMode modes[] = {
+                SceneDebugViewMode::Lit,
+                SceneDebugViewMode::Albedo,
+                SceneDebugViewMode::Normals,
+                SceneDebugViewMode::Metallic,
+                SceneDebugViewMode::Roughness,
+                SceneDebugViewMode::LightingOnly,
+                SceneDebugViewMode::AmbientOnly,
+                SceneDebugViewMode::SpecularOnly,
+                SceneDebugViewMode::SelectionMask,
+                SceneDebugViewMode::Depth,
+                SceneDebugViewMode::LinearDepth,
+                SceneDebugViewMode::WorldPosition,
+                SceneDebugViewMode::UVs,
+                SceneDebugViewMode::LightDirection,
+            };
+
+            for (SceneDebugViewMode mode : modes)
+            {
+                const bool selected = (editor.sceneDebugViewMode == mode);
+                if (ImGui::Selectable(GetSceneDebugViewModeLabel(mode), selected))
+                    editor.sceneDebugViewMode = mode;
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##MaterialDebugView"))
+            editor.sceneDebugViewMode = SceneDebugViewMode::Lit;
+        ImGui::PopID();
+    }
+
+    static void DrawMaterialInspectorFields(
+        Material* material,
+        EditorState& editor,
+        const char* idSuffix,
+        const std::function<void(Material*)>& emitMaterialChanged)
+    {
+        if (!material)
+            return;
+
+        auto textureLabel = [](Texture* texture) -> std::string
+        {
+            if (!texture || texture->sourcePath.empty())
+                return "<None>";
+            return std::filesystem::path(texture->sourcePath).filename().string();
+        };
+
+        auto drawTextureSlot = [&](const char* comboLabel, Texture* currentTexture, const std::function<void(const std::string&)>& assignTexture, const std::function<void()>& clearTexture)
+        {
+            const std::string currentTextureLabel = textureLabel(currentTexture);
+            const std::string comboId = std::format("{}##{}", comboLabel, idSuffix);
+            if (ImGui::BeginCombo(comboId.c_str(), currentTextureLabel.c_str()))
+            {
+                static std::unordered_map<std::string, std::string> textureFilters;
+                std::string& filterText = textureFilters[comboId];
+                char filterBuffer[128] = {};
+                strncpy_s(filterBuffer, filterText.c_str(), sizeof(filterBuffer) - 1u);
+                const std::string filterId = std::format("##TextureFilter{}", idSuffix);
+                if (ImGui::InputTextWithHint(filterId.c_str(), "Filter textures...", filterBuffer, IM_ARRAYSIZE(filterBuffer)))
+                    filterText = filterBuffer;
+
+                auto matchesTextureFilter = [&](const std::string& textureName)
+                {
+                    if (filterText.empty())
+                        return true;
+                    std::string lowerName = textureName;
+                    std::string lowerFilter = filterText;
+                    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                    std::transform(lowerFilter.begin(), lowerFilter.end(), lowerFilter.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+                    return lowerName.find(lowerFilter) != std::string::npos;
+                };
+
+                const bool noTextureSelected = (currentTexture == nullptr);
+                if (matchesTextureFilter("<None>") && ImGui::Selectable("<None>", noTextureSelected))
+                {
+                    clearTexture();
+                    emitMaterialChanged(material);
+                }
+
+                const std::filesystem::path textureRoot = std::filesystem::path("Assets") / "Textures";
+                for (const auto& texturePath : EnumerateTextureAssets())
+                {
+                    const std::string texturePathString = texturePath.string();
+                    const std::string textureLabelText = texturePath.lexically_relative(textureRoot).generic_string();
+                    if (!matchesTextureFilter(textureLabelText))
+                        continue;
+                    const bool isCurrent = currentTexture && currentTexture->sourcePath == texturePathString;
+                    if (ImGui::Selectable(textureLabelText.c_str(), isCurrent))
+                    {
+                        assignTexture(texturePathString);
+                        emitMaterialChanged(material);
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        };
+
+        auto drawTexturePreview = [&](const char* label, Texture* texture)
+        {
+            ImGui::TextUnformatted(label);
+            if (texture && !texture->sourcePath.empty())
+            {
+                const ImTextureID preview = GetAssetThumbnailTexture(texture->sourcePath, texture->sourcePath);
+                if (preview)
+                {
+                    ImGui::Image(preview, ImVec2(48.0f, 48.0f), ImVec2(0, 0), ImVec2(1, 1));
+                    ImGui::SameLine();
+                }
+                ImGui::BeginGroup();
+                ImGui::TextUnformatted(textureLabel(texture).c_str());
+                ImGui::TextDisabled("%d x %d", texture->width, texture->height);
+                ImGui::EndGroup();
+            }
+            else
+            {
+                ImGui::TextDisabled("<None>");
+            }
+        };
+
+        DrawMaterialDebugViewControls(editor, idSuffix);
+        drawTexturePreview("Albedo Preview", material->albedo);
+        drawTextureSlot(
+            "Albedo Texture",
+            material->albedo,
+            [&](const std::string& texturePath) { MaterialManager::GetInstance().LoadAlbedoTexture(material, texturePath); },
+            [&]() { MaterialManager::GetInstance().SetAlbedoTexture(material, nullptr); });
+
+        drawTexturePreview("Normal Preview", material->normal);
+        drawTextureSlot(
+            "Normal Texture",
+            material->normal,
+            [&](const std::string& texturePath) { MaterialManager::GetInstance().LoadNormalTexture(material, texturePath); },
+            [&]() { MaterialManager::GetInstance().SetNormalTexture(material, nullptr); });
+
+        drawTexturePreview("Metallic Preview", material->metallicMap);
+        drawTextureSlot(
+            "Metallic Texture",
+            material->metallicMap,
+            [&](const std::string& texturePath) { MaterialManager::GetInstance().LoadMetallicTexture(material, texturePath); },
+            [&]() { MaterialManager::GetInstance().SetMetallicTexture(material, nullptr); });
+
+        drawTexturePreview("Roughness Preview", material->roughnessMap);
+        drawTextureSlot(
+            "Roughness Texture",
+            material->roughnessMap,
+            [&](const std::string& texturePath) { MaterialManager::GetInstance().LoadRoughnessTexture(material, texturePath); },
+            [&]() { MaterialManager::GetInstance().SetRoughnessTexture(material, nullptr); });
+
+        ImGui::Text("Normal: %s", textureLabel(material->normal).c_str());
+        ImGui::Text("Metallic Map: %s", textureLabel(material->metallicMap).c_str());
+        ImGui::Text("Roughness Map: %s", textureLabel(material->roughnessMap).c_str());
+
+        float baseColor[3] = { material->baseColor.x, material->baseColor.y, material->baseColor.z };
+        if (ImGui::ColorEdit3("Base Color", baseColor))
+        {
+            material->SetBaseColor({ baseColor[0], baseColor[1], baseColor[2] });
+            emitMaterialChanged(material);
+        }
+
+        float metallic = material->metallic;
+        if (DrawTickFloat("Metallic", metallic, 0.0f, 1.0f, 0.05f))
+        {
+            material->SetFloat("metallic", metallic);
+            emitMaterialChanged(material);
+        }
+
+        float roughness = material->roughness;
+        if (DrawTickFloat("Roughness", roughness, 0.0f, 1.0f, 0.05f))
+        {
+            material->SetFloat("roughness", roughness);
+            emitMaterialChanged(material);
+        }
+
+        bool flipNormalY = Graphics::GetInstance().GetFlipNormalGreenChannel();
+        if (ImGui::Checkbox("Normal Flip Y", &flipNormalY))
+        {
+            Graphics::GetInstance().GetFlipNormalGreenChannel() = flipNormalY;
+            emitMaterialChanged(material);
+        }
     }
 
     static bool DrawTickFloat3(const char* label, DirectX::XMFLOAT3& value, float step, float minValue, float maxValue)
@@ -374,6 +635,8 @@ namespace EditorPanels
         {
         case CameraNavMode::Unity_AltMouse:
             return alt && (lmbDown || mmbDown || rmbDown);
+        case CameraNavMode::Unity_WASDMouse:
+            return rmbDown || (alt && (lmbDown || mmbDown || rmbDown));
         case CameraNavMode::Blender_MMB:
             return mmbDown && (!shift || shift || ctrl);
         case CameraNavMode::TFZ_RMB:
@@ -559,7 +822,6 @@ namespace EditorPanels
 
                     // Cache scene image rect for picking
                     const ImVec2 sceneMin = ImGui::GetItemRectMin();
-                    const ImVec2 overlayPos = { sceneMin.x + 10.0f, sceneMin.y + 10.0f };
 
                     extern Engine* g_engineInstance;
                     EditorState& editor = g_engineInstance->GetEditorState();
@@ -571,6 +833,13 @@ namespace EditorPanels
                         if (Scene::TryGetLastRenderCameraData(dropCamera))
                             spawnPos = ComputeSceneDropSpawnPosition(dropCamera, sceneMin, size, ImGui::GetMousePos());
 
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreateEmptyPayload))
+                        {
+                            (void)payload;
+                            PushUndoSnapshot(editor);
+                            Scene::CreateEmpty({ spawnPos.x, 0.0f, spawnPos.z });
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
                         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreateCubePayload))
                         {
                             (void)payload;
@@ -656,6 +925,7 @@ namespace EditorPanels
                     }
 
                     const ImVec2 hudSize = ImGui::CalcTextSize(gizmoHud, nullptr, false);
+                    const ImVec2 overlayPos = { sceneMin.x + 10.0f, sceneMin.y + 10.0f };
                     ImDrawList* overlayDraw = ImGui::GetWindowDrawList();
                     overlayDraw->AddRectFilled(
                         ImVec2(overlayPos.x - 6.0f, overlayPos.y - 6.0f),
@@ -664,52 +934,11 @@ namespace EditorPanels
                         4.0f);
                     overlayDraw->AddText(overlayPos, IM_COL32(255, 255, 255, 255), gizmoHud);
 
-                    {
-                        DirectX::XMFLOAT3 anchor{};
-                        if (TryGetCurrentSelectionAnchor(editor, anchor))
-                        {
-                            CameraData pivotCamera{};
-                            ImVec2 pivotScreen{};
-                            if (Scene::TryGetLastRenderCameraData(pivotCamera) &&
-                                ProjectWorldToSceneViewport(anchor, pivotCamera, sceneMin, size, pivotScreen))
-                            {
-                                overlayDraw->AddCircleFilled(pivotScreen, 4.0f, IM_COL32(255, 230, 80, 220));
-                                overlayDraw->AddCircle(pivotScreen, 7.0f, IM_COL32(255, 230, 80, 180), 16, 1.5f);
-                            }
-
-                            const auto& instances = Scene::GetInstances();
-                            for (const SceneInstance& sceneInstance : instances)
-                            {
-                                if (!sceneInstance.visible)
-                                    continue;
-
-                                const bool isSelected = Scene::IsInstanceSelected(sceneInstance.instanceId);
-                                const bool isHovered = (sceneInstance.instanceId == Scene::GetHoveredInstanceId());
-                                if (!isSelected && !isHovered)
-                                    continue;
-
-                                ImVec2 rectMin{}, rectMax{};
-                                if (!TryGetSceneInstanceScreenRect(sceneInstance, pivotCamera, sceneMin, size, rectMin, rectMax))
-                                    continue;
-
-                                const ImU32 outlineColor = isSelected ? IM_COL32(255, 140, 60, 220) : IM_COL32(255, 230, 80, 220);
-                                const float pad = isSelected ? 3.0f : 2.0f;
-                                overlayDraw->AddRect(
-                                    ImVec2(rectMin.x - pad, rectMin.y - pad),
-                                    ImVec2(rectMax.x + pad, rectMax.y + pad),
-                                    outlineColor,
-                                    2.0f,
-                                    0,
-                                    isSelected ? 2.5f : 1.5f);
-                            }
-                        }
-                    }
-
                     ImGui::SetCursorScreenPos(ImVec2(overlayPos.x, overlayPos.y + hudSize.y + 18.0f));
-                    if (ImGui::SmallButton(g_EditorGizmo.GetSpace() == EditorGizmo::Space::World ? "World##GizmoSpace" : "Local##GizmoSpace"))
+                    if (ImGui::Button(g_EditorGizmo.GetSpace() == EditorGizmo::Space::World ? "World##GizmoSpace" : "Local##GizmoSpace", ImVec2(74.0f, 0.0f)))
                         g_EditorGizmo.ToggleSpace();
                     ImGui::SameLine();
-                    if (ImGui::SmallButton(editor.gizmoPivotMode == GizmoPivotMode::Center ? "Center##GizmoPivot" : "Pivot##GizmoPivot"))
+                    if (ImGui::Button(editor.gizmoPivotMode == GizmoPivotMode::Center ? "Center##GizmoPivot" : "Pivot##GizmoPivot", ImVec2(78.0f, 0.0f)))
                         editor.gizmoPivotMode = (editor.gizmoPivotMode == GizmoPivotMode::Center) ? GizmoPivotMode::Pivot : GizmoPivotMode::Center;
 
                     if (focused && !Engine::IsKeyboardCapturedByUI())
@@ -766,13 +995,16 @@ namespace EditorPanels
                         gfx.SetSceneViewportCameraInputState(hovered, focused, allowCameraInput);
 
                         CameraData gizmoCamera{};
+                        const float hudButtonHeight = ImGui::GetFrameHeight();
                         const ImVec2 hudButtonMin = ImVec2(overlayPos.x, overlayPos.y + hudSize.y + 18.0f);
-                        const ImVec2 hudButtonMax = ImVec2(hudButtonMin.x + 72.0f, hudButtonMin.y + ImGui::GetFrameHeight());
+                        const ImVec2 hudButtonMax = ImVec2(hudButtonMin.x + 160.0f, hudButtonMin.y + hudButtonHeight);
                         const bool overHudButton = io.MousePos.x >= hudButtonMin.x && io.MousePos.x <= hudButtonMax.x &&
                             io.MousePos.y >= hudButtonMin.y && io.MousePos.y <= hudButtonMax.y;
                         const bool allowGizmoInput = hovered && focused && !navigatingCamera && !overHudButton;
                         if (Scene::TryGetLastRenderCameraData(gizmoCamera))
                         {
+                            DrawSceneCameraIcons(gizmoCamera, ImGui::GetWindowDrawList(), sceneMin, size);
+
                             if (SceneInstance* selected = Scene::GetSelectedInstance())
                             {
                                 const bool wasDragging = g_EditorGizmo.IsDragging();
@@ -809,7 +1041,7 @@ namespace EditorPanels
                         const bool mmbDown = ImGui::IsMouseDown(ImGuiMouseButton_Middle);
                         const bool navigatingCamera = IsSceneCameraNavigating(editor);
                         const ImVec2 hudButtonMin = ImVec2(overlayPos.x, overlayPos.y + hudSize.y + 18.0f);
-                        const ImVec2 hudButtonMax = ImVec2(hudButtonMin.x + 72.0f, hudButtonMin.y + ImGui::GetFrameHeight());
+                        const ImVec2 hudButtonMax = ImVec2(hudButtonMin.x + 160.0f, hudButtonMin.y + ImGui::GetFrameHeight());
                         const bool overHudButton = io.MousePos.x >= hudButtonMin.x && io.MousePos.x <= hudButtonMax.x &&
                             io.MousePos.y >= hudButtonMin.y && io.MousePos.y <= hudButtonMax.y;
                         const bool clickingGizmo = g_EditorGizmo.IsDragging() || g_EditorGizmo.HasHoveredHandle();
@@ -851,6 +1083,77 @@ namespace EditorPanels
                     }
                     ImGui::TextUnformatted("Scene render target not ready...");
                 }
+            }
+            ImGui::End();
+        }
+    };
+
+    static EditorPanel g_game{
+        "Game",
+        true,
+        []()
+        {
+            auto& panel = Game();
+            if (!panel.open)
+                return;
+
+            if (ImGui::Begin(panel.name, &panel.open))
+            {
+                Graphics& gfx = Graphics::GetInstance();
+                ImVec2 size = ImGui::GetContentRegionAvail();
+                const int rawW = (int)std::floor(size.x);
+                const int rawH = (int)std::floor(size.y);
+
+                static int s_lastRequestedGameW = 0;
+                static int s_lastRequestedGameH = 0;
+
+                int reqW = (rawW > 1) ? rawW : 1;
+                int reqH = (rawH > 1) ? rawH : 1;
+
+                if (s_lastRequestedGameW != 0 && s_lastRequestedGameH != 0)
+                {
+                    if (std::abs(reqW - s_lastRequestedGameW) <= 1) reqW = s_lastRequestedGameW;
+                    if (std::abs(reqH - s_lastRequestedGameH) <= 1) reqH = s_lastRequestedGameH;
+                }
+
+                const UINT w = (UINT)reqW;
+                const UINT h = (UINT)reqH;
+                if ((int)w != s_lastRequestedGameW || (int)h != s_lastRequestedGameH)
+                {
+                    s_lastRequestedGameW = (int)w;
+                    s_lastRequestedGameH = (int)h;
+                    gfx.RequestGameRenderTargetResize(w, h, ResizeSource::User);
+                }
+
+                const Engine::State state = Engine::GetState();
+                const bool runtimeActive = (state == Engine::State::Playing || state == Engine::State::Paused);
+                const ImTextureID tex = gfx.GetGameImGuiTextureID();
+                bool hovered = false;
+                bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+
+                if (runtimeActive && tex)
+                {
+                    ImGui::Image(tex, size, ImVec2(0, 0), ImVec2(1, 1));
+                    hovered = ImGui::IsItemHovered();
+                    const ImVec2 imageMin = ImGui::GetItemRectMin();
+                    ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 10.0f));
+                    ImGui::TextDisabled(state == Engine::State::Paused ? "Game View (Paused)" : "Game View (Runtime)");
+                    ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 28.0f));
+                    ImGui::TextDisabled("Controls: RMB=Look  WASD/QE=Move  Shift=Boost");
+                    ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 46.0f));
+                    ImGui::TextDisabled("Input: hovered=%d focused=%d allow=%d", hovered ? 1 : 0, focused ? 1 : 0, (runtimeActive && hovered && focused && !Engine::IsKeyboardCapturedByUI()) ? 1 : 0);
+                }
+                else
+                {
+                    ImGui::TextUnformatted("Game View");
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Not Playing");
+                    ImGui::Dummy(size);
+                    hovered = ImGui::IsItemHovered();
+                }
+
+                const bool allowRuntimeInput = runtimeActive && hovered && focused && !Engine::IsKeyboardCapturedByUI();
+                gfx.SetGameViewportInputState(hovered, focused, allowRuntimeInput);
             }
             ImGui::End();
         }
@@ -1003,9 +1306,11 @@ namespace EditorPanels
         if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
         if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
 
+        const char* hierarchyIcon = (instance->primitive == ScenePrimitive::Empty) ? ICON_FA_SITEMAP : ICON_FA_CUBE;
         const std::string hierarchyLabel = isPrefabInstance
-            ? std::format("{} {}{}", ICON_FA_CUBE, instance->name, hasPrefabOverrides ? " *" : "")
-            : instance->name;
+            ? std::format("{} {}{}", hierarchyIcon, instance->name, hasPrefabOverrides ? " *" : "")
+            : std::format("{} {}", hierarchyIcon, instance->name);
+
         const bool open = ImGui::TreeNodeEx((void*)(uintptr_t)instance->instanceId, flags, "%s", hierarchyLabel.c_str());
         if (ImGui::IsItemClicked())
         {
@@ -1320,6 +1625,52 @@ namespace EditorPanels
                         selected->visible = visible;
                     }
 
+                    if (selected->camera.enabled)
+                    {
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Camera");
+
+                        bool isMainCamera = selected->camera.isMain;
+                        if (ImGui::Checkbox("Main Camera", &isMainCamera))
+                        {
+                            PushUndoSnapshot(editor);
+                            selected->camera.isMain = isMainCamera;
+                            if (isMainCamera)
+                            {
+                                for (UINT instanceIndex = 0; instanceIndex < Scene::GetInstanceCount(); ++instanceIndex)
+                                {
+                                    SceneInstance* other = Scene::GetInstance(instanceIndex);
+                                    if (!other || other == selected || !other->camera.enabled)
+                                        continue;
+                                    other->camera.isMain = false;
+                                }
+                            }
+                        }
+
+                        float fovDegrees = DirectX::XMConvertToDegrees(selected->camera.fovY);
+                        if (ImGui::DragFloat("FOV", &fovDegrees, 0.1f, 10.0f, 120.0f, "%.1f deg"))
+                        {
+                            PushUndoSnapshot(editor);
+                            fovDegrees = (std::clamp)(fovDegrees, 10.0f, 120.0f);
+                            selected->camera.fovY = DirectX::XMConvertToRadians(fovDegrees);
+                        }
+
+                        float nearClip = selected->camera.nearClip;
+                        if (ImGui::DragFloat("Near Clip", &nearClip, 0.01f, 0.001f, 10.0f, "%.3f"))
+                        {
+                            PushUndoSnapshot(editor);
+                            selected->camera.nearClip = (std::max)(0.001f, nearClip);
+                            selected->camera.farClip = (std::max)(selected->camera.nearClip + 0.1f, selected->camera.farClip);
+                        }
+
+                        float farClip = selected->camera.farClip;
+                        if (ImGui::DragFloat("Far Clip", &farClip, 1.0f, 10.0f, 10000.0f, "%.1f"))
+                        {
+                            PushUndoSnapshot(editor);
+                            selected->camera.farClip = (std::max)(selected->camera.nearClip + 0.1f, farClip);
+                        }
+                    }
+
                     if (hasPrefabOverrideState && prefabOverrides.material)
                     {
                         ImGui::TextColored(overrideTextColor, "Material Index: %d", selected->materialIndex);
@@ -1387,144 +1738,7 @@ namespace EditorPanels
                     }
 
                     if (material)
-                    {
-                        auto textureLabel = [](Texture* texture) -> std::string
-                        {
-                            if (!texture || texture->sourcePath.empty())
-                                return "<None>";
-                            return std::filesystem::path(texture->sourcePath).filename().string();
-                        };
-
-                        auto drawTextureSlot = [&](const char* comboLabel, Texture* currentTexture, const std::function<void(const std::string&)>& assignTexture, const std::function<void()>& clearTexture)
-                        {
-                            const std::string currentTextureLabel = textureLabel(currentTexture);
-                            if (ImGui::BeginCombo(comboLabel, currentTextureLabel.c_str()))
-                            {
-                                static std::unordered_map<std::string, std::string> textureFilters;
-                                std::string& filterText = textureFilters[comboLabel];
-                                char filterBuffer[128] = {};
-                                strncpy_s(filterBuffer, filterText.c_str(), sizeof(filterBuffer) - 1u);
-                                if (ImGui::InputTextWithHint("##TextureFilter", "Filter textures...", filterBuffer, IM_ARRAYSIZE(filterBuffer)))
-                                    filterText = filterBuffer;
-
-                                auto matchesTextureFilter = [&](const std::string& textureName)
-                                {
-                                    if (filterText.empty())
-                                        return true;
-                                    std::string lowerName = textureName;
-                                    std::string lowerFilter = filterText;
-                                    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-                                    std::transform(lowerFilter.begin(), lowerFilter.end(), lowerFilter.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-                                    return lowerName.find(lowerFilter) != std::string::npos;
-                                };
-
-                                const bool noTextureSelected = (currentTexture == nullptr);
-                                if (matchesTextureFilter("<None>") && ImGui::Selectable("<None>", noTextureSelected))
-                                {
-                                    clearTexture();
-                                    emitMaterialChanged(material);
-                                }
-
-                                const std::filesystem::path textureRoot = std::filesystem::path("Assets") / "Textures";
-                                for (const auto& texturePath : EnumerateTextureAssets())
-                                {
-                                    const std::string texturePathString = texturePath.string();
-                                    const std::string textureLabelText = texturePath.lexically_relative(textureRoot).generic_string();
-                                    if (!matchesTextureFilter(textureLabelText))
-                                        continue;
-                                    const bool isCurrent = currentTexture && currentTexture->sourcePath == texturePathString;
-                                    if (ImGui::Selectable(textureLabelText.c_str(), isCurrent))
-                                    {
-                                        assignTexture(texturePathString);
-                                        emitMaterialChanged(material);
-                                    }
-                                }
-                                ImGui::EndCombo();
-                            }
-                        };
-
-                        auto drawTexturePreview = [&](const char* label, Texture* texture)
-                        {
-                            ImGui::TextUnformatted(label);
-                            if (texture && !texture->sourcePath.empty())
-                            {
-                                const ImTextureID preview = GetAssetThumbnailTexture(texture->sourcePath, texture->sourcePath);
-                                if (preview)
-                                {
-                                    ImGui::Image(preview, ImVec2(48.0f, 48.0f), ImVec2(0, 0), ImVec2(1, 1));
-                                    ImGui::SameLine();
-                                }
-                                ImGui::BeginGroup();
-                                ImGui::TextUnformatted(textureLabel(texture).c_str());
-                                ImGui::TextDisabled("%d x %d", texture->width, texture->height);
-                                ImGui::EndGroup();
-                            }
-                            else
-                            {
-                                ImGui::TextDisabled("<None>");
-                            }
-                        };
-
-                        drawTexturePreview("Albedo Preview", material->albedo);
-                        drawTextureSlot(
-                            "Albedo Texture",
-                            material->albedo,
-                            [&](const std::string& texturePath) { materials.LoadAlbedoTexture(material, texturePath); },
-                            [&]() { materials.SetAlbedoTexture(material, nullptr); });
-
-                        drawTexturePreview("Normal Preview", material->normal);
-                        drawTextureSlot(
-                            "Normal Texture",
-                            material->normal,
-                            [&](const std::string& texturePath) { materials.LoadNormalTexture(material, texturePath); },
-                            [&]() { materials.SetNormalTexture(material, nullptr); });
-
-                        drawTexturePreview("Metallic Preview", material->metallicMap);
-                        drawTextureSlot(
-                            "Metallic Texture",
-                            material->metallicMap,
-                            [&](const std::string& texturePath) { materials.LoadMetallicTexture(material, texturePath); },
-                            [&]() { materials.SetMetallicTexture(material, nullptr); });
-
-                        drawTexturePreview("Roughness Preview", material->roughnessMap);
-                        drawTextureSlot(
-                            "Roughness Texture",
-                            material->roughnessMap,
-                            [&](const std::string& texturePath) { materials.LoadRoughnessTexture(material, texturePath); },
-                            [&]() { materials.SetRoughnessTexture(material, nullptr); });
-
-                        ImGui::Text("Normal: %s", textureLabel(material->normal).c_str());
-                        ImGui::Text("Metallic Map: %s", textureLabel(material->metallicMap).c_str());
-                        ImGui::Text("Roughness Map: %s", textureLabel(material->roughnessMap).c_str());
-
-                        float baseColor[3] = { material->baseColor.x, material->baseColor.y, material->baseColor.z };
-                        if (ImGui::ColorEdit3("Base Color", baseColor))
-                        {
-                            material->SetBaseColor({ baseColor[0], baseColor[1], baseColor[2] });
-                            emitMaterialChanged(material);
-                        }
-
-                        float metallic = material->metallic;
-                        if (DrawTickFloat("Metallic", metallic, 0.0f, 1.0f, 0.05f))
-                        {
-                            material->SetFloat("metallic", metallic);
-                            emitMaterialChanged(material);
-                        }
-
-                        float roughness = material->roughness;
-                        if (DrawTickFloat("Roughness", roughness, 0.0f, 1.0f, 0.05f))
-                        {
-                            material->SetFloat("roughness", roughness);
-                            emitMaterialChanged(material);
-                        }
-
-                        bool flipNormalY = Graphics::GetInstance().GetFlipNormalGreenChannel();
-                        if (ImGui::Checkbox("Normal Flip Y", &flipNormalY))
-                        {
-                            Graphics::GetInstance().GetFlipNormalGreenChannel() = flipNormalY;
-                            emitMaterialChanged(material);
-                        }
-                    }
+                        DrawMaterialInspectorFields(material, editor, "SelectedObjectMaterial", emitMaterialChanged);
                 }
                 else
                 {
@@ -1557,28 +1771,7 @@ namespace EditorPanels
                             editor->sceneEvents.Emit(evt);
                         };
 
-                        float baseColor[3] = { focusedMaterial->baseColor.x, focusedMaterial->baseColor.y, focusedMaterial->baseColor.z };
-                        if (ImGui::ColorEdit3("Base Color", baseColor))
-                        {
-                            focusedMaterial->SetBaseColor({ baseColor[0], baseColor[1], baseColor[2] });
-                            emitMaterialChanged(focusedMaterial);
-                        }
-
-                        float metallic = focusedMaterial->metallic;
-                        if (DrawTickFloat("Metallic", metallic, 0.0f, 1.0f, 0.05f))
-                        {
-                            focusedMaterial->SetFloat("metallic", metallic);
-                            emitMaterialChanged(focusedMaterial);
-                        }
-
-                        float roughness = focusedMaterial->roughness;
-                        if (DrawTickFloat("Roughness", roughness, 0.0f, 1.0f, 0.05f))
-                        {
-                            focusedMaterial->SetFloat("roughness", roughness);
-                            emitMaterialChanged(focusedMaterial);
-                        }
-
-                        ImGui::Text("Texture Bound: %s", (focusedMaterial->albedo && !focusedMaterial->albedo->sourcePath.empty()) ? "Yes" : "No");
+                        DrawMaterialInspectorFields(focusedMaterial, *editor, "FocusedMaterialAsset", emitMaterialChanged);
                     }
                     else
                     {
@@ -1604,9 +1797,23 @@ namespace EditorPanels
                 ImGui::Text(ICON_FA_FOLDER_OPEN " Asset Browser");
                 if (g_UIFontBold) ImGui::PopFont();
 
+                EnsureAssetCurrentFolderValid();
+                const std::filesystem::path assetRoot = GetAssetRootPath();
+                const std::filesystem::path currentFolder = g_AssetCurrentFolder;
+                const std::filesystem::path relativeCurrentFolder = (currentFolder == assetRoot)
+                    ? std::filesystem::path{}
+                    : std::filesystem::relative(currentFolder, assetRoot);
+
                 ImGui::SetNextItemWidth(-1.0f);
                 ImGui::InputTextWithHint("##AssetSearch", "Search assets...", g_AssetSearch, IM_ARRAYSIZE(g_AssetSearch));
-                ImGui::TextDisabled("Assets / %s", GetAssetCategoryLabel(g_SelectedAssetCategory));
+                const std::string currentFolderLabel = relativeCurrentFolder.empty() ? std::string("Assets") : std::format("Assets/{}", relativeCurrentFolder.generic_string());
+                ImGui::TextDisabled("%s / %s", currentFolderLabel.c_str(), GetAssetCategoryLabel(g_SelectedAssetCategory));
+                if (ImGui::Button("Create Folder##Assets"))
+                {
+                    std::filesystem::path createdFolder;
+                    if (CreateAssetFolder(createdFolder))
+                        QueueAssetSelection(createdFolder.string());
+                }
                 ImGui::Separator();
 
                 const float sidebarWidth = 150.0f;
@@ -1619,6 +1826,8 @@ namespace EditorPanels
                     g_SelectedAssetCategory = AssetCategory::Primitives;
                 if (ImGui::Selectable("Prefabs", g_SelectedAssetCategory == AssetCategory::Prefabs))
                     g_SelectedAssetCategory = AssetCategory::Prefabs;
+                if (ImGui::Selectable("Scenes", g_SelectedAssetCategory == AssetCategory::Scenes))
+                    g_SelectedAssetCategory = AssetCategory::Scenes;
                 if (ImGui::Selectable("Textures", g_SelectedAssetCategory == AssetCategory::Textures))
                     g_SelectedAssetCategory = AssetCategory::Textures;
                 if (ImGui::Selectable("Materials", g_SelectedAssetCategory == AssetCategory::Materials))
@@ -1628,6 +1837,30 @@ namespace EditorPanels
                 ImGui::SameLine();
 
                 ImGui::BeginChild("##AssetContent", ImVec2(0, paneHeight), false);
+
+                if (currentFolder != assetRoot)
+                {
+                    if (ImGui::SmallButton("Up##AssetsFolderNav"))
+                        g_AssetCurrentFolder = currentFolder.parent_path();
+                    ImGui::SameLine();
+                }
+                if (ImGui::SmallButton("Assets##BreadcrumbRoot"))
+                    g_AssetCurrentFolder = assetRoot;
+                if (!relativeCurrentFolder.empty())
+                {
+                    std::filesystem::path breadcrumbPath = assetRoot;
+                    for (const auto& part : relativeCurrentFolder)
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextUnformatted(">");
+                        ImGui::SameLine();
+                        breadcrumbPath /= part;
+                        const std::string crumbLabel = std::format("{}##Breadcrumb{}", part.string(), breadcrumbPath.generic_string());
+                        if (ImGui::SmallButton(crumbLabel.c_str()))
+                            g_AssetCurrentFolder = breadcrumbPath;
+                    }
+                }
+                ImGui::Separator();
 
                 const std::string filterText = g_AssetSearch;
                 auto matchesFilter = [&filterText](const std::string& label)
@@ -1649,25 +1882,111 @@ namespace EditorPanels
 
                 const bool showPrimitives = g_SelectedAssetCategory == AssetCategory::All || g_SelectedAssetCategory == AssetCategory::Primitives;
                 const bool showPrefabs = g_SelectedAssetCategory == AssetCategory::All || g_SelectedAssetCategory == AssetCategory::Prefabs;
+                const bool showScenes = g_SelectedAssetCategory == AssetCategory::All || g_SelectedAssetCategory == AssetCategory::Scenes;
                 const bool showTextures = g_SelectedAssetCategory == AssetCategory::All || g_SelectedAssetCategory == AssetCategory::Textures;
-                const bool showMaterials = g_SelectedAssetCategory == AssetCategory::All || g_SelectedAssetCategory == AssetCategory::Materials;
+                const bool showMaterials = (g_SelectedAssetCategory == AssetCategory::All || g_SelectedAssetCategory == AssetCategory::Materials) && currentFolder == assetRoot;
+                const bool showFolders = g_SelectedAssetCategory == AssetCategory::All;
+
+                if (showFolders)
+                {
+                    DrawAssetSectionHeader("Folders");
+                    const auto assetFolders = EnumerateAssetFolders();
+                    int tileIndex = 0;
+                    bool anyFolderShown = false;
+                    for (const auto& folderPath : assetFolders)
+                    {
+                        const std::string label = folderPath.filename().string();
+                        if (!matchesFilter(label))
+                            continue;
+
+                        if (tileIndex > 0 && (tileIndex % columns) != 0)
+                            ImGui::SameLine(0.0f, kTileSpacing);
+
+                        const std::string folderPathString = folderPath.string();
+                        if (DrawAssetTile(folderPathString.c_str(), label.c_str(), ICON_FA_FOLDER_OPEN, kAssetFolderPayload, folderPathString.c_str(), folderPathString.size() + 1u, g_SelectedAssetId == folderPathString, ImTextureID{}))
+                            QueueAssetSelection(folderPathString);
+                        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        {
+                            g_AssetCurrentFolder = folderPath;
+                            QueueAssetSelection(folderPathString);
+                        }
+
+                        if (ImGui::BeginDragDropTarget())
+                        {
+                            auto tryMovePayload = [&](const char* payloadType)
+                            {
+                                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(payloadType))
+                                {
+                                    const char* sourcePath = static_cast<const char*>(payload->Data);
+                                    if (sourcePath && *sourcePath)
+                                    {
+                                        std::filesystem::path movedPath;
+                                        if (MoveAssetFileToFolder(sourcePath, folderPath, movedPath))
+                                            QueueAssetSelection(movedPath.string());
+                                    }
+                                }
+                            };
+                            tryMovePayload(kSceneCreatePrefabPayload);
+                            tryMovePayload(kAssetTexturePayload);
+                            tryMovePayload(kAssetScenePayload);
+                            ImGui::EndDragDropTarget();
+                        }
+
+                        const std::string folderContextId = std::format("##FolderContext:{}", folderPathString);
+                        ImGui::OpenPopupOnItemClick(folderContextId.c_str(), ImGuiPopupFlags_MouseButtonRight);
+                        if (ImGui::BeginPopup(folderContextId.c_str()))
+                        {
+                            if (ImGui::MenuItem("Rename"))
+                            {
+                                g_PendingFolderRenamePath = folderPath;
+                                strncpy_s(g_FolderRenameBuffer, label.c_str(), _TRUNCATE);
+                                g_RequestOpenRenameFolderPopup = true;
+                            }
+                            std::string deleteReason;
+                            const bool canDeleteFolder = CanDeleteAssetPath(folderPath, true, deleteReason);
+                            const char* deleteFolderLabel = canDeleteFolder
+                                ? "Delete"
+                                : (deleteReason.find("currently loaded scene") != std::string::npos ? "Delete (Current Scene Locked)" : "Delete (Locked)");
+                            if (ImGui::MenuItem(deleteFolderLabel, nullptr, false, canDeleteFolder))
+                            {
+                                g_PendingDeletePath = folderPath;
+                                g_PendingDeleteIsFolder = true;
+                                g_PendingDeleteKindLabel = "folder";
+                                g_RequestOpenDeleteAssetPopup = true;
+                            }
+                            ImGui::EndPopup();
+                        }
+
+                        ++tileIndex;
+                        anyFolderShown = true;
+                    }
+
+                    if (!anyFolderShown)
+                    {
+                        if (assetFolders.empty())
+                            ImGui::TextDisabled("No top-level folders were found under Assets.");
+                        else
+                            ImGui::TextDisabled("No folders match the current filter.");
+                    }
+                }
 
                 if (showPrimitives)
                 {
                     DrawAssetSectionHeader("Primitives");
                     int primitiveTileIndex = 0;
-                    auto drawPrimitive = [&](const char* assetId, const char* label, const char* payloadType)
+                    auto drawPrimitive = [&](const char* assetId, const char* label, const char* payloadType, const char* icon = ICON_FA_CUBE)
                     {
                         if (!matchesFilter(label))
                             return;
                         if (primitiveTileIndex > 0 && (primitiveTileIndex % columns) != 0)
                             ImGui::SameLine(0.0f, kTileSpacing);
                         const ImTextureID thumb = GetAssetThumbnailTexture(assetId, "Assets/Textures/crate.png");
-                        if (DrawAssetTile(assetId, label, ICON_FA_CUBE, payloadType, label, std::strlen(label) + 1u, g_SelectedAssetId == assetId, thumb))
-                            g_SelectedAssetId = assetId;
+                        if (DrawAssetTile(assetId, label, icon, payloadType, label, std::strlen(label) + 1u, g_SelectedAssetId == assetId, thumb))
+                            QueueAssetSelection(assetId);
                         ++primitiveTileIndex;
                     };
 
+                    drawPrimitive("PrimitiveEmpty", "Empty Object", kSceneCreateEmptyPayload, ICON_FA_SITEMAP);
                     drawPrimitive("PrimitiveCube", "Cube", kSceneCreateCubePayload);
                     drawPrimitive("PrimitiveSphere", "Sphere", kSceneCreateSpherePayload);
                     drawPrimitive("PrimitivePlane", "Plane", kSceneCreatePlanePayload);
@@ -1681,12 +2000,13 @@ namespace EditorPanels
                 {
                     DrawAssetSectionHeader("Prefabs");
                     const auto prefabAssets = EnumeratePrefabAssets();
-                    const std::filesystem::path prefabRoot = std::filesystem::path("Assets") / "Prefabs";
                     int tileIndex = 0;
                     bool anyPrefabShown = false;
                     for (const auto& prefabPath : prefabAssets)
                     {
-                        const std::string label = prefabPath.lexically_relative(prefabRoot).generic_string();
+                        if (!IsDirectChildOfFolder(prefabPath, currentFolder))
+                            continue;
+                        const std::string label = prefabPath.filename().string();
                         if (!matchesFilter(label))
                             continue;
 
@@ -1696,7 +2016,32 @@ namespace EditorPanels
                         const std::string prefabPathString = prefabPath.string();
                         const ImTextureID prefabThumb = GetAssetThumbnailTexture(prefabPathString, "Assets/Textures/crate.png");
                         if (DrawAssetTile(prefabPathString.c_str(), label.c_str(), ICON_FA_CUBE, kSceneCreatePrefabPayload, prefabPathString.c_str(), prefabPathString.size() + 1u, g_SelectedAssetId == prefabPathString, prefabThumb))
-                            g_SelectedAssetId = prefabPathString;
+                            QueueAssetSelection(prefabPathString);
+                        const std::string prefabContextId = std::format("##PrefabContext:{}", prefabPathString);
+                        if (ImGui::BeginPopupContextItem(prefabContextId.c_str()))
+                        {
+                            if (ImGui::MenuItem("Duplicate"))
+                            {
+                                std::filesystem::path duplicatedPath;
+                                if (DuplicateAssetFile(prefabPath, duplicatedPath))
+                                    QueueAssetSelection(duplicatedPath.string());
+                            }
+                            if (ImGui::MenuItem("Rename"))
+                            {
+                                g_PendingAssetRenamePath = prefabPath;
+                                g_PendingAssetRenameKindLabel = "prefab";
+                                strncpy_s(g_AssetRenameBuffer, prefabPath.stem().string().c_str(), _TRUNCATE);
+                                g_RequestOpenRenameAssetPopup = true;
+                            }
+                            if (ImGui::MenuItem("Delete"))
+                            {
+                                g_PendingDeletePath = prefabPath;
+                                g_PendingDeleteIsFolder = false;
+                                g_PendingDeleteKindLabel = "prefab";
+                                g_RequestOpenDeleteAssetPopup = true;
+                            }
+                            ImGui::EndPopup();
+                        }
                         ++tileIndex;
                         anyPrefabShown = true;
                     }
@@ -1704,9 +2049,82 @@ namespace EditorPanels
                     if (!anyPrefabShown)
                     {
                         if (prefabAssets.empty())
-                            ImGui::TextDisabled("No prefabs were found in Assets/Prefabs.");
+                            ImGui::TextDisabled("No prefab assets were found under Assets.");
                         else
-                            ImGui::TextDisabled("No prefab assets match the filter.");
+                            ImGui::TextDisabled("No prefab assets match the current folder/filter.");
+                    }
+                }
+
+                if (showScenes)
+                {
+                    DrawAssetSectionHeader("Scenes");
+                    if (ImGui::Button("Save Current Scene##Assets"))
+                        UI::SaveCurrentSceneAsset();
+                    ImGui::SameLine();
+                    if (ImGui::Button("Save Scene As...##Assets"))
+                        UI::SaveCurrentSceneAssetAs();
+                    const auto sceneAssets = EnumerateSceneAssets();
+                    int tileIndex = 0;
+                    bool anySceneShown = false;
+                    for (const auto& scenePath : sceneAssets)
+                    {
+                        if (!IsDirectChildOfFolder(scenePath, currentFolder))
+                            continue;
+                        const std::string label = scenePath.filename().string();
+                        if (!matchesFilter(label))
+                            continue;
+
+                        if (tileIndex > 0 && (tileIndex % columns) != 0)
+                            ImGui::SameLine(0.0f, kTileSpacing);
+
+                        const std::string scenePathString = scenePath.string();
+                        if (DrawAssetTile(scenePathString.c_str(), label.c_str(), ICON_FA_FOLDER_OPEN, kAssetScenePayload, scenePathString.c_str(), scenePathString.size() + 1u, g_SelectedAssetId == scenePathString, ImTextureID{}))
+                            QueueAssetSelection(scenePathString);
+                        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                        {
+                            if (UI::LoadSceneAssetFromPath(scenePathString))
+                                QueueAssetSelection(scenePathString);
+                        }
+                        const std::string sceneContextId = std::format("##SceneContext:{}", scenePathString);
+                        ImGui::OpenPopupOnItemClick(sceneContextId.c_str(), ImGuiPopupFlags_MouseButtonRight);
+                        if (ImGui::BeginPopup(sceneContextId.c_str()))
+                        {
+                            if (ImGui::MenuItem("Duplicate"))
+                            {
+                                std::filesystem::path duplicatedPath;
+                                if (DuplicateAssetFile(scenePath, duplicatedPath))
+                                    QueueAssetSelection(duplicatedPath.string());
+                            }
+                            if (ImGui::MenuItem("Rename"))
+                            {
+                                g_PendingSceneRenamePath = scenePath;
+                                strncpy_s(g_SceneRenameBuffer, scenePath.stem().string().c_str(), _TRUNCATE);
+                                g_RequestOpenRenameScenePopup = true;
+                            }
+                            std::string deleteReason;
+                            const bool canDeleteScene = CanDeleteAssetPath(scenePath, false, deleteReason);
+                            const char* deleteSceneLabel = canDeleteScene
+                                ? "Delete"
+                                : (deleteReason.find("currently loaded scene") != std::string::npos ? "Delete (Current Scene Locked)" : "Delete (Locked)");
+                            if (ImGui::MenuItem(deleteSceneLabel, nullptr, false, canDeleteScene))
+                            {
+                                g_PendingDeletePath = scenePath;
+                                g_PendingDeleteIsFolder = false;
+                                g_PendingDeleteKindLabel = "scene";
+                                g_RequestOpenDeleteAssetPopup = true;
+                            }
+                            ImGui::EndPopup();
+                        }
+                        ++tileIndex;
+                        anySceneShown = true;
+                    }
+
+                    if (!anySceneShown)
+                    {
+                        if (sceneAssets.empty())
+                            ImGui::TextDisabled("No scene files were found under Assets.");
+                        else
+                            ImGui::TextDisabled("No scene assets match the current folder/filter.");
                     }
                 }
 
@@ -1714,12 +2132,13 @@ namespace EditorPanels
                 {
                     DrawAssetSectionHeader("Textures");
                     const auto textureAssets = EnumerateTextureAssets();
-                    const std::filesystem::path assetRoot = std::filesystem::path("Assets");
                     int tileIndex = 0;
                     bool anyTextureShown = false;
                     for (const auto& texturePath : textureAssets)
                     {
-                        const std::string label = texturePath.lexically_relative(assetRoot).generic_string();
+                        if (!IsDirectChildOfFolder(texturePath, currentFolder))
+                            continue;
+                        const std::string label = texturePath.filename().string();
                         if (!matchesFilter(label))
                             continue;
 
@@ -1728,8 +2147,36 @@ namespace EditorPanels
 
                         const std::string texturePathString = texturePath.string();
                         const ImTextureID textureThumb = GetAssetThumbnailTexture(texturePathString, texturePathString);
-                        if (DrawAssetTile(texturePathString.c_str(), label.c_str(), ICON_FA_FOLDER_OPEN, kAssetTexturePayload, nullptr, 0, g_SelectedAssetId == texturePathString, textureThumb))
-                            g_SelectedAssetId = texturePathString;
+                        if (DrawAssetTile(texturePathString.c_str(), label.c_str(), ICON_FA_FOLDER_OPEN, kAssetTexturePayload, texturePathString.c_str(), texturePathString.size() + 1u, g_SelectedAssetId == texturePathString, textureThumb))
+                            QueueAssetSelection(texturePathString);
+                        const std::string textureContextId = std::format("##TextureContext:{}", texturePathString);
+                        if (ImGui::BeginPopupContextItem(textureContextId.c_str()))
+                        {
+                            if (ImGui::MenuItem("Duplicate"))
+                            {
+                                std::filesystem::path duplicatedPath;
+                                if (DuplicateAssetFile(texturePath, duplicatedPath))
+                                {
+                                    QueueAssetSelection(duplicatedPath.string());
+                                    g_AssetThumbnailCache.erase(duplicatedPath.string());
+                                }
+                            }
+                            if (ImGui::MenuItem("Rename"))
+                            {
+                                g_PendingAssetRenamePath = texturePath;
+                                g_PendingAssetRenameKindLabel = "texture";
+                                strncpy_s(g_AssetRenameBuffer, texturePath.stem().string().c_str(), _TRUNCATE);
+                                g_RequestOpenRenameAssetPopup = true;
+                            }
+                            if (ImGui::MenuItem("Delete"))
+                            {
+                                g_PendingDeletePath = texturePath;
+                                g_PendingDeleteIsFolder = false;
+                                g_PendingDeleteKindLabel = "texture";
+                                g_RequestOpenDeleteAssetPopup = true;
+                            }
+                            ImGui::EndPopup();
+                        }
                         ++tileIndex;
                         anyTextureShown = true;
                     }
@@ -1739,7 +2186,7 @@ namespace EditorPanels
                         if (textureAssets.empty())
                             ImGui::TextDisabled("No textures were found under Assets.");
                         else
-                            ImGui::TextDisabled("No texture assets match the filter.");
+                            ImGui::TextDisabled("No texture assets match the current folder/filter.");
                     }
                 }
 
@@ -1769,7 +2216,7 @@ namespace EditorPanels
                         const ImTextureID materialThumb = GetAssetThumbnailTexture(materialId, thumbPath);
                         if (DrawAssetTile(materialId.c_str(), label.c_str(), ICON_FA_GEAR, kAssetMaterialPayload, nullptr, 0, g_SelectedAssetId == materialId, materialThumb))
                         {
-                            g_SelectedAssetId = materialId;
+                            QueueAssetSelection(materialId);
                             if (g_engineInstance)
                             {
                                 EditorState& editor = g_engineInstance->GetEditorState();
@@ -1778,6 +2225,34 @@ namespace EditorPanels
                                 MaterialPreview().open = true;
                             }
                         }
+                        const std::string materialContextId = std::format("##MaterialContext:{}", materialId);
+                        ImGui::OpenPopupOnItemClick(materialContextId.c_str(), ImGuiPopupFlags_MouseButtonRight);
+                        if (ImGui::BeginPopup(materialContextId.c_str()))
+                        {
+                            if (ImGui::MenuItem("Duplicate"))
+                            {
+                                Material* duplicatedMaterial = materialManager.DuplicateMaterial(*material, std::format("{}_Copy", label));
+                                if (duplicatedMaterial)
+                                {
+                                    const int duplicatedIndex = materialManager.GetMaterialCount() - 1;
+                                    QueueMaterialSelection(duplicatedIndex, duplicatedMaterial->name);
+                                }
+                            }
+                            if (ImGui::MenuItem("Rename"))
+                            {
+                                g_PendingMaterialRenameIndex = i;
+                                strncpy_s(g_MaterialRenameBuffer, label.c_str(), _TRUNCATE);
+                                g_RequestOpenRenameMaterialPopup = true;
+                            }
+
+                            const bool canDeleteMaterial = materialManager.GetMaterialCount() > 1;
+                            if (ImGui::MenuItem(canDeleteMaterial ? "Delete" : "Delete (Last Material Locked)", nullptr, false, canDeleteMaterial))
+                            {
+                                g_PendingMaterialDeleteIndex = i;
+                                g_RequestOpenDeleteMaterialPopup = true;
+                            }
+                            ImGui::EndPopup();
+                        }
                         ++tileIndex;
                         anyMaterialShown = true;
                     }
@@ -1785,6 +2260,254 @@ namespace EditorPanels
                     if (!anyMaterialShown)
                         ImGui::TextDisabled("No material assets match the filter.");
                 }
+
+                if (g_RequestOpenRenameFolderPopup)
+                {
+                    ImGui::OpenPopup("Rename Folder##Assets");
+                    g_RequestOpenRenameFolderPopup = false;
+                }
+                if (g_RequestOpenRenameScenePopup)
+                {
+                    ImGui::OpenPopup("Rename Scene##Assets");
+                    g_RequestOpenRenameScenePopup = false;
+                }
+                if (g_RequestOpenRenameAssetPopup)
+                {
+                    ImGui::OpenPopup("Rename Asset##Assets");
+                    g_RequestOpenRenameAssetPopup = false;
+                }
+                if (g_RequestOpenRenameMaterialPopup)
+                {
+                    ImGui::OpenPopup("Rename Material##Assets");
+                    g_RequestOpenRenameMaterialPopup = false;
+                }
+                if (g_RequestOpenDeleteMaterialPopup)
+                {
+                    ImGui::OpenPopup("Delete Material##Assets");
+                    g_RequestOpenDeleteMaterialPopup = false;
+                }
+                if (g_RequestOpenDeleteAssetPopup)
+                {
+                    ImGui::OpenPopup("Delete Item##Assets");
+                    g_RequestOpenDeleteAssetPopup = false;
+                }
+
+                if (ImGui::BeginPopupModal("Rename Folder##Assets", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    ImGui::TextUnformatted("Rename folder");
+                    ImGui::Separator();
+                    ImGui::SetNextItemWidth(320.0f);
+                    ImGui::InputText("##FolderRenameInput", g_FolderRenameBuffer, IM_ARRAYSIZE(g_FolderRenameBuffer));
+
+                    if (ImGui::Button("Rename##FolderConfirm"))
+                    {
+                        std::filesystem::path renamedPath;
+                        if (RenameAssetFolder(g_PendingFolderRenamePath, g_FolderRenameBuffer, renamedPath))
+                        {
+                            if (g_SelectedAssetId == g_PendingFolderRenamePath.string())
+                                QueueAssetSelection(renamedPath.string());
+                            g_PendingFolderRenamePath.clear();
+                            g_FolderRenameBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel##FolderRename"))
+                    {
+                        g_PendingFolderRenamePath.clear();
+                        g_FolderRenameBuffer[0] = '\0';
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::EndPopup();
+                }
+
+                if (ImGui::BeginPopupModal("Rename Scene##Assets", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    ImGui::TextUnformatted("Rename scene");
+                    ImGui::Separator();
+                    ImGui::SetNextItemWidth(320.0f);
+                    ImGui::InputText("##SceneRenameInput", g_SceneRenameBuffer, IM_ARRAYSIZE(g_SceneRenameBuffer));
+
+                    if (ImGui::Button("Rename##SceneConfirm"))
+                    {
+                        std::filesystem::path renamedPath;
+                        if (RenameSceneAsset(g_PendingSceneRenamePath, g_SceneRenameBuffer, renamedPath))
+                        {
+                            if (g_SelectedAssetId == g_PendingSceneRenamePath.string())
+                                QueueAssetSelection(renamedPath.string());
+                            if (UI::GetCurrentSceneAssetPath() == g_PendingSceneRenamePath.string())
+                                UI::SetCurrentSceneAssetPath(renamedPath.string());
+                            g_PendingSceneRenamePath.clear();
+                            g_SceneRenameBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel##SceneRename"))
+                    {
+                        g_PendingSceneRenamePath.clear();
+                        g_SceneRenameBuffer[0] = '\0';
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::EndPopup();
+                }
+
+                if (ImGui::BeginPopupModal("Rename Asset##Assets", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    ImGui::Text("Rename %s", g_PendingAssetRenameKindLabel ? g_PendingAssetRenameKindLabel : "asset");
+                    ImGui::Separator();
+                    ImGui::SetNextItemWidth(320.0f);
+                    ImGui::InputText("##AssetRenameInput", g_AssetRenameBuffer, IM_ARRAYSIZE(g_AssetRenameBuffer));
+
+                    if (ImGui::Button("Rename##AssetConfirm"))
+                    {
+                        std::filesystem::path renamedPath;
+                        if (RenameAssetFile(g_PendingAssetRenamePath, g_AssetRenameBuffer, renamedPath))
+                        {
+                            if (g_SelectedAssetId == g_PendingAssetRenamePath.string())
+                                QueueAssetSelection(renamedPath.string());
+                            g_AssetThumbnailCache.erase(g_PendingAssetRenamePath.string());
+                            g_AssetThumbnailCache.erase(renamedPath.string());
+                            g_PendingAssetRenamePath.clear();
+                            g_PendingAssetRenameKindLabel = "asset";
+                            g_AssetRenameBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel##AssetRename"))
+                    {
+                        g_PendingAssetRenamePath.clear();
+                        g_PendingAssetRenameKindLabel = "asset";
+                        g_AssetRenameBuffer[0] = '\0';
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::EndPopup();
+                }
+
+                if (ImGui::BeginPopupModal("Rename Material##Assets", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    ImGui::TextUnformatted("Rename material");
+                    ImGui::Separator();
+                    ImGui::SetNextItemWidth(320.0f);
+                    ImGui::InputText("##MaterialRenameInput", g_MaterialRenameBuffer, IM_ARRAYSIZE(g_MaterialRenameBuffer));
+
+                    if (ImGui::Button("Rename##MaterialConfirm"))
+                    {
+                        std::string renamedName;
+                        if (MaterialManager::GetInstance().RenameMaterialByIndex(g_PendingMaterialRenameIndex, g_MaterialRenameBuffer, renamedName))
+                        {
+                            QueueMaterialSelection(g_PendingMaterialRenameIndex, renamedName);
+                            g_PendingMaterialRenameIndex = -1;
+                            g_MaterialRenameBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel##MaterialRename"))
+                    {
+                        g_PendingMaterialRenameIndex = -1;
+                        g_MaterialRenameBuffer[0] = '\0';
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::EndPopup();
+                }
+
+                if (ImGui::BeginPopupModal("Delete Material##Assets", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    extern Engine* g_engineInstance;
+                    MaterialManager& materialManager = MaterialManager::GetInstance();
+                    const std::string* materialNamePtr = (g_PendingMaterialDeleteIndex >= 0 && g_PendingMaterialDeleteIndex < materialManager.GetMaterialCount())
+                        ? materialManager.GetMaterialNameByIndex(g_PendingMaterialDeleteIndex)
+                        : nullptr;
+                    const std::string materialName = materialNamePtr ? *materialNamePtr : std::string("<Unknown>");
+
+                    ImGui::TextUnformatted("Delete material?");
+                    ImGui::TextWrapped("%s", materialName.c_str());
+                    ImGui::Separator();
+
+                    if (ImGui::Button("Delete##MaterialConfirm"))
+                    {
+                        const int deletedIndex = g_PendingMaterialDeleteIndex;
+                        if (materialManager.DeleteMaterialByIndex(deletedIndex))
+                        {
+                            if (g_engineInstance)
+                            {
+                                EditorState& editor = g_engineInstance->GetEditorState();
+                                if (editor.focusedMaterialIndex == deletedIndex)
+                                    editor.focusedMaterialIndex = -1;
+                                else if (editor.focusedMaterialIndex > deletedIndex)
+                                    --editor.focusedMaterialIndex;
+                            }
+
+                            if (materialManager.GetMaterialCount() > 0)
+                            {
+                                const int nextIndex = (std::min)(deletedIndex, materialManager.GetMaterialCount() - 1);
+                                if (const std::string* nextMaterialName = materialManager.GetMaterialNameByIndex(nextIndex))
+                                    QueueMaterialSelection(nextIndex, *nextMaterialName);
+                                else
+                                    g_SelectedAssetId.clear();
+                            }
+                            else
+                            {
+                                g_SelectedAssetId.clear();
+                            }
+
+                            g_PendingMaterialDeleteIndex = -1;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel##MaterialDelete"))
+                    {
+                        g_PendingMaterialDeleteIndex = -1;
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::EndPopup();
+                }
+
+                if (ImGui::BeginPopupModal("Delete Item##Assets", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    ImGui::Text("Delete %s?", g_PendingDeleteKindLabel ? g_PendingDeleteKindLabel : "asset");
+                    ImGui::TextWrapped("%s", g_PendingDeletePath.string().c_str());
+                    ImGui::Separator();
+
+                    if (ImGui::Button("Delete##AssetConfirm"))
+                    {
+                        const std::string deletedPath = g_PendingDeletePath.string();
+                        if (DeleteAssetPath(g_PendingDeletePath, g_PendingDeleteIsFolder))
+                        {
+                            if (g_SelectedAssetId == deletedPath)
+                            {
+                                const std::string fallbackSelection = FindFirstSelectableAssetIdInFolder(g_AssetCurrentFolder);
+                                if (!fallbackSelection.empty())
+                                    QueueAssetSelection(fallbackSelection);
+                                else
+                                    g_SelectedAssetId.clear();
+                            }
+                            g_PendingDeletePath.clear();
+                            g_PendingDeleteIsFolder = false;
+                            g_PendingDeleteKindLabel = "Asset";
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel##AssetDelete"))
+                    {
+                        g_PendingDeletePath.clear();
+                        g_PendingDeleteIsFolder = false;
+                        g_PendingDeleteKindLabel = "Asset";
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::EndPopup();
+                }
+
                 ImGui::EndChild();
             }
             ImGui::End();
@@ -1800,67 +2523,17 @@ namespace EditorPanels
             if (!panel.open)
                 return;
 
+            uint32_t targetInstanceCount = Scene::GetTargetInstanceCount();
+            int instanceCount = (int)targetInstanceCount;
+
             if (ImGui::Begin(panel.name, &panel.open))
             {
-                extern Engine* g_engineInstance;
-                EditorState* editor = g_engineInstance ? &g_engineInstance->GetEditorState() : nullptr;
-                Graphics& gfx = Graphics::GetInstance();
-                SceneCamera& sceneCamera = gfx.GetSceneCamera();
-                const SceneStats stats = Scene::GetLastStats();
-                DirectX::XMFLOAT3 cameraTarget{};
-                DirectX::XMStoreFloat3(&cameraTarget, sceneCamera.GetTarget());
-                const SceneInstance* selected = Scene::GetSelectedInstance();
+                if (ImGui::SliderInt("Instance Count", &instanceCount, 1, 10000))
+                    Scene::SetTargetInstanceCount((uint32_t)instanceCount);
 
-                if (g_UIFontBold) ImGui::PushFont(g_UIFontBold);
-                ImGui::TextUnformatted("Debug Overlay");
-                if (g_UIFontBold) ImGui::PopFont();
                 ImGui::Separator();
-
-                const float fps = ImGui::GetIO().Framerate;
-                const float frameMs = (fps > 0.0f) ? (1000.0f / fps) : 0.0f;
-                ImGui::Text("FPS: %.1f", fps);
-                ImGui::Text("Frame Time: %.2f ms", frameMs);
-                ImGui::Separator();
-
-                ImGui::Text("Scene Objects: %u", stats.totalObjects);
-                ImGui::Text("Visible Objects: %u", stats.visibleObjects);
-                ImGui::Text("Draw Calls: %u", stats.drawCalls);
-                ImGui::Text("Selected Count: %zu", Scene::GetSelectedInstanceIds().size());
-                ImGui::Text("Hovered Instance ID: %u", Scene::GetHoveredInstanceId());
-                ImGui::Separator();
-
-                ImGui::Text("Selection: %s", selected ? (selected->name.empty() ? "(unnamed)" : selected->name.c_str()) : "None");
-                if (selected)
-                {
-                    const char* primitiveLabel = "Cube";
-                    switch (selected->primitive)
-                    {
-                    case ScenePrimitive::Sphere: primitiveLabel = "Sphere"; break;
-                    case ScenePrimitive::Plane: primitiveLabel = "Plane"; break;
-                    case ScenePrimitive::Cylinder: primitiveLabel = "Cylinder"; break;
-                    case ScenePrimitive::Cube:
-                    default: primitiveLabel = "Cube"; break;
-                    }
-                    ImGui::Text("Primitive: %s", primitiveLabel);
-                    ImGui::Text("Position: %.2f %.2f %.2f", selected->position.x, selected->position.y, selected->position.z);
-                }
-                ImGui::Separator();
-
-                ImGui::Text("Camera Freelook: %s", sceneCamera.IsFreelooking() ? "Yes" : "No");
-                ImGui::Text("Camera Yaw/Pitch: %.3f / %.3f", sceneCamera.GetYaw(), sceneCamera.GetPitch());
-                ImGui::Text("Camera Distance: %.3f", sceneCamera.GetDistance());
-                ImGui::Text("Camera Target: %.2f %.2f %.2f", cameraTarget.x, cameraTarget.y, cameraTarget.z);
-                ImGui::Separator();
-
-                if (editor)
-                {
-                    ImGui::Text("Black Flame Access: %s", editor->currentBlackFlameAccess == BlackFlameAccessLevel::Admin ? "Admin" : "User");
-                    ImGui::Text("Black Flame Mode: %s",
-                        editor->blackFlameAI.GetMode() == BlackFlameMode::Conversation ? "Conversation" :
-                        (editor->blackFlameAI.GetMode() == BlackFlameMode::Hybrid ? "Hybrid" : "Engine"));
-                    ImGui::Text("Black Flame State: %d", (int)editor->blackFlameAI.GetState());
-                    ImGui::Text("Undo / Redo: %zu / %zu", editor->undoSceneSnapshots.size(), editor->redoSceneSnapshots.size());
-                }
+                ImGui::Text("Visible: %u", (unsigned)Scene::GetVisibleInstanceCount());
+                ImGui::Text("Total:   %u", (unsigned)Scene::GetInstanceCount());
             }
             ImGui::End();
         }
@@ -1892,6 +2565,7 @@ namespace EditorPanels
     };
 
     EditorPanel& Scene() { return g_scene; }
+    EditorPanel& Game() { return g_game; }
     EditorPanel& Hierarchy() { return g_hierarchy; }
     EditorPanel& Inspector() { return g_inspector; }
     EditorPanel& Assets() { return g_assets; }
@@ -1903,6 +2577,7 @@ namespace EditorPanels
     void DrawAll()
     {
         if (g_scene.open) g_scene.draw();
+        if (g_game.open) g_game.draw();
         if (g_hierarchy.open) g_hierarchy.draw();
         if (g_inspector.open) g_inspector.draw();
         if (g_assets.open) g_assets.draw();
@@ -2000,7 +2675,7 @@ namespace EditorPanels
         const ImVec2 titleSize = ImGui::CalcTextSize(title);
         const ImVec2 titlePos(min.x + 10.0f, min.y + 58.0f);
         const char* typeLabel = "Asset";
-        if (payloadType && std::strcmp(payloadType, kSceneCreateCubePayload) == 0)
+        if (payloadType && (std::strcmp(payloadType, kSceneCreateCubePayload) == 0 || std::strcmp(payloadType, kSceneCreateEmptyPayload) == 0))
             typeLabel = "Primitive";
         else if (payloadType && std::strcmp(payloadType, kSceneCreatePrefabPayload) == 0)
             typeLabel = "Prefab";
@@ -2008,6 +2683,10 @@ namespace EditorPanels
             typeLabel = "Texture";
         else if (payloadType && std::strcmp(payloadType, kAssetMaterialPayload) == 0)
             typeLabel = "Material";
+        else if (payloadType && std::strcmp(payloadType, kAssetFolderPayload) == 0)
+            typeLabel = "Folder";
+        else if (payloadType && std::strcmp(payloadType, kAssetScenePayload) == 0)
+            typeLabel = "Scene";
         const ImVec2 typeSize = ImGui::CalcTextSize(typeLabel);
         const ImVec2 typePos(min.x + 10.0f, max.y - typeSize.y - 8.0f);
 
@@ -2024,8 +2703,134 @@ namespace EditorPanels
             ImGui::EndDragDropSource();
         }
 
+        if (!g_PendingAssetRevealId.empty() && g_PendingAssetRevealId == id)
+        {
+            ImGui::SetScrollHereY(0.35f);
+            g_PendingAssetRevealId.clear();
+        }
+
         ImGui::PopID();
         return clicked;
+    }
+
+    static void QueueAssetSelection(const std::string& assetId)
+    {
+        g_SelectedAssetId = assetId;
+        g_PendingAssetRevealId = assetId;
+    }
+
+    static void QueueMaterialSelection(int materialIndex, const std::string& materialName)
+    {
+        QueueAssetSelection(std::format("Material:{}", materialName));
+        if (g_engineInstance)
+            g_engineInstance->GetEditorState().focusedMaterialIndex = materialIndex;
+    }
+
+    static bool ProjectWorldToSceneScreen(const DirectX::XMFLOAT3& worldPos, const CameraData& camera, ImVec2 sceneMin, ImVec2 sceneSize, ImVec2& outScreen)
+    {
+        using namespace DirectX;
+
+        const XMMATRIX view = XMLoadFloat4x4(&camera.view);
+        const XMMATRIX proj = XMLoadFloat4x4(&camera.proj);
+        const XMVECTOR pos = XMVectorSet(worldPos.x, worldPos.y, worldPos.z, 1.0f);
+        const XMVECTOR clip = XMVector4Transform(pos, XMMatrixMultiply(view, proj));
+
+        const float w = XMVectorGetW(clip);
+        if (fabsf(w) < 1e-6f)
+            return false;
+
+        const float ndcX = XMVectorGetX(clip) / w;
+        const float ndcY = XMVectorGetY(clip) / w;
+        const float ndcZ = XMVectorGetZ(clip) / w;
+        if (ndcZ < 0.0f || ndcZ > 1.0f)
+            return false;
+
+        outScreen.x = sceneMin.x + (ndcX * 0.5f + 0.5f) * sceneSize.x;
+        outScreen.y = sceneMin.y + (-ndcY * 0.5f + 0.5f) * sceneSize.y;
+        return true;
+    }
+
+    static void DrawSceneCameraIcons(const CameraData& camera, ImDrawList* drawList, ImVec2 sceneMin, ImVec2 sceneSize)
+    {
+        using namespace DirectX;
+
+        if (!drawList)
+            return;
+
+        const uint32_t selectedId = Scene::GetSelectedInstanceId();
+        for (const SceneInstance& instance : Scene::GetInstances())
+        {
+            if (!instance.camera.enabled)
+                continue;
+
+            XMFLOAT4X4 world{};
+            if (!Scene::TryGetInstanceWorldMatrix(instance.instanceId, world))
+                continue;
+
+            const XMMATRIX worldMatrix = XMLoadFloat4x4(&world);
+            const XMVECTOR origin = XMVector3TransformCoord(XMVectorZero(), worldMatrix);
+            const XMVECTOR forward = XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), worldMatrix));
+            const XMVECTOR right = XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f), worldMatrix));
+            const XMVECTOR up = XMVector3Normalize(XMVector3TransformNormal(XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), worldMatrix));
+
+            XMFLOAT3 originWorld{};
+            XMStoreFloat3(&originWorld, origin);
+
+            constexpr float kFrustumDistance = 1.35f;
+            const float frustumHalfHeight = tanf(instance.camera.fovY * 0.5f) * kFrustumDistance;
+            const float frustumHalfWidth = frustumHalfHeight * 0.75f;
+
+            XMFLOAT3 targetWorld{};
+            XMFLOAT3 leftWorld{};
+            XMFLOAT3 rightWorld{};
+            XMFLOAT3 topWorld{};
+            XMFLOAT3 bottomWorld{};
+            XMStoreFloat3(&targetWorld, origin + forward * kFrustumDistance);
+            XMStoreFloat3(&leftWorld, origin + forward * kFrustumDistance - right * frustumHalfWidth);
+            XMStoreFloat3(&rightWorld, origin + forward * kFrustumDistance + right * frustumHalfWidth);
+            XMStoreFloat3(&topWorld, origin + forward * kFrustumDistance + up * frustumHalfHeight);
+            XMStoreFloat3(&bottomWorld, origin + forward * kFrustumDistance - up * frustumHalfHeight);
+
+            ImVec2 originScreen{}, targetScreen{}, leftScreen{}, rightScreen{}, topScreen{}, bottomScreen{};
+            if (!ProjectWorldToSceneScreen(originWorld, camera, sceneMin, sceneSize, originScreen))
+                continue;
+
+            const bool hasTarget = ProjectWorldToSceneScreen(targetWorld, camera, sceneMin, sceneSize, targetScreen);
+            const bool hasLeft = ProjectWorldToSceneScreen(leftWorld, camera, sceneMin, sceneSize, leftScreen);
+            const bool hasRight = ProjectWorldToSceneScreen(rightWorld, camera, sceneMin, sceneSize, rightScreen);
+            const bool hasTop = ProjectWorldToSceneScreen(topWorld, camera, sceneMin, sceneSize, topScreen);
+            const bool hasBottom = ProjectWorldToSceneScreen(bottomWorld, camera, sceneMin, sceneSize, bottomScreen);
+
+            const bool isSelected = (instance.instanceId == selectedId);
+            const ImU32 color = instance.camera.isMain
+                ? (isSelected ? IM_COL32(255, 230, 120, 255) : IM_COL32(255, 208, 96, 220))
+                : (isSelected ? IM_COL32(120, 220, 255, 255) : IM_COL32(96, 168, 255, 210));
+            const float radius = isSelected ? 6.0f : 5.0f;
+
+            if (hasTarget)
+                drawList->AddLine(originScreen, targetScreen, color, isSelected ? 2.5f : 1.75f);
+            if (hasLeft)
+                drawList->AddLine(originScreen, leftScreen, color, 1.0f);
+            if (hasRight)
+                drawList->AddLine(originScreen, rightScreen, color, 1.0f);
+            if (hasTop)
+                drawList->AddLine(originScreen, topScreen, color, 1.0f);
+            if (hasBottom)
+                drawList->AddLine(originScreen, bottomScreen, color, 1.0f);
+            if (hasLeft && hasTop)
+                drawList->AddLine(leftScreen, topScreen, color, 1.0f);
+            if (hasTop && hasRight)
+                drawList->AddLine(topScreen, rightScreen, color, 1.0f);
+            if (hasRight && hasBottom)
+                drawList->AddLine(rightScreen, bottomScreen, color, 1.0f);
+            if (hasBottom && hasLeft)
+                drawList->AddLine(bottomScreen, leftScreen, color, 1.0f);
+
+            drawList->AddCircleFilled(originScreen, radius, color, 18);
+            drawList->AddCircle(originScreen, radius + 2.0f, IM_COL32(18, 20, 24, 235), 18, 1.5f);
+            if (instance.camera.isMain)
+                drawList->AddText(ImVec2(originScreen.x + 8.0f, originScreen.y - 8.0f), color, "Main");
+        }
     }
 
     static void DrawAssetSectionHeader(const char* label)
@@ -2060,5 +2865,389 @@ namespace EditorPanels
 
         std::sort(result.begin(), result.end());
         return result;
+    }
+
+    static std::string FindFirstSelectableAssetIdInFolder(const std::filesystem::path& folder)
+    {
+        for (const auto& assetFolder : EnumerateAssetFolders())
+        {
+            if (IsDirectChildOfFolder(assetFolder, folder))
+                return assetFolder.string();
+        }
+
+        for (const auto& prefabPath : EnumeratePrefabAssets())
+        {
+            if (IsDirectChildOfFolder(prefabPath, folder))
+                return prefabPath.string();
+        }
+
+        for (const auto& scenePath : EnumerateSceneAssets())
+        {
+            if (IsDirectChildOfFolder(scenePath, folder))
+                return scenePath.string();
+        }
+
+        for (const auto& texturePath : EnumerateTextureAssets())
+        {
+            if (IsDirectChildOfFolder(texturePath, folder))
+                return texturePath.string();
+        }
+
+        if (folder == GetAssetRootPath())
+        {
+            MaterialManager& materials = MaterialManager::GetInstance();
+            if (materials.GetMaterialCount() > 0)
+            {
+                if (const std::string* materialName = materials.GetMaterialNameByIndex(0))
+                    return std::format("Material:{}", *materialName);
+            }
+        }
+
+        return {};
+    }
+
+    static std::vector<std::filesystem::path> EnumerateSceneAssets()
+    {
+        std::vector<std::filesystem::path> result;
+        const std::filesystem::path assetRoot = std::filesystem::path("Assets");
+        if (!std::filesystem::exists(assetRoot))
+            return result;
+
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(assetRoot, ec))
+        {
+            if (ec)
+                break;
+            if (!entry.is_regular_file())
+                continue;
+            const std::string filename = entry.path().filename().string();
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+            if (filename.find(".prefab.json") != std::string::npos)
+                continue;
+            if (ext != ".scene" && ext != ".json")
+                continue;
+            result.push_back(entry.path());
+        }
+
+        std::sort(result.begin(), result.end());
+        return result;
+    }
+
+    static std::vector<std::filesystem::path> EnumerateAssetFolders()
+    {
+        std::vector<std::filesystem::path> result;
+        EnsureAssetCurrentFolderValid();
+        const std::filesystem::path assetRoot = g_AssetCurrentFolder;
+        if (!std::filesystem::exists(assetRoot))
+            return result;
+
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(assetRoot, ec))
+        {
+            if (ec)
+                break;
+            if (!entry.is_directory())
+                continue;
+            result.push_back(entry.path());
+        }
+
+        std::sort(result.begin(), result.end());
+        return result;
+    }
+
+    static bool CreateAssetFolder(std::filesystem::path& outCreatedPath)
+    {
+        EnsureAssetCurrentFolderValid();
+        const std::string folderName = "New Folder";
+        std::filesystem::path folderPath = g_AssetCurrentFolder / folderName;
+        for (uint32_t attempt = 1; std::filesystem::exists(folderPath); ++attempt)
+        {
+            folderPath = g_AssetCurrentFolder / (folderName + " " + std::to_string(attempt));
+        }
+
+        std::error_code ec;
+        if (!std::filesystem::create_directory(folderPath, ec))
+        {
+            Logger::Log(LogLevel::Error, std::format("Failed to create directory: {}", ec.message()), "[Editor]");
+            return false;
+        }
+        outCreatedPath = folderPath;
+        return true;
+    }
+
+    static bool RenameAssetFolder(const std::filesystem::path& sourcePath, const std::string& requestedName, std::filesystem::path& outRenamedPath)
+    {
+        if (requestedName.empty() || requestedName == "." || requestedName == "..")
+            return false;
+
+        std::filesystem::path targetPath = sourcePath.parent_path() / requestedName;
+        for (uint32_t attempt = 1; std::filesystem::exists(targetPath); ++attempt)
+        {
+            targetPath = sourcePath.parent_path() / (requestedName + " " + std::to_string(attempt));
+        }
+
+        std::error_code ec;
+        std::filesystem::rename(sourcePath, targetPath, ec);
+        if (ec)
+        {
+            Logger::Log(LogLevel::Error, std::format("Failed to rename folder: {}", ec.message()), "[Editor]");
+            return false;
+        }
+
+        if (IsPathWithinFolder(g_AssetCurrentFolder, sourcePath))
+        {
+            const std::filesystem::path relative = std::filesystem::relative(g_AssetCurrentFolder, sourcePath);
+            g_AssetCurrentFolder = relative.empty() ? targetPath : (targetPath / relative);
+        }
+
+        outRenamedPath = targetPath;
+        return true;
+    }
+
+    static bool DuplicateAssetFile(const std::filesystem::path& sourcePath, std::filesystem::path& outDuplicatedPath)
+    {
+        if (!std::filesystem::exists(sourcePath) || !std::filesystem::is_regular_file(sourcePath))
+            return false;
+
+        const std::string filename = sourcePath.filename().string();
+        std::string baseName;
+        std::string extensionSuffix;
+        if (filename.size() > 12 && filename.ends_with(".prefab.json"))
+        {
+            baseName = filename.substr(0, filename.size() - 12);
+            extensionSuffix = ".prefab.json";
+        }
+        else
+        {
+            baseName = sourcePath.stem().string();
+            extensionSuffix = sourcePath.extension().string();
+        }
+
+        if (baseName.empty())
+            baseName = "Asset";
+
+        std::filesystem::path candidatePath = sourcePath.parent_path() / (baseName + "_Copy" + extensionSuffix);
+        for (uint32_t attempt = 1; std::filesystem::exists(candidatePath); ++attempt)
+            candidatePath = sourcePath.parent_path() / std::format("{}_Copy_{}{}", baseName, attempt, extensionSuffix);
+
+        std::error_code ec;
+        std::filesystem::copy_file(sourcePath, candidatePath, std::filesystem::copy_options::none, ec);
+        if (ec)
+        {
+            Logger::Log(LogLevel::Error, std::format("Failed to duplicate asset: {}", ec.message()), "[Editor]");
+            return false;
+        }
+
+        outDuplicatedPath = candidatePath;
+        Logger::Log(LogLevel::Info, std::format("Duplicated asset: {} -> {}", sourcePath.string(), candidatePath.string()), "[Editor]");
+        return true;
+    }
+
+    static bool RenameAssetFile(const std::filesystem::path& sourcePath, const std::string& requestedName, std::filesystem::path& outRenamedPath)
+    {
+        if (requestedName.empty() || requestedName == "." || requestedName == "..")
+            return false;
+        if (!std::filesystem::exists(sourcePath) || !std::filesystem::is_regular_file(sourcePath))
+            return false;
+
+        std::string sanitized = requestedName;
+        sanitized.erase(sanitized.begin(), std::find_if(sanitized.begin(), sanitized.end(), [](unsigned char c) { return !std::isspace(c); }));
+        sanitized.erase(std::find_if(sanitized.rbegin(), sanitized.rend(), [](unsigned char c) { return !std::isspace(c); }).base(), sanitized.end());
+        for (char& c : sanitized)
+        {
+            if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
+                c = '_';
+        }
+        if (sanitized.empty())
+            return false;
+
+        const std::filesystem::path targetPath = sourcePath.parent_path() / (sanitized + sourcePath.extension().string());
+        if (targetPath == sourcePath)
+        {
+            outRenamedPath = sourcePath;
+            return true;
+        }
+        if (std::filesystem::exists(targetPath))
+            return false;
+
+        std::error_code ec;
+        std::filesystem::rename(sourcePath, targetPath, ec);
+        if (ec)
+        {
+            Logger::Log(LogLevel::Error, std::format("Failed to rename asset: {}", ec.message()), "[Editor]");
+            return false;
+        }
+
+        outRenamedPath = targetPath;
+        return true;
+    }
+
+    static bool RenameSceneAsset(const std::filesystem::path& sourcePath, const std::string& requestedName, std::filesystem::path& outRenamedPath)
+    {
+        if (requestedName.empty() || requestedName == "." || requestedName == "..")
+            return false;
+        if (!std::filesystem::exists(sourcePath) || !std::filesystem::is_regular_file(sourcePath))
+            return false;
+
+        std::string sanitized = requestedName;
+        sanitized.erase(sanitized.begin(), std::find_if(sanitized.begin(), sanitized.end(), [](unsigned char c) { return !std::isspace(c); }));
+        sanitized.erase(std::find_if(sanitized.rbegin(), sanitized.rend(), [](unsigned char c) { return !std::isspace(c); }).base(), sanitized.end());
+        for (char& c : sanitized)
+        {
+            if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
+                c = '_';
+        }
+        if (sanitized.empty())
+            return false;
+
+        const std::filesystem::path targetPath = sourcePath.parent_path() / (sanitized + sourcePath.extension().string());
+        if (targetPath == sourcePath)
+        {
+            outRenamedPath = sourcePath;
+            return true;
+        }
+        if (std::filesystem::exists(targetPath))
+            return false;
+
+        std::error_code ec;
+        std::filesystem::rename(sourcePath, targetPath, ec);
+        if (ec)
+        {
+            Logger::Log(LogLevel::Error, std::format("Failed to rename scene asset: {}", ec.message()), "[Editor]");
+            return false;
+        }
+        outRenamedPath = targetPath;
+        return true;
+    }
+
+    static bool MoveAssetFileToFolder(const std::filesystem::path& sourcePath, const std::filesystem::path& targetFolder, std::filesystem::path& outMovedPath)
+    {
+        if (!std::filesystem::exists(sourcePath) || !std::filesystem::is_regular_file(sourcePath))
+            return false;
+
+        std::error_code ec;
+        const auto targetPath = targetFolder / sourcePath.filename();
+        if (std::filesystem::exists(targetPath))
+        {
+            Logger::Log(LogLevel::Warning, std::format("Target file already exists: {}", targetPath.string()), "[Editor]");
+            return false;
+        }
+        std::filesystem::rename(sourcePath, targetPath, ec);
+        if (ec)
+        {
+            Logger::Log(LogLevel::Error, std::format("Failed to move file: {}", ec.message()), "[Editor]");
+            return false;
+        }
+        if (UI::GetCurrentSceneAssetPath() == sourcePath.string())
+            UI::SetCurrentSceneAssetPath(targetPath.string());
+        outMovedPath = targetPath;
+        return true;
+    }
+
+    static bool DeleteAssetPath(const std::filesystem::path& targetPath, bool isFolder)
+    {
+        std::string reason;
+        if (!CanDeleteAssetPath(targetPath, isFolder, reason))
+        {
+            if (!reason.empty())
+                Logger::Log(LogLevel::Warning, reason, "[Editor]");
+            return false;
+        }
+
+        std::error_code ec;
+        bool removed = false;
+        if (isFolder)
+        {
+            const uintmax_t removedCount = std::filesystem::remove_all(targetPath, ec);
+            removed = (!ec && removedCount > 0);
+        }
+        else
+        {
+            removed = std::filesystem::remove(targetPath, ec);
+        }
+
+        if (ec || !removed)
+        {
+            const std::string errorText = ec ? ec.message() : std::string("Path was not removed.");
+            Logger::Log(LogLevel::Error, std::format("Failed to delete {}: {}", isFolder ? "folder" : "asset", targetPath.string(), errorText), "[Editor]");
+            return false;
+        }
+
+        if (isFolder && IsPathWithinFolder(g_AssetCurrentFolder, targetPath))
+            g_AssetCurrentFolder = targetPath.parent_path().empty() ? GetAssetRootPath() : targetPath.parent_path();
+
+        Logger::Log(LogLevel::Info, std::format("Deleted {}: {}", isFolder ? "folder" : "asset", targetPath.string()), "[Editor]");
+        return true;
+    }
+
+    static bool CanDeleteAssetPath(const std::filesystem::path& targetPath, bool isFolder, std::string& outReason)
+    {
+        outReason.clear();
+        if (targetPath.empty() || !std::filesystem::exists(targetPath))
+        {
+            outReason = "Delete target does not exist.";
+            return false;
+        }
+
+        const std::filesystem::path currentScenePath = std::filesystem::path(UI::GetCurrentSceneAssetPath()).lexically_normal();
+        const std::filesystem::path normalizedTarget = targetPath.lexically_normal();
+        if (!currentScenePath.empty())
+        {
+            if (!isFolder && normalizedTarget == currentScenePath)
+            {
+                outReason = "Cannot delete the currently loaded scene. Load a different scene or create a new one first.";
+                return false;
+            }
+
+            if (isFolder)
+            {
+                const std::string folderPrefix = normalizedTarget.generic_string();
+                const std::string currentSceneString = currentScenePath.generic_string();
+                if (!folderPrefix.empty() && currentSceneString.size() >= folderPrefix.size() &&
+                    currentSceneString.compare(0, folderPrefix.size(), folderPrefix) == 0)
+                {
+                    outReason = "Cannot delete a folder containing the currently loaded scene.";
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    static std::filesystem::path GetAssetRootPath()
+    {
+        return std::filesystem::path("Assets");
+    }
+
+    static void EnsureAssetCurrentFolderValid()
+    {
+        const std::filesystem::path assetRoot = GetAssetRootPath().lexically_normal();
+        std::error_code ec;
+        if (g_AssetCurrentFolder.empty())
+            g_AssetCurrentFolder = assetRoot;
+
+        const std::filesystem::path current = g_AssetCurrentFolder.lexically_normal();
+        const std::string currentString = current.generic_string();
+        const std::string rootString = assetRoot.generic_string();
+        const bool insideRoot = currentString == rootString ||
+            (currentString.size() > rootString.size() && currentString.compare(0, rootString.size(), rootString) == 0 && currentString[rootString.size()] == '/');
+
+        if (!insideRoot || !std::filesystem::exists(current, ec) || ec || !std::filesystem::is_directory(current, ec))
+            g_AssetCurrentFolder = assetRoot;
+    }
+
+    static bool IsDirectChildOfFolder(const std::filesystem::path& path, const std::filesystem::path& folder)
+    {
+        return path.parent_path().lexically_normal() == folder.lexically_normal();
+    }
+
+    static bool IsPathWithinFolder(const std::filesystem::path& path, const std::filesystem::path& folder)
+    {
+        const std::string pathString = path.lexically_normal().generic_string();
+        const std::string folderString = folder.lexically_normal().generic_string();
+        return pathString == folderString ||
+            (pathString.size() > folderString.size() && pathString.compare(0, folderString.size(), folderString) == 0 && pathString[folderString.size()] == '/');
     }
 }

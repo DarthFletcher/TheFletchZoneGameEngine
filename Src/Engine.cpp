@@ -17,6 +17,8 @@
 #pragma comment(lib, "Shcore.lib") // Link against Shcore for DPI functions
 #include "resource.h"
 
+extern Engine* g_engineInstance;
+
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -128,8 +130,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE) {
-            Logger::Log(LogLevel::Info, "🔴 Escape Key Pressed - Closing Application");
-            PostQuitMessage(0);
+            Logger::Log(LogLevel::Info, "🔴 Escape Key Pressed - Requesting Application Close");
+            if (hWnd)
+                PostMessage(hWnd, WM_CLOSE, 0, 0);
+            return 0;
         }
         break;
 
@@ -555,7 +559,8 @@ void Engine::ProcessInput() {
 void Engine::Update() {
     timer.Tick();
     editorState.blackFlameAI.Update();
-    game.Update(timer.GetDeltaTime());
+    if (Engine::GetState() == State::Playing)
+        game.Update(timer.GetDeltaTime());
 }
 
 // ==========================================
@@ -600,6 +605,18 @@ void Engine::GameLoop(HWND hWnd)
 namespace
 {
     static Engine::State g_engineState = Engine::State::Editing;
+
+    struct PlayModeSnapshot
+    {
+        std::string sceneSnapshot;
+        uint32_t activeSelectedInstanceId = 0;
+        std::vector<uint32_t> selectedInstanceIds;
+        std::string sceneAssetPath;
+        int focusedMaterialIndex = -1;
+        bool valid = false;
+    };
+
+    static PlayModeSnapshot g_playModeSnapshot{};
 }
 
 Engine::State Engine::GetState()
@@ -617,6 +634,94 @@ void Engine::SetState(State s)
         (s == State::Editing) ? "Editing" : (s == State::Playing) ? "Playing" : "Paused"));
 }
 
-void Engine::NewScene() { Logger::Log(LogLevel::Info, "NewScene()"); }
-void Engine::SaveScene() { Logger::Log(LogLevel::Info, "SaveScene()"); }
-void Engine::LoadScene() { Logger::Log(LogLevel::Info, "LoadScene()"); }
+bool Engine::StartPlayMode()
+{
+    if (g_engineState == State::Playing)
+        return true;
+
+    if (g_engineState == State::Paused)
+    {
+        g_engineState = State::Playing;
+        Logger::Log(LogLevel::Info, "Engine state -> Playing", "[Engine]");
+        return true;
+    }
+
+    g_playModeSnapshot.sceneSnapshot = Scene::SerializeToString();
+    g_playModeSnapshot.activeSelectedInstanceId = Scene::GetSelectedInstanceId();
+    g_playModeSnapshot.selectedInstanceIds = Scene::GetSelectedInstanceIds();
+    g_playModeSnapshot.sceneAssetPath = UI::GetCurrentSceneAssetPath();
+    g_playModeSnapshot.focusedMaterialIndex = g_engineInstance ? g_engineInstance->GetEditorState().focusedMaterialIndex : -1;
+    g_playModeSnapshot.valid = true;
+
+    if (!Scene::LoadFromString(g_playModeSnapshot.sceneSnapshot))
+    {
+        Logger::Log(LogLevel::Error, "Failed to create runtime snapshot for Play mode.", "[Engine]");
+        g_playModeSnapshot = {};
+        return false;
+    }
+
+    Scene::RestoreSelectionState(g_playModeSnapshot.activeSelectedInstanceId, g_playModeSnapshot.selectedInstanceIds);
+    g_engineState = State::Playing;
+    Logger::Log(LogLevel::Info, "Engine state -> Playing", "[Engine]");
+    return true;
+}
+
+bool Engine::TogglePauseMode()
+{
+    if (g_engineState == State::Editing)
+        return false;
+
+    g_engineState = (g_engineState == State::Paused) ? State::Playing : State::Paused;
+    Logger::Log(LogLevel::Info, std::format("Engine state -> {}", g_engineState == State::Paused ? "Paused" : "Playing"), "[Engine]");
+    return true;
+}
+
+bool Engine::StopPlayMode()
+{
+    if (g_engineState == State::Editing)
+        return true;
+
+    if (g_playModeSnapshot.valid)
+    {
+        if (!Scene::LoadFromString(g_playModeSnapshot.sceneSnapshot))
+        {
+            Logger::Log(LogLevel::Error, "Failed to restore editor scene snapshot when leaving Play mode.", "[Engine]");
+            return false;
+        }
+
+        Scene::RestoreSelectionState(g_playModeSnapshot.activeSelectedInstanceId, g_playModeSnapshot.selectedInstanceIds);
+        UI::SetCurrentSceneAssetPath(g_playModeSnapshot.sceneAssetPath);
+        if (g_engineInstance)
+            g_engineInstance->GetEditorState().focusedMaterialIndex = g_playModeSnapshot.focusedMaterialIndex;
+    }
+
+    g_playModeSnapshot = {};
+    g_engineState = State::Editing;
+    Logger::Log(LogLevel::Info, "Engine state -> Editing", "[Engine]");
+    return true;
+}
+
+void Engine::NewScene()
+{
+    Scene::NewScene();
+    UI::SetCurrentSceneAssetPath("");
+    if (g_engineInstance)
+    {
+        EditorState& editor = g_engineInstance->GetEditorState();
+        editor.selection.Clear();
+        editor.focusedMaterialIndex = -1;
+    }
+    Logger::Log(LogLevel::Info, "New scene created.", "[Engine]");
+}
+
+void Engine::SaveScene()
+{
+    if (UI::SaveCurrentSceneAsset())
+        Logger::Log(LogLevel::Info, "Scene saved.", "[Engine]");
+}
+
+void Engine::LoadScene()
+{
+    if (UI::LoadSceneAssetFromPath(UI::GetCurrentSceneAssetPath()))
+        Logger::Log(LogLevel::Info, "Scene loaded.", "[Engine]");
+}

@@ -25,6 +25,7 @@
 #include <algorithm>
 
 #include "SceneCamera.h"
+#include "Camera.h"
 #include "EditorCommon.h"
 
 // Phase 4A: engine-owned mesh container
@@ -32,6 +33,7 @@
 
 // Phase 3A: scene render scaffolding (logs only).
 #include "Scene.h"
+#include "MaterialContracts.h"
 
 extern HWND mainHwnd;
 extern ID3D12DescriptorHeap* g_SRVHeap;
@@ -97,18 +99,6 @@ public:
     {
         D3D12_GPU_VIRTUAL_ADDRESS GpuAddress = 0;
         uint8_t* CpuPtr = nullptr;
-    };
-
-    struct alignas(256) MaterialCBData
-    {
-        DirectX::XMFLOAT4 baseColor = { 0.78f, 0.80f, 0.84f, 1.0f };
-        float metallic = 0.0f;
-        float roughness = 1.0f;
-        float useAlbedoTexture = 0.0f;
-        float useMetallicTexture = 0.0f;
-        float useRoughnessTexture = 0.0f;
-        float flipNormalGreen = 0.0f;
-        float padding[54]{};
     };
 
     CBAllocation AllocateFrameCB(size_t size);
@@ -248,17 +238,33 @@ public:
     void RequestSceneRenderTargetResize(UINT width, UINT height, ResizeSource source);
     void ProcessPendingSceneRenderTargetResize();
     void RenderSceneToTarget();
+    void EnsureGameRenderTarget(UINT width, UINT height);
+    void RequestGameRenderTargetResize(UINT width, UINT height);
+    void RequestGameRenderTargetResize(UINT width, UINT height, ResizeSource source);
+    void ProcessPendingGameRenderTargetResize();
+    void RenderGameViewToTarget();
     void SetSceneViewportCameraInputState(bool hovered, bool focused, bool allowCameraInput)
     {
         sceneViewportHovered = hovered;
         sceneViewportFocused = focused;
         sceneViewportAllowCameraInput = allowCameraInput;
     }
+    void SetGameViewportInputState(bool hovered, bool focused, bool allowInput)
+    {
+        gameViewportHovered = hovered;
+        gameViewportFocused = focused;
+        gameViewportAllowInput = allowInput;
+    }
     bool IsSceneViewportHovered() const { return sceneViewportHovered; }
     bool IsSceneViewportFocused() const { return sceneViewportFocused; }
     bool IsSceneViewportCameraInputAllowed() const { return sceneViewportAllowCameraInput; }
+    bool IsGameViewportHovered() const { return gameViewportHovered; }
+    bool IsGameViewportFocused() const { return gameViewportFocused; }
+    bool IsGameViewportInputAllowed() const { return gameViewportAllowInput; }
     ImTextureID GetSceneImGuiTextureID() const { return sceneImGuiTextureID; }
     ImVec2 GetSceneRenderTargetSize() const { return ImVec2((float)sceneRTWidth, (float)sceneRTHeight); }
+    ImTextureID GetGameImGuiTextureID() const { return gameImGuiTextureID; }
+    ImVec2 GetGameRenderTargetSize() const { return ImVec2((float)gameRTWidth, (float)gameRTHeight); }
     ImTextureID GetBlackFlameEffectTextureID() const { return blackFlameImGuiTextureID; }
 
     // Editor access
@@ -466,6 +472,9 @@ private:
     bool sceneViewportHovered = false;
     bool sceneViewportFocused = false;
     bool sceneViewportAllowCameraInput = false;
+    bool gameViewportHovered = false;
+    bool gameViewportFocused = false;
+    bool gameViewportAllowInput = false;
 
     UINT pendingWidth = 0;
     UINT pendingHeight = 0;
@@ -476,6 +485,11 @@ private:
     UINT pendingSceneRTH = 0;
     bool pendingSceneRTResize = false;
     ResizeSource pendingSceneRTResizeSource = ResizeSource::Unknown;
+
+    UINT pendingGameRTW = 0;
+    UINT pendingGameRTH = 0;
+    bool pendingGameRTResize = false;
+    ResizeSource pendingGameRTResizeSource = ResizeSource::Unknown;
 
     Microsoft::WRL::ComPtr<ID3D12Resource> sceneRenderTarget;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> sceneRtvHeap;
@@ -493,6 +507,21 @@ private:
     UINT sceneRTWidth = 0;
     UINT sceneRTHeight = 0;
     D3D12_RESOURCE_STATES sceneRTState = D3D12_RESOURCE_STATE_COMMON;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> gameRenderTarget;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> gameRtvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE gameRtvHandle = {};
+    Microsoft::WRL::ComPtr<ID3D12Resource> gameDepth;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> gameDsvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE gameDsvHandle = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE gameSrvCpu = {};
+    D3D12_GPU_DESCRIPTOR_HANDLE gameSrvGpu = {};
+    ImTextureID gameImGuiTextureID = (ImTextureID)0;
+    UINT gameRTWidth = 0;
+    UINT gameRTHeight = 0;
+    D3D12_RESOURCE_STATES gameRTState = D3D12_RESOURCE_STATE_COMMON;
+    D3D12_RESOURCE_STATES gameDepthState = D3D12_RESOURCE_STATE_COMMON;
+    Camera gameCamera;
 
     struct SceneVertex
     {

@@ -25,6 +25,9 @@ public:
 
     static State GetState();
     static void SetState(State s);
+    static bool StartPlayMode();
+    static bool TogglePauseMode();
+    static bool StopPlayMode();
 
     static void NewScene();
     static void SaveScene();
