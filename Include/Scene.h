@@ -30,10 +30,21 @@ struct SceneGridSettings
 enum class ScenePrimitive : uint8_t
 {
     Cube = 0,
-    Sphere,
-    Plane,
-    Cylinder,
-    Empty
+    Sphere = 1,
+    Plane = 2,
+    Cylinder = 3,
+    Empty = 4,
+    Capsule = 5,
+    Torus = 6,
+    Cone = 7
+};
+
+enum class VaultType : uint8_t
+{
+    None = 0,
+    Node = 1,
+    Ring = 2,
+    Core = 3
 };
 
 struct CameraComponent
@@ -57,6 +68,7 @@ struct SceneInstance
     bool visible = true;
     int materialIndex = 0;
     ScenePrimitive primitive = ScenePrimitive::Cube;
+    VaultType vaultType = VaultType::None;
     CameraComponent camera;
 };
 
@@ -95,10 +107,11 @@ struct PrefabOverrideState
     bool scale = false;
     bool visible = false;
     bool material = false;
+    bool vaultType = false;
 
     bool Any() const
     {
-        return name || rotation || scale || visible || material;
+        return name || rotation || scale || visible || material || vaultType;
     }
 };
 
@@ -109,6 +122,7 @@ enum class PrefabProperty : uint8_t
     Scale,
     Visible,
     Material,
+    VaultType,
 };
 
 class Scene
@@ -147,6 +161,7 @@ public:
     static bool TryGetSelectionBounds(DirectX::XMFLOAT3& outCenter, float& outRadius);
     static DirectX::XMFLOAT3 GetSelectionCenterOrActivePosition();
     static bool CanParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId);
+    static bool CanPreserveWorldTransformOnReparent(uint32_t childInstanceId, uint32_t parentInstanceId, std::string* outReason = nullptr);
     static bool SetParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId, bool keepWorldTransform = true);
     static uint32_t GetParentInstanceId(uint32_t instanceId);
     static DirectX::XMFLOAT3 GetInstanceWorldPosition(uint32_t instanceId);
@@ -162,6 +177,7 @@ public:
     static bool TryGetLastRenderCameraData(CameraData& outCamera);
     static void RebuildRenderInstancesFromSceneData();
     static void DeleteSelectedInstance();
+    static bool DeleteInstanceById(uint32_t instanceId);
     static void DuplicateSelectedInstance();
     static void CreateEmpty(const DirectX::XMFLOAT3& position = { 0.0f, 0.0f, 0.0f });
     static void CreateCamera(const DirectX::XMFLOAT3& position = { 0.0f, 2.0f, -5.0f });
@@ -169,6 +185,9 @@ public:
     static void CreateSphere(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
     static void CreatePlane(const DirectX::XMFLOAT3& position = { 0.0f, 0.0f, 0.0f });
     static void CreateCylinder(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
+    static void CreateCapsule(const DirectX::XMFLOAT3& position = { 0.0f, 0.75f, 0.0f });
+    static void CreateTorus(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
+    static void CreateCone(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
     static void CreatePrimitive(ScenePrimitive primitive, const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
     static void NewScene();
     static bool SaveSelectedAsPrefab(const std::string& path);

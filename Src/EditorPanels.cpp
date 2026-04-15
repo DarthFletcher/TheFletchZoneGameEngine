@@ -44,6 +44,9 @@ namespace EditorPanels
     static constexpr const char* kSceneCreateSpherePayload = "SCENE_CREATE_SPHERE";
     static constexpr const char* kSceneCreatePlanePayload = "SCENE_CREATE_PLANE";
     static constexpr const char* kSceneCreateCylinderPayload = "SCENE_CREATE_CYLINDER";
+    static constexpr const char* kSceneCreateCapsulePayload = "SCENE_CREATE_CAPSULE";
+    static constexpr const char* kSceneCreateTorusPayload = "SCENE_CREATE_TORUS";
+    static constexpr const char* kSceneCreateConePayload = "SCENE_CREATE_CONE";
     static constexpr const char* kSceneCreatePrefabPayload = "SCENE_CREATE_PREFAB";
     static constexpr const char* kSceneCreateEmptyPayload = "SCENE_CREATE_EMPTY";
     static constexpr const char* kAssetTexturePayload = "ASSET_TEXTURE";
@@ -76,6 +79,10 @@ namespace EditorPanels
     static bool g_RequestOpenRenameMaterialPopup = false;
     static bool g_RequestOpenDeleteAssetPopup = false;
     static bool g_RequestOpenDeleteMaterialPopup = false;
+    static uint32_t g_PendingReparentChildId = 0;
+    static uint32_t g_PendingReparentParentId = 0;
+    static std::string g_PendingReparentKeepWorldReason;
+    static bool g_RequestOpenReparentPopup = false;
     static std::unordered_map<std::string, ImTextureID> g_AssetThumbnailCache;
     static int GetAssetTileColumnCount(float availableWidth, float tileWidth, float spacing);
     static ImTextureID GetAssetThumbnailTexture(const std::string& assetId, const std::string& fallbackTexturePath);
@@ -101,6 +108,13 @@ namespace EditorPanels
     static std::string FindFirstSelectableAssetIdInFolder(const std::filesystem::path& folder);
     static bool ProjectWorldToSceneScreen(const DirectX::XMFLOAT3& worldPos, const CameraData& camera, ImVec2 sceneMin, ImVec2 sceneSize, ImVec2& outScreen);
     static void DrawSceneCameraIcons(const CameraData& camera, ImDrawList* drawList, ImVec2 sceneMin, ImVec2 sceneSize);
+    static void DrawGameInteractionTargetHighlight(ImDrawList* drawList, ImVec2 imageMin, ImVec2 imageSize);
+    static void DrawSceneMaterialDropOverlay(ImDrawList* drawList, ImVec2 imageMin, ImVec2 imageSize);
+    static void SetInstanceAsMainCamera(SceneInstance* selected);
+    static const char* GetVaultTypeLabel(VaultType vaultType);
+    static SceneInstance* FindSceneInstanceById(uint32_t instanceId);
+    static bool CanAssignMaterialToInstance(const SceneInstance* instance);
+    static bool ApplyMaterialToSceneInstance(EditorState& editor, SceneInstance* instance, int materialIndex);
 
     static const char* GetAssetCategoryLabel(AssetCategory category)
     {
@@ -755,16 +769,34 @@ namespace EditorPanels
                     sceneCamera.SetFrontView();
                 }
                 ImGui::SameLine();
+                if (ImGui::SmallButton("Back##SceneView"))
+                {
+                    gfx.SetViewMode(ViewMode::Mode3D);
+                    sceneCamera.SetBackView();
+                }
+                ImGui::SameLine();
                 if (ImGui::SmallButton("Right##SceneView"))
                 {
                     gfx.SetViewMode(ViewMode::Mode3D);
                     sceneCamera.SetRightView();
                 }
                 ImGui::SameLine();
+                if (ImGui::SmallButton("Left##SceneView"))
+                {
+                    gfx.SetViewMode(ViewMode::Mode3D);
+                    sceneCamera.SetLeftView();
+                }
+                ImGui::SameLine();
                 if (ImGui::SmallButton("Top##SceneView"))
                 {
                     gfx.SetViewMode(ViewMode::Mode3D);
                     sceneCamera.SetTopView();
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Bottom##SceneView"))
+                {
+                    gfx.SetViewMode(ViewMode::Mode3D);
+                    sceneCamera.SetBottomView();
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Perspective##SceneView"))
@@ -833,6 +865,22 @@ namespace EditorPanels
                         if (Scene::TryGetLastRenderCameraData(dropCamera))
                             spawnPos = ComputeSceneDropSpawnPosition(dropCamera, sceneMin, size, ImGui::GetMousePos());
 
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetMaterialPayload))
+                        {
+                            if (payload->DataSize == sizeof(int))
+                            {
+                                const int materialIndex = *static_cast<const int*>(payload->Data);
+                                SceneInstance* dropTarget = nullptr;
+                                const uint32_t hoveredInstanceId = Scene::GetHoveredInstanceId();
+                                if (hoveredInstanceId != 0)
+                                    dropTarget = FindSceneInstanceById(hoveredInstanceId);
+                                if (!dropTarget)
+                                    dropTarget = Scene::GetSelectedInstance();
+                                if (ApplyMaterialToSceneInstance(editor, dropTarget, materialIndex))
+                                    editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                            }
+                        }
+
                         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreateEmptyPayload))
                         {
                             (void)payload;
@@ -867,6 +915,27 @@ namespace EditorPanels
                             (void)payload;
                             PushUndoSnapshot(editor);
                             Scene::CreateCylinder(spawnPos);
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreateCapsulePayload))
+                        {
+                            (void)payload;
+                            PushUndoSnapshot(editor);
+                            Scene::CreateCapsule({ spawnPos.x, spawnPos.y + 0.25f, spawnPos.z });
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreateTorusPayload))
+                        {
+                            (void)payload;
+                            PushUndoSnapshot(editor);
+                            Scene::CreateTorus(spawnPos);
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
+                        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreateConePayload))
+                        {
+                            (void)payload;
+                            PushUndoSnapshot(editor);
+                            Scene::CreateCone(spawnPos);
                             editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
                         }
                         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kSceneCreatePrefabPayload))
@@ -1053,6 +1122,8 @@ namespace EditorPanels
                         else
                             Scene::ClearHoveredInstance();
 
+                        DrawSceneMaterialDropOverlay(ImGui::GetWindowDrawList(), sceneMin, size);
+
                         if (!navigatingCamera && !overHudButton && !clickingGizmo && viewportClicked && !rmbDown && !mmbDown)
                         {
                             const bool shiftSelect = io.KeyShift;
@@ -1136,12 +1207,28 @@ namespace EditorPanels
                     ImGui::Image(tex, size, ImVec2(0, 0), ImVec2(1, 1));
                     hovered = ImGui::IsItemHovered();
                     const ImVec2 imageMin = ImGui::GetItemRectMin();
+                    DrawGameInteractionTargetHighlight(ImGui::GetWindowDrawList(), imageMin, size);
                     ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 10.0f));
                     ImGui::TextDisabled(state == Engine::State::Paused ? "Game View (Paused)" : "Game View (Runtime)");
                     ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 28.0f));
-                    ImGui::TextDisabled("Controls: RMB=Look  WASD/QE=Move  Shift=Boost");
+                    ImGui::TextDisabled("Controls: RMB=Look  WASD=Move  Shift=Boost");
                     ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 46.0f));
                     ImGui::TextDisabled("Input: hovered=%d focused=%d allow=%d", hovered ? 1 : 0, focused ? 1 : 0, (runtimeActive && hovered && focused && !Engine::IsKeyboardCapturedByUI()) ? 1 : 0);
+                    if (g_engineInstance)
+                    {
+                        const ::Game& game = g_engineInstance->GetGame();
+                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 64.0f));
+                        ImGui::TextColored(ImVec4(0.72f, 0.86f, 1.0f, 1.0f),
+                            "Vault: %d / %d nodes | Core: %s",
+                            game.GetVaultActiveNodeCount(),
+                            game.GetVaultTotalNodeCount(),
+                            game.IsVaultCoreUnlocked() ? "Unlocked" : "Locked");
+                    }
+                    if (g_engineInstance && g_engineInstance->GetGame().HasInteractionTarget())
+                    {
+                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 82.0f));
+                        ImGui::TextColored(ImVec4(1.0f, 0.92f, 0.45f, 1.0f), "Press E to activate");
+                    }
                 }
                 else
                 {
@@ -1306,10 +1393,16 @@ namespace EditorPanels
         if (children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
         if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
 
-        const char* hierarchyIcon = (instance->primitive == ScenePrimitive::Empty) ? ICON_FA_SITEMAP : ICON_FA_CUBE;
-        const std::string hierarchyLabel = isPrefabInstance
+        const bool isActiveMainCamera = instance->camera.enabled && instance->camera.isMain;
+        const char* hierarchyIcon = instance->camera.enabled
+            ? ICON_FA_SEARCH
+            : ((instance->primitive == ScenePrimitive::Empty) ? ICON_FA_SITEMAP : ICON_FA_CUBE);
+        const std::string hierarchyBaseLabel = isPrefabInstance
             ? std::format("{} {}{}", hierarchyIcon, instance->name, hasPrefabOverrides ? " *" : "")
             : std::format("{} {}", hierarchyIcon, instance->name);
+        const std::string hierarchyLabel = isActiveMainCamera
+            ? std::format("{}  [ACTIVE]", hierarchyBaseLabel)
+            : hierarchyBaseLabel;
 
         const bool open = ImGui::TreeNodeEx((void*)(uintptr_t)instance->instanceId, flags, "%s", hierarchyLabel.c_str());
         if (ImGui::IsItemClicked())
@@ -1330,14 +1423,23 @@ namespace EditorPanels
 
         if (ImGui::BeginDragDropTarget())
         {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetMaterialPayload))
+            {
+                if (payload->DataSize == sizeof(int))
+                {
+                    const int materialIndex = *static_cast<const int*>(payload->Data);
+                    ApplyMaterialToSceneInstance(editor, instance, materialIndex);
+                }
+            }
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("SCENE_INSTANCE"))
             {
                 const uint32_t draggedId = *(const uint32_t*)payload->Data;
                 if (draggedId != instance->instanceId && Scene::CanParentInstance(draggedId, instance->instanceId))
                 {
-                    PushUndoSnapshot(editor);
-                    if (Scene::SetParentInstance(draggedId, instance->instanceId, true))
-                        editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                    g_PendingReparentChildId = draggedId;
+                    g_PendingReparentParentId = instance->instanceId;
+                    Scene::CanPreserveWorldTransformOnReparent(draggedId, instance->instanceId, &g_PendingReparentKeepWorldReason);
+                    g_RequestOpenReparentPopup = true;
                 }
             }
             ImGui::EndDragDropTarget();
@@ -1389,6 +1491,81 @@ namespace EditorPanels
                         }
                     }
                     ImGui::EndDragDropTarget();
+                }
+
+                if (g_RequestOpenReparentPopup)
+                {
+                    ImGui::OpenPopup("Reparent Instance##Hierarchy");
+                    g_RequestOpenReparentPopup = false;
+                }
+
+                if (ImGui::BeginPopupModal("Reparent Instance##Hierarchy", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    const SceneInstance* child = nullptr;
+                    const SceneInstance* parent = nullptr;
+                    for (const SceneInstance& instance : Scene::GetInstances())
+                    {
+                        if (instance.instanceId == g_PendingReparentChildId)
+                            child = &instance;
+                        if (instance.instanceId == g_PendingReparentParentId)
+                            parent = &instance;
+                    }
+
+                    ImGui::TextUnformatted("Choose reparent mode");
+                    ImGui::Separator();
+                    ImGui::Text("Child: %s", child ? child->name.c_str() : "<Unknown>");
+                    ImGui::Text("Parent: %s", parent ? parent->name.c_str() : "<Unknown>");
+
+                    const bool canKeepWorld = Scene::CanPreserveWorldTransformOnReparent(
+                        g_PendingReparentChildId,
+                        g_PendingReparentParentId,
+                        &g_PendingReparentKeepWorldReason);
+
+                    if (!canKeepWorld && !g_PendingReparentKeepWorldReason.empty())
+                        ImGui::TextWrapped("%s", g_PendingReparentKeepWorldReason.c_str());
+
+                    if (!canKeepWorld)
+                        ImGui::BeginDisabled();
+                    if (ImGui::Button("Keep World##Reparent", ImVec2(120.0f, 0.0f)))
+                    {
+                        PushUndoSnapshot(editor);
+                        if (Scene::SetParentInstance(g_PendingReparentChildId, g_PendingReparentParentId, true))
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        g_PendingReparentChildId = 0;
+                        g_PendingReparentParentId = 0;
+                        g_PendingReparentKeepWorldReason.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    if (!canKeepWorld)
+                        ImGui::EndDisabled();
+                    if (!canKeepWorld)
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(Unavailable)");
+                    }
+
+                    ImGui::SameLine();
+                    if (ImGui::Button("Keep Local##Reparent", ImVec2(120.0f, 0.0f)))
+                    {
+                        PushUndoSnapshot(editor);
+                        if (Scene::SetParentInstance(g_PendingReparentChildId, g_PendingReparentParentId, false))
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        g_PendingReparentChildId = 0;
+                        g_PendingReparentParentId = 0;
+                        g_PendingReparentKeepWorldReason.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel##Reparent", ImVec2(100.0f, 0.0f)))
+                    {
+                        g_PendingReparentChildId = 0;
+                        g_PendingReparentParentId = 0;
+                        g_PendingReparentKeepWorldReason.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::EndPopup();
                 }
             }
             ImGui::End();
@@ -1551,6 +1728,7 @@ namespace EditorPanels
                             if (prefabOverrides.scale) appendOverride("Scale");
                             if (prefabOverrides.visible) appendOverride("Visible");
                             if (prefabOverrides.material) appendOverride("Material");
+                            if (prefabOverrides.vaultType) appendOverride("Vault Type");
                             ImGui::TextColored(overrideTextColor, "Overrides: %s", overrideList.c_str());
                         }
                         else
@@ -1614,6 +1792,17 @@ namespace EditorPanels
                         selected->scale.z = (std::max)(scale.z, 0.01f);
                     }
 
+                    const bool hasNonUniformScale =
+                        fabsf(selected->scale.x - selected->scale.y) > 1e-4f ||
+                        fabsf(selected->scale.x - selected->scale.z) > 1e-4f ||
+                        fabsf(selected->scale.y - selected->scale.z) > 1e-4f;
+                    if (hasNonUniformScale)
+                    {
+                        ImGui::TextColored(
+                            ImVec4(1.0f, 0.78f, 0.35f, 1.0f),
+                            "Warning: Non-uniform scale can prevent Keep World parenting.");
+                    }
+
                     bool visible = selected->visible;
                     pushOverrideHighlight(hasPrefabOverrideState && prefabOverrides.visible);
                     const bool visibleChanged = ImGui::Checkbox("Visible", &visible);
@@ -1625,10 +1814,43 @@ namespace EditorPanels
                         selected->visible = visible;
                     }
 
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("Gameplay");
+                    pushOverrideHighlight(hasPrefabOverrideState && prefabOverrides.vaultType);
+                    const char* currentVaultTypeLabel = GetVaultTypeLabel(selected->vaultType);
+                    if (ImGui::BeginCombo("Vault Type", currentVaultTypeLabel))
+                    {
+                        constexpr VaultType vaultTypes[] = {
+                            VaultType::None,
+                            VaultType::Node,
+                            VaultType::Ring,
+                            VaultType::Core,
+                        };
+                        for (VaultType vaultType : vaultTypes)
+                        {
+                            const bool isCurrent = (selected->vaultType == vaultType);
+                            if (ImGui::Selectable(GetVaultTypeLabel(vaultType), isCurrent))
+                            {
+                                PushUndoSnapshot(editor);
+                                selected->vaultType = vaultType;
+                            }
+                            if (isCurrent)
+                                ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    popOverrideHighlight(hasPrefabOverrideState && prefabOverrides.vaultType);
+                    drawOverrideControls(hasPrefabOverrideState && prefabOverrides.vaultType, "VaultType", PrefabProperty::VaultType);
+
                     if (selected->camera.enabled)
                     {
                         ImGui::Separator();
                         ImGui::TextUnformatted("Camera");
+                        if (selected->camera.isMain)
+                        {
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4(1.0f, 0.92f, 0.45f, 1.0f), "ACTIVE");
+                        }
 
                         bool isMainCamera = selected->camera.isMain;
                         if (ImGui::Checkbox("Main Camera", &isMainCamera))
@@ -1636,14 +1858,15 @@ namespace EditorPanels
                             PushUndoSnapshot(editor);
                             selected->camera.isMain = isMainCamera;
                             if (isMainCamera)
+                                SetInstanceAsMainCamera(selected);
+                        }
+
+                        if (!selected->camera.isMain)
+                        {
+                            if (ImGui::SmallButton("Set As Main Camera"))
                             {
-                                for (UINT instanceIndex = 0; instanceIndex < Scene::GetInstanceCount(); ++instanceIndex)
-                                {
-                                    SceneInstance* other = Scene::GetInstance(instanceIndex);
-                                    if (!other || other == selected || !other->camera.enabled)
-                                        continue;
-                                    other->camera.isMain = false;
-                                }
+                                PushUndoSnapshot(editor);
+                                SetInstanceAsMainCamera(selected);
                             }
                         }
 
@@ -1991,6 +2214,9 @@ namespace EditorPanels
                     drawPrimitive("PrimitiveSphere", "Sphere", kSceneCreateSpherePayload);
                     drawPrimitive("PrimitivePlane", "Plane", kSceneCreatePlanePayload);
                     drawPrimitive("PrimitiveCylinder", "Cylinder", kSceneCreateCylinderPayload);
+                    drawPrimitive("PrimitiveCapsule", "Capsule", kSceneCreateCapsulePayload);
+                    drawPrimitive("PrimitiveTorus", "Torus", kSceneCreateTorusPayload);
+                    drawPrimitive("PrimitiveCone", "Cone", kSceneCreateConePayload);
 
                     if (primitiveTileIndex == 0)
                         ImGui::TextDisabled("No primitive assets match the filter.");
@@ -2214,7 +2440,8 @@ namespace EditorPanels
                         const std::string materialId = std::format("Material:{}", label);
                         const std::string thumbPath = (material->albedo && !material->albedo->sourcePath.empty()) ? material->albedo->sourcePath : "Assets/Textures/crate.png";
                         const ImTextureID materialThumb = GetAssetThumbnailTexture(materialId, thumbPath);
-                        if (DrawAssetTile(materialId.c_str(), label.c_str(), ICON_FA_GEAR, kAssetMaterialPayload, nullptr, 0, g_SelectedAssetId == materialId, materialThumb))
+                        const int materialPayloadIndex = i;
+                        if (DrawAssetTile(materialId.c_str(), label.c_str(), ICON_FA_GEAR, kAssetMaterialPayload, &materialPayloadIndex, sizeof(materialPayloadIndex), g_SelectedAssetId == materialId, materialThumb))
                         {
                             QueueAssetSelection(materialId);
                             if (g_engineInstance)
@@ -2726,6 +2953,102 @@ namespace EditorPanels
             g_engineInstance->GetEditorState().focusedMaterialIndex = materialIndex;
     }
 
+    static SceneInstance* FindSceneInstanceById(uint32_t instanceId)
+    {
+        if (instanceId == 0)
+            return nullptr;
+        const auto& instances = Scene::GetInstances();
+        for (size_t i = 0; i < instances.size(); ++i)
+        {
+            SceneInstance* instance = Scene::GetInstance(i);
+            if (instance && instance->instanceId == instanceId)
+                return instance;
+        }
+        return nullptr;
+    }
+
+    static bool CanAssignMaterialToInstance(const SceneInstance* instance)
+    {
+        return instance && !instance->camera.enabled && instance->primitive != ScenePrimitive::Empty;
+    }
+
+    static bool ApplyMaterialToSceneInstance(EditorState& editor, SceneInstance* instance, int materialIndex)
+    {
+        MaterialManager& materials = MaterialManager::GetInstance();
+        if (!CanAssignMaterialToInstance(instance))
+            return false;
+        if (!materials.GetMaterialByIndex(materialIndex))
+            return false;
+        if (instance->materialIndex == materialIndex)
+            return false;
+
+        PushUndoSnapshot(editor);
+        instance->materialIndex = materialIndex;
+        Scene::SetSelectedInstanceId(instance->instanceId);
+        if (const std::string* materialName = materials.GetMaterialNameByIndex(materialIndex))
+            QueueMaterialSelection(materialIndex, *materialName);
+        Scene::RebuildRenderInstancesFromSceneData();
+        Scene::MarkInstancesDirty();
+        return true;
+    }
+
+    static void DrawSceneMaterialDropOverlay(ImDrawList* drawList, ImVec2 imageMin, ImVec2 imageSize)
+    {
+        if (!drawList)
+            return;
+
+        const ImGuiPayload* activePayload = ImGui::GetDragDropPayload();
+        if (!activePayload || !activePayload->IsDataType(kAssetMaterialPayload) || activePayload->DataSize != sizeof(int))
+            return;
+
+        const int materialIndex = *static_cast<const int*>(activePayload->Data);
+        MaterialManager& materials = MaterialManager::GetInstance();
+        const std::string materialLabel = [&]()
+        {
+            if (const std::string* materialName = materials.GetMaterialNameByIndex(materialIndex))
+                return *materialName;
+            return std::string("Material");
+        }();
+
+        SceneInstance* target = nullptr;
+        const uint32_t hoveredId = Scene::GetHoveredInstanceId();
+        if (hoveredId != 0)
+            target = FindSceneInstanceById(hoveredId);
+        if (!CanAssignMaterialToInstance(target))
+            target = Scene::GetSelectedInstance();
+        if (!CanAssignMaterialToInstance(target))
+            target = nullptr;
+
+        const ImVec2 panelMin(imageMin.x + 16.0f, imageMin.y + 16.0f);
+        const ImVec2 panelMax(panelMin.x + 300.0f, panelMin.y + (target ? 56.0f : 74.0f));
+        drawList->AddRectFilled(panelMin, panelMax, IM_COL32(10, 12, 18, 210), 10.0f);
+        drawList->AddRect(panelMin, panelMax, IM_COL32(96, 168, 255, 180), 10.0f, 0, 1.4f);
+        drawList->AddText(ImVec2(panelMin.x + 12.0f, panelMin.y + 10.0f), IM_COL32(255, 255, 255, 235), materialLabel.c_str());
+        const char* hintText = target
+            ? "Release to assign material to target object"
+            : "Hover or select a renderable object to assign this material";
+        drawList->AddText(ImVec2(panelMin.x + 12.0f, panelMin.y + 30.0f), IM_COL32(184, 192, 208, 220), hintText);
+
+        if (!target)
+            return;
+
+        CameraData camera{};
+        if (!Scene::TryGetLastRenderCameraData(camera))
+            return;
+
+        ImVec2 targetScreen{};
+        if (!ProjectWorldToSceneScreen(target->position, camera, imageMin, imageSize, targetScreen))
+            return;
+
+        const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 6.0f);
+        const float radius = 22.0f + pulse * 6.0f;
+        drawList->AddCircleFilled(targetScreen, radius - 6.0f, IM_COL32(96, 168, 255, 34), 28);
+        drawList->AddCircle(targetScreen, radius, IM_COL32(96, 168, 255, 240), 28, 2.5f);
+        drawList->AddCircle(targetScreen, radius + 8.0f, IM_COL32(18, 22, 30, 220), 28, 1.5f);
+        const std::string targetLabel = std::format("Drop Material -> {}", target->name);
+        drawList->AddText(ImVec2(targetScreen.x + radius + 8.0f, targetScreen.y - 8.0f), IM_COL32(96, 168, 255, 240), targetLabel.c_str());
+    }
+
     static bool ProjectWorldToSceneScreen(const DirectX::XMFLOAT3& worldPos, const CameraData& camera, ImVec2 sceneMin, ImVec2 sceneSize, ImVec2& outScreen)
     {
         using namespace DirectX;
@@ -2830,6 +3153,78 @@ namespace EditorPanels
             drawList->AddCircle(originScreen, radius + 2.0f, IM_COL32(18, 20, 24, 235), 18, 1.5f);
             if (instance.camera.isMain)
                 drawList->AddText(ImVec2(originScreen.x + 8.0f, originScreen.y - 8.0f), color, "Main");
+        }
+    }
+
+    static void DrawGameInteractionTargetHighlight(ImDrawList* drawList, ImVec2 imageMin, ImVec2 imageSize)
+    {
+        if (!drawList || !g_engineInstance)
+            return;
+
+        const ::Game& game = g_engineInstance->GetGame();
+        if (!game.HasInteractionTarget())
+            return;
+
+        const uint32_t targetId = game.GetInteractionTargetId();
+        const SceneInstance* targetInstance = nullptr;
+        for (const SceneInstance& instance : Scene::GetInstances())
+        {
+            if (instance.instanceId == targetId)
+            {
+                targetInstance = &instance;
+                break;
+            }
+        }
+        if (!targetInstance)
+            return;
+
+        CameraData camera{};
+        const float aspect = (imageSize.y > 0.0f) ? (imageSize.x / imageSize.y) : 1.0f;
+        if (!Scene::TryBuildMainCameraData(aspect, camera))
+            return;
+
+        ImVec2 targetScreen{};
+        const DirectX::XMFLOAT3 targetWorld = {
+            targetInstance->position.x,
+            targetInstance->position.y + 0.75f,
+            targetInstance->position.z
+        };
+        if (!ProjectWorldToSceneScreen(targetWorld, camera, imageMin, imageSize, targetScreen))
+            return;
+
+        constexpr float kRadius = 16.0f;
+        const ImU32 ringColor = IM_COL32(255, 214, 102, 235);
+        const ImU32 fillColor = IM_COL32(255, 214, 102, 38);
+        drawList->AddCircleFilled(targetScreen, kRadius - 5.0f, fillColor, 24);
+        drawList->AddCircle(targetScreen, kRadius, ringColor, 24, 2.5f);
+        drawList->AddCircle(targetScreen, kRadius + 6.0f, IM_COL32(32, 24, 10, 220), 24, 1.5f);
+        drawList->AddText(ImVec2(targetScreen.x + 18.0f, targetScreen.y - 8.0f), ringColor, "Activate");
+    }
+
+    static void SetInstanceAsMainCamera(SceneInstance* selected)
+    {
+        if (!selected || !selected->camera.enabled)
+            return;
+
+        selected->camera.isMain = true;
+        for (UINT instanceIndex = 0; instanceIndex < Scene::GetInstanceCount(); ++instanceIndex)
+        {
+            SceneInstance* other = Scene::GetInstance(instanceIndex);
+            if (!other || other == selected || !other->camera.enabled)
+                continue;
+            other->camera.isMain = false;
+        }
+    }
+
+    static const char* GetVaultTypeLabel(VaultType vaultType)
+    {
+        switch (vaultType)
+        {
+        case VaultType::Node: return "Node";
+        case VaultType::Ring: return "Ring";
+        case VaultType::Core: return "Core";
+        case VaultType::None:
+        default: return "None";
         }
     }
 

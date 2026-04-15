@@ -260,10 +260,63 @@ namespace SplashScreen
         }
     }
 
+    static void DrawCoverSplashImage(ImGuiViewport* vp, float alpha)
+    {
+        if (!vp || !splashTex)
+            return;
+
+        ImDrawList* draw = ImGui::GetBackgroundDrawList(vp);
+        if (!draw)
+            return;
+
+        const ImVec2 screenPos = vp->Pos;
+        const ImVec2 screenSize = vp->Size;
+        if (screenSize.x <= 1.0f || screenSize.y <= 1.0f)
+            return;
+
+        const float imageAspect = (cpuHeight > 0) ? (static_cast<float>(cpuWidth) / static_cast<float>(cpuHeight)) : 1.0f;
+        const float screenAspect = screenSize.x / screenSize.y;
+
+        ImVec2 uvMin(0.0f, 0.0f);
+        ImVec2 uvMax(1.0f, 1.0f);
+        if (imageAspect > screenAspect)
+        {
+            const float visibleU = screenAspect / imageAspect;
+            const float crop = (1.0f - visibleU) * 0.5f;
+            uvMin.x = crop;
+            uvMax.x = 1.0f - crop;
+        }
+        else if (imageAspect < screenAspect)
+        {
+            const float visibleV = imageAspect / screenAspect;
+            const float crop = (1.0f - visibleV) * 0.5f;
+            uvMin.y = crop;
+            uvMax.y = 1.0f - crop;
+        }
+
+        const float clampedAlpha = std::clamp(alpha, 0.0f, 1.0f);
+        const ImU32 tint = IM_COL32(255, 255, 255, static_cast<int>(clampedAlpha * 255.0f));
+        draw->AddImage(
+            splashTex,
+            screenPos,
+            ImVec2(screenPos.x + screenSize.x, screenPos.y + screenSize.y),
+            uvMin,
+            uvMax,
+            tint);
+
+        const ImU32 overlayCol = IM_COL32(8, 10, 14, static_cast<int>(150.0f * clampedAlpha));
+        draw->AddRectFilled(
+            screenPos,
+            ImVec2(screenPos.x + screenSize.x, screenPos.y + screenSize.y),
+            overlayCol);
+    }
+
     static void DrawRecommendedSplashLayout(ImGuiViewport* vp, float alpha)
     {
         if (!vp)
             return;
+
+        DrawCoverSplashImage(vp, alpha);
 
         const BootProgress& b = Boot::GetProgress();
         const auto& lines = Boot::GetLines();
@@ -468,14 +521,14 @@ namespace SplashScreen
         {
         case SplashState::Boot:
             if (!s_statusExplicit && statusMessage.empty())
-                statusMessage = "Booting…";
+                statusMessage = "Kindling the Black Flame...";
             s_state = SplashState::WaitingForGPU;
             break;
 
         case SplashState::WaitingForGPU:
         {
-            if (!s_statusExplicit && (statusMessage.empty() || statusMessage == "Booting…"))
-                statusMessage = "Initializing GPU…";
+            if (!s_statusExplicit && (statusMessage.empty() || statusMessage == "Kindling the Black Flame..."))
+                statusMessage = "Binding render sigils...";
 
             // Always call EnsureGPUTexture() so it can log/attempt/defers safely.
             // (EnsureGPUTexture() internally gates on IsUploadReady and throttles logs.)
@@ -497,7 +550,7 @@ namespace SplashScreen
 
         case SplashState::FadingOut:
         {
-            s_fadeAlpha -= dt * 1.5f;
+            s_fadeAlpha -= dt * 0.9f;
             if (s_fadeAlpha <= 0.0f)
             {
                 s_fadeAlpha = 0.0f;

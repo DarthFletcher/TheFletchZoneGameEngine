@@ -46,8 +46,11 @@ public:
 
     void ResetToDefaultView();
     void SetFrontView();
+    void SetBackView();
     void SetRightView();
+    void SetLeftView();
     void SetTopView();
+    void SetBottomView();
 
     void FocusOn(const DirectX::XMFLOAT3& position, float distance = 5.0f);
     void FocusOnPoint(const DirectX::XMFLOAT3& position, float distance = 5.0f) { FocusOn(position, distance); }

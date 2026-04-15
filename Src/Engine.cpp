@@ -1,5 +1,5 @@
 #include "Engine.h" // Main engine header
-#define IMGUI_IMPL_WIN32_LOADER 
+#define IMGUI_IMPL_WIN32_LOADER // ✅ Use custom Win32 loader for ImGui
 #include "imgui.h" // Dear ImGui core
 #include "imgui_impl_win32_custom.h" // Custom Win32 backend
 #include "imgui_impl_dx12_custom.h" // Custom DirectX 12 backend
@@ -10,7 +10,7 @@
 #include <ShellScalingApi.h> // For DPI awareness
 #include <SplashScreen.h> // Splash screen header
 #include <BootDiagnostics.h> // Boot diagnostics header
-#include <BootProgress.h>
+#include <BootProgress.h> // Boot progress tracking
 #include "UI.h"
 #include "TextureManager.h"
 #include "MaterialManager.h"
@@ -270,7 +270,7 @@ bool Engine::Initialize(HINSTANCE hInstance, int nCmdShow)
     Boot::Reset(5);
     Boot::SetStage("Window", 0);
     Boot::SetStageProgress(0.0f, "Creating application window...");
-    Boot::PushLine("🜂 Waking the Black Flame...", GetBootNowSeconds());
+    Boot::PushLine("Waking the Black Flame...", GetBootNowSeconds());
 
     // 1. Create Window
     if (!InitializeWindow(hInstance, nCmdShow))
@@ -280,7 +280,7 @@ bool Engine::Initialize(HINSTANCE hInstance, int nCmdShow)
     // 2. Initialize GPU
     Boot::SetStage("Graphics", 1);
     Boot::SetStageProgress(0.1f, "Initializing D3D12...");
-    Boot::PushLine("⚙️  Spinning command queue...", GetBootNowSeconds());
+    Boot::PushLine("Spinning up the command queue...", GetBootNowSeconds());
     if (!graphics.Initialize(hWnd))
         return false;
     Boot::SetStageProgress(1.0f, "Graphics ready");
@@ -303,8 +303,8 @@ bool Engine::Initialize(HINSTANCE hInstance, int nCmdShow)
     SplashScreen::Initialize("Assets/Splash/TheFletchZone_Splash.png");
     SplashScreen::SetStatusText("Waking the Black Flame...");
     SplashScreen::Show();
-    SplashScreen::SetMinimumShowTime(1.0f);
-    Boot::PushLine("🛰  Uploading sigils to VRAM...", GetBootNowSeconds());
+    SplashScreen::SetMinimumShowTime(1.75f);
+    Boot::PushLine("Binding render sigils...", GetBootNowSeconds());
     Boot::SetStageProgress(1.0f, "Splash ready (CPU)"
     );
 
@@ -345,13 +345,13 @@ bool Engine::Initialize(HINSTANCE hInstance, int nCmdShow)
     // 5. Initialize Input
     Boot::SetStage("Input", 4);
     Boot::SetStageProgress(0.1f, "Initializing input...");
-    SplashScreen::SetStatusText("🎮 Initializing Input...");
+    SplashScreen::SetStatusText("Forging control bindings...");
     for (int i = 0; i < 2 && isRunning; ++i)
         PumpBootFrame(8.0f);
     if (!input.Initialize(hWnd)) return false;
     Boot::SetStageProgress(1.0f, "Input ready");
 
-    SplashScreen::SetStatusText("✅ Ready");
+    SplashScreen::SetStatusText("Black Flame ignition complete.");
     Boot::SetStageProgress(1.0f, "Ready");
     for (int i = 0; i < 2 && isRunning; ++i)
         PumpBootFrame(8.0f);

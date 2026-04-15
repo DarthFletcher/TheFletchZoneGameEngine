@@ -375,6 +375,9 @@ public:
     const MeshData& GetSphereMesh() const { return m_sphereMesh; }
     const MeshData& GetPlaneMesh() const { return m_planeMesh; }
     const MeshData& GetCylinderMesh() const { return m_cylinderMesh; }
+    const MeshData& GetCapsuleMesh() const { return m_capsuleMesh; }
+    const MeshData& GetTorusMesh() const { return m_torusMesh; }
+    const MeshData& GetConeMesh() const { return m_coneMesh; }
 
     // CP9-B: one-shot staged upload into a GPU-local DEFAULT buffer (uses uploadCommandList/uploadAllocator).
     void UploadBufferToDefault(ID3D12Resource* dstDefault, const void* srcData, size_t numBytes);
@@ -407,6 +410,9 @@ private:
     MeshData m_sphereMesh;
     MeshData m_planeMesh;
     MeshData m_cylinderMesh;
+    MeshData m_capsuleMesh;
+    MeshData m_torusMesh;
+    MeshData m_coneMesh;
     DirectionalLight directionalLight{};
     bool flipNormalGreenChannel = false;
 

@@ -18,6 +18,9 @@ bool CreateCubeMesh(ID3D12Device* device, MeshData& outMesh);
 bool CreateSphereMesh(ID3D12Device* device, MeshData& outMesh, uint32_t slices = 24, uint32_t stacks = 16);
 bool CreatePlaneMesh(ID3D12Device* device, MeshData& outMesh);
 bool CreateCylinderMesh(ID3D12Device* device, MeshData& outMesh, uint32_t slices = 24);
+bool CreateCapsuleMesh(ID3D12Device* device, MeshData& outMesh, uint32_t slices = 24, uint32_t hemiStacks = 8);
+bool CreateTorusMesh(ID3D12Device* device, MeshData& outMesh, uint32_t majorSegments = 32, uint32_t minorSegments = 16);
+bool CreateConeMesh(ID3D12Device* device, MeshData& outMesh, uint32_t slices = 24);
 
 bool CreateCubeMeshDefaultHeap(
     ID3D12Device* device,
@@ -52,6 +55,41 @@ bool CreatePlaneMeshDefaultHeap(
     MeshData& outMesh);
 
 bool CreateCylinderMeshDefaultHeap(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* commandList,
+    ID3D12CommandAllocator* commandAllocator,
+    ID3D12CommandQueue* queue,
+    ID3D12Fence* fence,
+    HANDLE fenceEvent,
+    UINT64& inOutFenceValue,
+    MeshData& outMesh,
+    uint32_t slices = 24);
+
+bool CreateCapsuleMeshDefaultHeap(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* commandList,
+    ID3D12CommandAllocator* commandAllocator,
+    ID3D12CommandQueue* queue,
+    ID3D12Fence* fence,
+    HANDLE fenceEvent,
+    UINT64& inOutFenceValue,
+    MeshData& outMesh,
+    uint32_t slices = 24,
+    uint32_t hemiStacks = 8);
+
+bool CreateTorusMeshDefaultHeap(
+    ID3D12Device* device,
+    ID3D12GraphicsCommandList* commandList,
+    ID3D12CommandAllocator* commandAllocator,
+    ID3D12CommandQueue* queue,
+    ID3D12Fence* fence,
+    HANDLE fenceEvent,
+    UINT64& inOutFenceValue,
+    MeshData& outMesh,
+    uint32_t majorSegments = 32,
+    uint32_t minorSegments = 16);
+
+bool CreateConeMeshDefaultHeap(
     ID3D12Device* device,
     ID3D12GraphicsCommandList* commandList,
     ID3D12CommandAllocator* commandAllocator,

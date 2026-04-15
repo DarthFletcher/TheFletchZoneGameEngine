@@ -13,4 +13,5 @@ public:
 private:
     std::chrono::steady_clock::time_point lastTime;
     float deltaTime = 0.0f;
+    bool started = false;
 };

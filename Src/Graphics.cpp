@@ -887,7 +887,49 @@ bool Graphics::Initialize(HWND hWnd)
         return false;
     }
 
-    Logger::Log(LogLevel::Info, "✅ Engine primitive meshes created (cube, sphere, plane, cylinder)", "[Graphics]");
+    if (!CreateCapsuleMeshDefaultHeap(
+        device.Get(),
+        uploadCommandList.Get(),
+        uploadAllocator.Get(),
+        commandQueue.Get(),
+        fence.Get(),
+        fenceEvent,
+        fenceValue,
+        m_capsuleMesh))
+    {
+        Logger::Log(LogLevel::Error, "Failed to create capsule mesh (DEFAULT heap).", "[Graphics]");
+        return false;
+    }
+
+    if (!CreateTorusMeshDefaultHeap(
+        device.Get(),
+        uploadCommandList.Get(),
+        uploadAllocator.Get(),
+        commandQueue.Get(),
+        fence.Get(),
+        fenceEvent,
+        fenceValue,
+        m_torusMesh))
+    {
+        Logger::Log(LogLevel::Error, "Failed to create torus mesh (DEFAULT heap).", "[Graphics]");
+        return false;
+    }
+
+    if (!CreateConeMeshDefaultHeap(
+        device.Get(),
+        uploadCommandList.Get(),
+        uploadAllocator.Get(),
+        commandQueue.Get(),
+        fence.Get(),
+        fenceEvent,
+        fenceValue,
+        m_coneMesh))
+    {
+        Logger::Log(LogLevel::Error, "Failed to create cone mesh (DEFAULT heap).", "[Graphics]");
+        return false;
+    }
+
+    Logger::Log(LogLevel::Info, "✅ Engine primitive meshes created (cube, sphere, plane, cylinder, capsule, torus, cone)", "[Graphics]");
 
     // 🎮 Log selected GPU info
     ComPtr<IDXGIAdapter> adapter;
@@ -1025,6 +1067,9 @@ void Graphics::Shutdown()
     m_sphereMesh = {};
     m_planeMesh = {};
     m_cylinderMesh = {};
+    m_capsuleMesh = {};
+    m_torusMesh = {};
+    m_coneMesh = {};
 
     // Ensure we are not mid-recording when releasing GPU resources.
     if (commandListOpen)

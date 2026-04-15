@@ -1,0 +1,23 @@
+{
+  "sceneVersion": 1,
+  "instances": [
+    {
+      "id": 1,
+      "parent": 0,
+      "name": "Main Camera",
+      "prefabSource": "",
+      "position": [0, 5, -10],
+      "rotation": [0.463647, 0, 0],
+      "scale": [1, 1, 1],
+      "visible": false,
+      "material": 0,
+      "primitive": 4,
+      "vaultType": 0,
+      "cameraEnabled": true,
+      "cameraMain": true,
+      "cameraFovY": 1.0472,
+      "cameraNearClip": 0.1,
+      "cameraFarClip": 100
+    }
+  ]
+}

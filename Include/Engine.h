@@ -41,6 +41,8 @@ public:
     const EditorState& GetEditorState() const { return editorState; }
     Input& GetInput() { return input; }
     const Input& GetInput() const { return input; }
+    Game& GetGame() { return game; }
+    const Game& GetGame() const { return game; }
 
 private:
     // Initialization

@@ -10,7 +10,12 @@
 #include "EditorPanels.h"
 #include "EditorState.h"
 #include "EditorIcons.h"
+#include "ImGuiUtils.h"
 #include <filesystem>
+
+#include <algorithm>
+#include <fstream>
+#include <sstream>
 
 ImFont* g_UIFont = nullptr;
 ImFont* g_UIFontBold = nullptr;
@@ -56,6 +61,63 @@ namespace UI {
     static bool g_showImGuiMetrics = false;
     static bool g_showFrameDiag = false;
     static std::string g_CurrentScenePath;
+    static std::string g_CurrentProjectPath;
+    static std::string g_CurrentProjectName;
+    static std::filesystem::path g_CurrentProjectRoot = std::filesystem::current_path();
+    static std::string g_ProjectStartupScenePath;
+    static std::string g_ProjectLastOpenedScenePath;
+    static std::vector<std::string> g_RecentProjectPaths;
+    static bool g_RecentProjectsLoaded = false;
+    static bool g_ShowProjectBrowser = true;
+    static bool g_RequestOpenProjectBrowserPopup = true;
+
+    struct ProjectTemplateDefinition
+    {
+        std::string id;
+        std::string name;
+        std::string description;
+        std::string thumbnailPath;
+        std::filesystem::path definitionFilePath;
+        std::filesystem::path templateRoot;
+        std::string sourceScenePath;
+        std::string copyRoot;
+        bool hasCameraOverride = false;
+        DirectX::XMFLOAT3 cameraPosition{ 0.0f, 0.0f, 0.0f };
+        DirectX::XMFLOAT3 cameraRotationDegrees{ 0.0f, 0.0f, 0.0f };
+
+        struct CopyEntry
+        {
+            std::string sourcePath;
+            std::string destinationPath;
+        };
+
+        struct ObjectDefinition
+        {
+            ScenePrimitive primitive = ScenePrimitive::Cube;
+            std::string name;
+            DirectX::XMFLOAT3 position{ 0.0f, 0.0f, 0.0f };
+            DirectX::XMFLOAT3 scale{ 1.0f, 1.0f, 1.0f };
+        };
+
+        std::vector<CopyEntry> copyEntries;
+        std::vector<ObjectDefinition> objects;
+    };
+
+    struct ProjectTemplateValidationResult
+    {
+        std::vector<std::string> warnings;
+        std::vector<std::string> errors;
+
+        bool HasErrors() const { return !errors.empty(); }
+        bool HasWarnings() const { return !warnings.empty(); }
+    };
+
+    static std::string g_SelectedProjectTemplateId = "basic3d";
+    static std::vector<ProjectTemplateDefinition> g_ProjectTemplateDefinitions;
+    static bool g_ProjectTemplateDefinitionsLoaded = false;
+    static std::unordered_map<std::string, ImTextureID> g_ProjectTemplateThumbnailCache;
+
+    static std::filesystem::path ResolvePathFromRoot(const std::filesystem::path& root, const std::string& relativeOrAbsolute);
 
     // Command strip visibility (treated like a panel toggle)
     static bool g_showCommandStrip = true;
@@ -70,6 +132,1471 @@ namespace UI {
     static std::filesystem::path GetDefaultSceneDirectory()
     {
         return std::filesystem::path("Assets") / "Scenes";
+    }
+
+    static std::filesystem::path GetApplicationBaseDirectory()
+    {
+        char modulePath[MAX_PATH] = {};
+        const DWORD length = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
+        if (length == 0 || length >= MAX_PATH)
+            return std::filesystem::current_path();
+        return std::filesystem::path(modulePath).parent_path();
+    }
+
+    static std::string TrimString(std::string value)
+    {
+        const auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+        value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](char c) { return !isSpace(static_cast<unsigned char>(c)); }));
+        value.erase(std::find_if(value.rbegin(), value.rend(), [&](char c) { return !isSpace(static_cast<unsigned char>(c)); }).base(), value.end());
+        return value;
+    }
+
+    static std::string ToLowerAscii(std::string value)
+    {
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c)
+        {
+            return static_cast<char>(std::tolower(c));
+        });
+        return value;
+    }
+
+    static std::filesystem::path GetApplicationSettingsDirectory()
+    {
+        return GetApplicationBaseDirectory() / "Settings";
+    }
+
+    static std::filesystem::path GetProjectTemplatesDirectory()
+    {
+        return GetApplicationBaseDirectory() / "Templates" / "ProjectTemplates";
+    }
+
+    static std::filesystem::path GetProjectTemplateThumbnailsDirectory()
+    {
+        return GetProjectTemplatesDirectory() / "Thumbnails";
+    }
+
+    static std::string SanitizeTemplateId(const std::string& value)
+    {
+        std::string result;
+        result.reserve(value.size());
+        for (unsigned char c : value)
+        {
+            if (std::isalnum(c))
+                result.push_back(static_cast<char>(std::tolower(c)));
+            else if (c == '_' || c == '-' || std::isspace(c))
+                result.push_back('_');
+        }
+        result.erase(std::unique(result.begin(), result.end(), [](char a, char b) { return a == '_' && b == '_'; }), result.end());
+        while (!result.empty() && result.front() == '_')
+            result.erase(result.begin());
+        while (!result.empty() && result.back() == '_')
+            result.pop_back();
+        if (result.empty())
+            result = "template";
+        return result;
+    }
+
+    static std::vector<ProjectTemplateDefinition> GetDefaultProjectTemplateDefinitions()
+    {
+        std::vector<ProjectTemplateDefinition> definitions;
+
+        ProjectTemplateDefinition emptyTemplate{};
+        emptyTemplate.id = "empty";
+        emptyTemplate.name = "Empty";
+        emptyTemplate.description = "Creates a clean project with only the default scene camera.";
+        emptyTemplate.thumbnailPath = (GetProjectTemplateThumbnailsDirectory() / "empty.png").string();
+        definitions.push_back(std::move(emptyTemplate));
+
+        ProjectTemplateDefinition basic3D{};
+        basic3D.id = "basic3d";
+        basic3D.name = "Basic 3D";
+        basic3D.description = "Creates a simple ground-and-primitives scene for general 3D prototyping.";
+        basic3D.thumbnailPath = (GetProjectTemplateThumbnailsDirectory() / "basic3d.png").string();
+        basic3D.copyRoot.clear();
+        basic3D.objects = {
+            { ScenePrimitive::Plane, "Ground", { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 1.0f } },
+            { ScenePrimitive::Cube, "Starter Cube", { 0.0f, 0.5f, 0.0f }, { 1.0f, 1.0f, 1.0f } },
+            { ScenePrimitive::Sphere, "Starter Sphere", { 2.0f, 0.5f, 0.0f }, { 1.0f, 1.0f, 1.0f } },
+            { ScenePrimitive::Cylinder, "Starter Cylinder", { -2.0f, 0.5f, 0.0f }, { 1.0f, 1.0f, 1.0f } },
+        };
+        definitions.push_back(std::move(basic3D));
+
+        ProjectTemplateDefinition basic2D{};
+        basic2D.id = "basic2d";
+        basic2D.name = "2D";
+        basic2D.description = "Creates a flat front-view starter scene with objects arranged on the XY plane.";
+        basic2D.thumbnailPath = (GetProjectTemplateThumbnailsDirectory() / "basic2d.png").string();
+        basic2D.copyRoot.clear();
+        basic2D.hasCameraOverride = true;
+        basic2D.cameraPosition = { 0.0f, 0.0f, -10.0f };
+        basic2D.cameraRotationDegrees = { 0.0f, 0.0f, 0.0f };
+        basic2D.objects = {
+            { ScenePrimitive::Cube, "Sprite A", { -2.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 0.2f } },
+            { ScenePrimitive::Cube, "Sprite B", { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 0.2f } },
+            { ScenePrimitive::Cube, "Sprite C", { 2.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 0.2f } },
+        };
+        definitions.push_back(std::move(basic2D));
+
+        ProjectTemplateDefinition vault{};
+        vault.id = "vaultprototype";
+        vault.name = "Vault Prototype";
+        vault.description = "Creates a starter Siniavault scene with a core, rings, and activatable nodes.";
+        vault.thumbnailPath = (GetProjectTemplateThumbnailsDirectory() / "vaultprototype.png").string();
+        vault.copyRoot.clear();
+        vault.hasCameraOverride = true;
+        vault.cameraPosition = { 0.0f, 3.0f, -8.0f };
+        vault.cameraRotationDegrees = { 12.0f, 0.0f, 0.0f };
+        vault.objects = {
+            { ScenePrimitive::Plane, "Vault Floor", { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 1.0f } },
+            { ScenePrimitive::Sphere, "VaultCore", { 0.0f, 0.75f, 0.0f }, { 1.25f, 1.25f, 1.25f } },
+            { ScenePrimitive::Torus, "VaultRing_1", { 0.0f, 0.55f, 0.0f }, { 1.7f, 1.0f, 1.7f } },
+            { ScenePrimitive::Torus, "VaultRing_2", { 0.0f, 0.65f, 0.0f }, { 2.4f, 1.0f, 2.4f } },
+            { ScenePrimitive::Capsule, "VaultNode_1", { 0.0f, 0.75f, 3.0f }, { 1.0f, 1.0f, 1.0f } },
+            { ScenePrimitive::Capsule, "VaultNode_2", { 2.6f, 0.75f, -1.5f }, { 1.0f, 1.0f, 1.0f } },
+            { ScenePrimitive::Capsule, "VaultNode_3", { -2.6f, 0.75f, -1.5f }, { 1.0f, 1.0f, 1.0f } },
+        };
+        definitions.push_back(std::move(vault));
+
+        return definitions;
+    }
+
+    static bool TryParseProjectTemplateId(const std::string& value, std::string& outTemplateId)
+    {
+        outTemplateId = SanitizeTemplateId(value);
+        return !outTemplateId.empty();
+    }
+
+    static const char* GetScenePrimitiveToken(ScenePrimitive primitive)
+    {
+        switch (primitive)
+        {
+        case ScenePrimitive::Cube: return "Cube";
+        case ScenePrimitive::Sphere: return "Sphere";
+        case ScenePrimitive::Plane: return "Plane";
+        case ScenePrimitive::Cylinder: return "Cylinder";
+        case ScenePrimitive::Capsule: return "Capsule";
+        case ScenePrimitive::Torus: return "Torus";
+        case ScenePrimitive::Cone: return "Cone";
+        case ScenePrimitive::Empty: return "Empty";
+        default: return "Cube";
+        }
+    }
+
+    static bool TryParseScenePrimitiveToken(const std::string& value, ScenePrimitive& outPrimitive)
+    {
+        const std::string normalized = ToLowerAscii(TrimString(value));
+        if (normalized == "cube")
+        {
+            outPrimitive = ScenePrimitive::Cube;
+            return true;
+        }
+        if (normalized == "sphere")
+        {
+            outPrimitive = ScenePrimitive::Sphere;
+            return true;
+        }
+        if (normalized == "plane")
+        {
+            outPrimitive = ScenePrimitive::Plane;
+            return true;
+        }
+        if (normalized == "cylinder")
+        {
+            outPrimitive = ScenePrimitive::Cylinder;
+            return true;
+        }
+        if (normalized == "capsule")
+        {
+            outPrimitive = ScenePrimitive::Capsule;
+            return true;
+        }
+        if (normalized == "torus")
+        {
+            outPrimitive = ScenePrimitive::Torus;
+            return true;
+        }
+        if (normalized == "cone")
+        {
+            outPrimitive = ScenePrimitive::Cone;
+            return true;
+        }
+        if (normalized == "empty")
+        {
+            outPrimitive = ScenePrimitive::Empty;
+            return true;
+        }
+        return false;
+    }
+
+    static bool TryParseFloat3(const std::string& value, DirectX::XMFLOAT3& outValue)
+    {
+        std::stringstream stream(value);
+        std::string part;
+        float components[3]{};
+        int index = 0;
+        while (std::getline(stream, part, ',') && index < 3)
+        {
+            try
+            {
+                components[index++] = std::stof(TrimString(part));
+            }
+            catch (...)
+            {
+                return false;
+            }
+        }
+
+        if (index != 3)
+            return false;
+
+        outValue = { components[0], components[1], components[2] };
+        return true;
+    }
+
+    static std::vector<std::string> SplitString(const std::string& value, char delimiter)
+    {
+        std::vector<std::string> result;
+        std::stringstream stream(value);
+        std::string part;
+        while (std::getline(stream, part, delimiter))
+            result.push_back(TrimString(part));
+        return result;
+    }
+
+    static void EnsureDefaultProjectTemplateFiles()
+    {
+        const std::filesystem::path templateDir = GetProjectTemplatesDirectory();
+        const std::filesystem::path thumbnailDir = GetProjectTemplateThumbnailsDirectory();
+        std::error_code ec;
+        std::filesystem::create_directories(templateDir, ec);
+        std::filesystem::create_directories(thumbnailDir, ec);
+
+        for (const ProjectTemplateDefinition& definition : GetDefaultProjectTemplateDefinitions())
+        {
+            const std::filesystem::path filePath = templateDir / std::format("{}.tfztemplate", definition.id);
+            if (std::filesystem::exists(filePath))
+                continue;
+
+            std::ofstream file(filePath, std::ios::trunc);
+            if (!file.is_open())
+                continue;
+
+            file << "# TheFletchZone Engine project template definition\n";
+            file << "#\n";
+            file << "# Required fields:\n";
+            file << "#   id=<unique template id; custom ids are allowed>\n";
+            file << "#   name=<display name shown in the launcher>\n";
+            file << "#   description=<short description shown in the launcher>\n";
+            file << "#\n";
+            file << "# Optional fields:\n";
+            file << "#   thumbnail=<relative or absolute path to a preview image>\n";
+            file << "#   sourceScene=<scene file copied into the new project and opened as the startup scene>\n";
+            file << "#   copyRoot=<relative destination root used for implicit sourceScene copying>\n";
+            file << "#   copy=<source relative path>|<destination relative path inside project>\n";
+            file << "#\n";
+            file << "# Example custom template folder layout:\n";
+            file << "#   my_template.tfztemplate\n";
+            file << "#   MyTemplateContent/Assets/Scenes/Main.scene\n";
+            file << "#   MyTemplateContent/Assets/Textures/...\n";
+            file << "#\n";
+            file << "# If sourceScene is set and no copy= rules are present, the engine will\n";
+            file << "# try to copy the surrounding template content into the new project automatically.\n";
+            file << "#   cameraPosition=x, y, z\n";
+            file << "#   cameraRotationDegrees=pitch, yaw, roll\n";
+            file << "#\n";
+            file << "# Object rows use this format:\n";
+            file << "#   object=<Primitive>|<Name>|x, y, z|sx, sy, sz\n";
+            file << "#\n";
+            file << "# Supported primitive names:\n";
+            file << "#   Cube, Sphere, Plane, Cylinder, Capsule, Torus, Cone, Empty\n\n";
+
+            file << "# You can choose any unique id for custom templates.\n";
+            file << "id=" << definition.id << "\n";
+            file << "name=" << definition.name << "\n";
+            file << "description=" << definition.description << "\n";
+            file << "thumbnail=" << definition.thumbnailPath << "\n";
+            if (!definition.sourceScenePath.empty())
+                file << "sourceScene=" << definition.sourceScenePath << "\n";
+            if (!definition.copyRoot.empty())
+                file << "copyRoot=" << definition.copyRoot << "\n";
+            for (const ProjectTemplateDefinition::CopyEntry& copyEntry : definition.copyEntries)
+                file << "copy=" << copyEntry.sourcePath << "|" << copyEntry.destinationPath << "\n";
+            if (definition.hasCameraOverride)
+            {
+                file << "cameraPosition=" << definition.cameraPosition.x << ", " << definition.cameraPosition.y << ", " << definition.cameraPosition.z << "\n";
+                file << "cameraRotationDegrees=" << definition.cameraRotationDegrees.x << ", " << definition.cameraRotationDegrees.y << ", " << definition.cameraRotationDegrees.z << "\n";
+            }
+            for (const ProjectTemplateDefinition::ObjectDefinition& object : definition.objects)
+            {
+                file << "object="
+                    << GetScenePrimitiveToken(object.primitive) << "|"
+                    << object.name << "|"
+                    << object.position.x << ", " << object.position.y << ", " << object.position.z << "|"
+                    << object.scale.x << ", " << object.scale.y << ", " << object.scale.z << "\n";
+            }
+        }
+    }
+
+    static bool TryLoadProjectTemplateDefinition(const std::filesystem::path& filePath, ProjectTemplateDefinition& outDefinition)
+    {
+        std::ifstream file(filePath);
+        if (!file.is_open())
+            return false;
+
+        std::string line;
+        std::string idValue;
+        std::string typeValue;
+        std::string nameValue;
+        std::string descriptionValue;
+        std::string thumbnailValue;
+        std::string sourceSceneValue;
+        std::string copyRootValue;
+        DirectX::XMFLOAT3 cameraPosition{};
+        DirectX::XMFLOAT3 cameraRotationDegrees{};
+        bool hasCameraPosition = false;
+        bool hasCameraRotation = false;
+        std::vector<ProjectTemplateDefinition::CopyEntry> copyEntries;
+        std::vector<ProjectTemplateDefinition::ObjectDefinition> objects;
+        while (std::getline(file, line))
+        {
+            line = TrimString(line);
+            if (line.empty() || line[0] == '#')
+                continue;
+
+            const size_t separatorPos = line.find('=');
+            if (separatorPos == std::string::npos)
+                continue;
+
+            const std::string key = ToLowerAscii(TrimString(line.substr(0, separatorPos)));
+            const std::string value = TrimString(line.substr(separatorPos + 1));
+            if (key == "id")
+                idValue = value;
+            else if (key == "type")
+                typeValue = value;
+            else if (key == "name")
+                nameValue = value;
+            else if (key == "description")
+                descriptionValue = value;
+            else if (key == "thumbnail")
+                thumbnailValue = value;
+            else if (key == "sourcescene")
+                sourceSceneValue = value;
+            else if (key == "copyroot")
+                copyRootValue = value;
+            else if (key == "copy")
+            {
+                const std::vector<std::string> parts = SplitString(value, '|');
+                if (parts.size() >= 2 && !parts[0].empty() && !parts[1].empty())
+                    copyEntries.push_back({ parts[0], parts[1] });
+            }
+            else if (key == "cameraposition")
+                hasCameraPosition = TryParseFloat3(value, cameraPosition);
+            else if (key == "camerarotationdegrees")
+                hasCameraRotation = TryParseFloat3(value, cameraRotationDegrees);
+            else if (key == "object")
+            {
+                const std::vector<std::string> parts = SplitString(value, '|');
+                if (parts.size() < 4)
+                    continue;
+
+                ScenePrimitive primitive = ScenePrimitive::Cube;
+                DirectX::XMFLOAT3 position{};
+                DirectX::XMFLOAT3 scale{ 1.0f, 1.0f, 1.0f };
+                if (!TryParseScenePrimitiveToken(parts[0], primitive))
+                    continue;
+                if (!TryParseFloat3(parts[2], position))
+                    continue;
+                if (!TryParseFloat3(parts[3], scale))
+                    continue;
+
+                objects.push_back({ primitive, parts[1], position, scale });
+            }
+        }
+
+        std::string templateId = !idValue.empty() ? idValue : typeValue;
+        if (templateId.empty())
+            templateId = filePath.stem().string();
+        if (!TryParseProjectTemplateId(templateId, outDefinition.id))
+            return false;
+
+        outDefinition.name = nameValue.empty() ? filePath.stem().string() : nameValue;
+        outDefinition.description = descriptionValue;
+        outDefinition.thumbnailPath = thumbnailValue.empty() ? std::string{} : ResolvePathFromRoot(filePath.parent_path(), thumbnailValue).string();
+        outDefinition.hasCameraOverride = hasCameraPosition || hasCameraRotation;
+        outDefinition.cameraPosition = cameraPosition;
+        outDefinition.cameraRotationDegrees = cameraRotationDegrees;
+        outDefinition.objects = std::move(objects);
+        return true;
+    }
+
+    static void EnsureProjectTemplateDefinitionsLoaded()
+    {
+        if (g_ProjectTemplateDefinitionsLoaded)
+            return;
+
+        g_ProjectTemplateDefinitionsLoaded = true;
+        g_ProjectTemplateDefinitions.clear();
+        const std::vector<ProjectTemplateDefinition> defaultDefinitions = GetDefaultProjectTemplateDefinitions();
+        EnsureDefaultProjectTemplateFiles();
+
+        std::error_code ec;
+        const std::filesystem::path templateDir = GetProjectTemplatesDirectory();
+        if (std::filesystem::exists(templateDir, ec))
+        {
+            for (const auto& entry : std::filesystem::directory_iterator(templateDir, ec))
+            {
+                if (ec || !entry.is_regular_file())
+                    continue;
+                if (entry.path().extension() != ".tfztemplate")
+                    continue;
+
+                ProjectTemplateDefinition definition{};
+                if (TryLoadProjectTemplateDefinition(entry.path(), definition))
+                    g_ProjectTemplateDefinitions.push_back(std::move(definition));
+            }
+        }
+
+        if (g_ProjectTemplateDefinitions.empty())
+            g_ProjectTemplateDefinitions = defaultDefinitions;
+
+        for (ProjectTemplateDefinition& definition : g_ProjectTemplateDefinitions)
+        {
+            auto defaultIt = std::find_if(defaultDefinitions.begin(), defaultDefinitions.end(), [&](const ProjectTemplateDefinition& candidate)
+            {
+                return candidate.id == definition.id;
+            });
+            if (defaultIt == defaultDefinitions.end())
+                continue;
+
+            if (definition.description.empty())
+                definition.description = defaultIt->description;
+            if (definition.thumbnailPath.empty())
+                definition.thumbnailPath = defaultIt->thumbnailPath;
+            if (definition.sourceScenePath.empty())
+                definition.sourceScenePath = defaultIt->sourceScenePath;
+            if (definition.copyRoot.empty())
+                definition.copyRoot = defaultIt->copyRoot;
+            if (!definition.hasCameraOverride && defaultIt->hasCameraOverride)
+            {
+                definition.hasCameraOverride = true;
+                definition.cameraPosition = defaultIt->cameraPosition;
+                definition.cameraRotationDegrees = defaultIt->cameraRotationDegrees;
+            }
+            if (definition.copyEntries.empty() && !defaultIt->copyEntries.empty())
+                definition.copyEntries = defaultIt->copyEntries;
+            if (definition.objects.empty() && !defaultIt->objects.empty())
+                definition.objects = defaultIt->objects;
+        }
+
+        std::sort(g_ProjectTemplateDefinitions.begin(), g_ProjectTemplateDefinitions.end(), [](const ProjectTemplateDefinition& a, const ProjectTemplateDefinition& b)
+        {
+            const bool aIsEmpty = (a.id == "empty");
+            const bool bIsEmpty = (b.id == "empty");
+            if (aIsEmpty != bIsEmpty)
+                return aIsEmpty;
+            return a.name < b.name;
+        });
+
+        if (g_ProjectTemplateDefinitions.empty())
+            g_SelectedProjectTemplateId.clear();
+        else if (std::none_of(g_ProjectTemplateDefinitions.begin(), g_ProjectTemplateDefinitions.end(), [](const ProjectTemplateDefinition& definition)
+        {
+            return definition.id == g_SelectedProjectTemplateId;
+        }))
+        {
+            g_SelectedProjectTemplateId = g_ProjectTemplateDefinitions.front().id;
+        }
+    }
+
+    static const std::vector<ProjectTemplateDefinition>& GetProjectTemplateDefinitions()
+    {
+        EnsureProjectTemplateDefinitionsLoaded();
+        return g_ProjectTemplateDefinitions;
+    }
+
+    static const ProjectTemplateDefinition* FindProjectTemplateDefinition(const std::string& projectTemplateId)
+    {
+        const auto& definitions = GetProjectTemplateDefinitions();
+        for (const ProjectTemplateDefinition& definition : definitions)
+        {
+            if (definition.id == projectTemplateId)
+                return &definition;
+        }
+        return nullptr;
+    }
+
+    static ImTextureID GetProjectTemplateThumbnailTexture(const std::string& projectTemplateId)
+    {
+        const ProjectTemplateDefinition* definition = FindProjectTemplateDefinition(projectTemplateId);
+        if (!definition || definition->thumbnailPath.empty())
+            return 0;
+
+        const std::string thumbnailPath = definition->thumbnailPath;
+        auto cachedIt = g_ProjectTemplateThumbnailCache.find(thumbnailPath);
+        if (cachedIt != g_ProjectTemplateThumbnailCache.end())
+            return cachedIt->second;
+
+        if (!std::filesystem::exists(thumbnailPath))
+        {
+            g_ProjectTemplateThumbnailCache[thumbnailPath] = 0;
+            return 0;
+        }
+
+        const ImTextureID texture = ::ImGuiUtils::LoadTextureFromFile(thumbnailPath.c_str());
+        g_ProjectTemplateThumbnailCache[thumbnailPath] = texture;
+        return texture;
+    }
+
+    static const char* GetProjectTemplateLabel(const std::string& projectTemplateId)
+    {
+        if (const ProjectTemplateDefinition* definition = FindProjectTemplateDefinition(projectTemplateId))
+            return definition->name.c_str();
+        return "Template";
+    }
+
+    static const char* GetProjectTemplateDescription(const std::string& projectTemplateId)
+    {
+        if (const ProjectTemplateDefinition* definition = FindProjectTemplateDefinition(projectTemplateId))
+            return definition->description.c_str();
+        return "";
+    }
+
+    static SceneInstance* RenameSelectedInstance(const std::string& name)
+    {
+        SceneInstance* selected = Scene::GetSelectedInstance();
+        if (selected)
+            selected->name = name;
+        return selected;
+    }
+
+    static ImU32 GetProjectTemplateAccent(const std::string& projectTemplateId, float alpha = 1.0f)
+    {
+        const int a = static_cast<int>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
+        const uint32_t hash = static_cast<uint32_t>(std::hash<std::string>{}(projectTemplateId));
+        const int r = 96 + static_cast<int>(hash & 0x3F);
+        const int g = 96 + static_cast<int>((hash >> 6) & 0x3F);
+        const int b = 96 + static_cast<int>((hash >> 12) & 0x3F);
+        return IM_COL32(r, g, b, a);
+    }
+
+    static void DrawProjectTemplateThumbnail(ImDrawList* drawList, const ProjectTemplateDefinition& definition, ImVec2 min, ImVec2 max)
+    {
+        if (!drawList)
+            return;
+
+        const ImU32 accent = GetProjectTemplateAccent(definition.id, 0.95f);
+        const ImU32 line = GetProjectTemplateAccent(definition.id, 0.55f);
+        const ImU32 muted = IM_COL32(210, 214, 224, 120);
+        const ImVec2 center((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+
+        if (definition.objects.empty())
+        {
+            drawList->AddRect(ImVec2(min.x + 18.0f, min.y + 16.0f), ImVec2(max.x - 18.0f, max.y - 16.0f), muted, 10.0f, 0, 2.0f);
+            drawList->AddLine(ImVec2(min.x + 28.0f, center.y), ImVec2(max.x - 28.0f, center.y), line, 1.0f);
+            drawList->AddCircle(center, 13.0f, accent, 24, 2.0f);
+            drawList->AddCircleFilled(center, 4.0f, accent, 16);
+            return;
+        }
+
+        drawList->AddLine(ImVec2(min.x + 18.0f, max.y - 20.0f), ImVec2(max.x - 18.0f, max.y - 20.0f), muted, 1.0f);
+        const size_t previewCount = (std::min)(definition.objects.size(), size_t(4));
+        for (size_t objectIndex = 0; objectIndex < previewCount; ++objectIndex)
+        {
+            const auto& object = definition.objects[objectIndex];
+            const float t = previewCount > 1 ? static_cast<float>(objectIndex) / static_cast<float>(previewCount - 1) : 0.5f;
+            const ImVec2 objectCenter(min.x + 34.0f + t * ((max.x - min.x) - 68.0f), center.y + ((objectIndex % 2 == 0) ? -8.0f : 16.0f));
+            switch (object.primitive)
+            {
+            case ScenePrimitive::Sphere:
+                drawList->AddCircleFilled(objectCenter, 14.0f, accent, 20);
+                break;
+            case ScenePrimitive::Plane:
+                drawList->AddRectFilled(ImVec2(objectCenter.x - 20.0f, objectCenter.y + 8.0f), ImVec2(objectCenter.x + 20.0f, objectCenter.y + 14.0f), muted, 2.0f);
+                break;
+            case ScenePrimitive::Cylinder:
+            case ScenePrimitive::Capsule:
+                drawList->AddRectFilled(ImVec2(objectCenter.x - 10.0f, objectCenter.y - 16.0f), ImVec2(objectCenter.x + 10.0f, objectCenter.y + 18.0f), accent, 8.0f);
+                break;
+            case ScenePrimitive::Torus:
+                drawList->AddCircle(objectCenter, 16.0f, accent, 24, 3.0f);
+                break;
+            case ScenePrimitive::Cone:
+                drawList->AddTriangleFilled(ImVec2(objectCenter.x, objectCenter.y - 18.0f), ImVec2(objectCenter.x - 16.0f, objectCenter.y + 18.0f), ImVec2(objectCenter.x + 16.0f, objectCenter.y + 18.0f), accent);
+                break;
+            case ScenePrimitive::Empty:
+                drawList->AddCircle(objectCenter, 8.0f, accent, 16, 2.0f);
+                drawList->AddLine(ImVec2(objectCenter.x - 12.0f, objectCenter.y), ImVec2(objectCenter.x + 12.0f, objectCenter.y), accent, 1.5f);
+                drawList->AddLine(ImVec2(objectCenter.x, objectCenter.y - 12.0f), ImVec2(objectCenter.x, objectCenter.y + 12.0f), accent, 1.5f);
+                break;
+            case ScenePrimitive::Cube:
+            default:
+                drawList->AddRectFilled(ImVec2(objectCenter.x - 14.0f, objectCenter.y - 14.0f), ImVec2(objectCenter.x + 14.0f, objectCenter.y + 14.0f), accent, 5.0f);
+                break;
+            }
+        }
+    }
+
+    static bool DrawProjectTemplateCard(const ProjectTemplateDefinition& definition, bool selected, ImVec2 size)
+    {
+        ImGui::PushID(definition.id.c_str());
+        const ImVec2 cursor = ImGui::GetCursorScreenPos();
+        const bool pressed = ImGui::InvisibleButton("##ProjectTemplateCard", size);
+        const bool hovered = ImGui::IsItemHovered();
+
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        const ImRect rect(cursor, ImVec2(cursor.x + size.x, cursor.y + size.y));
+        const ImU32 border = selected
+            ? GetProjectTemplateAccent(definition.id, 1.0f)
+            : hovered ? IM_COL32(170, 176, 192, 170) : IM_COL32(94, 100, 116, 135);
+        const ImU32 bg = selected
+            ? IM_COL32(26, 30, 38, 235)
+            : hovered ? IM_COL32(22, 25, 32, 222) : IM_COL32(18, 20, 26, 208);
+        drawList->AddRectFilled(rect.Min, rect.Max, bg, 12.0f);
+        drawList->AddRect(rect.Min, rect.Max, border, 12.0f, 0, selected ? 2.4f : 1.4f);
+
+        const ImVec2 thumbMin(rect.Min.x + 14.0f, rect.Min.y + 14.0f);
+        const ImVec2 thumbMax(rect.Min.x + 198.0f, rect.Max.y - 14.0f);
+        drawList->AddRectFilled(thumbMin, thumbMax, IM_COL32(10, 12, 18, 220), 10.0f);
+        drawList->AddRect(thumbMin, thumbMax, IM_COL32(255, 255, 255, 18), 10.0f);
+        if (const ImTextureID thumbnailTexture = GetProjectTemplateThumbnailTexture(definition.id))
+        {
+            drawList->AddImageRounded(thumbnailTexture, thumbMin, thumbMax, ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 255), 10.0f);
+            drawList->AddRectFilled(thumbMin, thumbMax, IM_COL32(10, 12, 18, 90), 10.0f);
+        }
+        else
+        {
+            DrawProjectTemplateThumbnail(drawList, definition, thumbMin, thumbMax);
+        }
+
+        const float textStartX = thumbMax.x + 18.0f;
+        const float textRightX = rect.Max.x - 16.0f;
+        const float textWidth = (std::max)(120.0f, textRightX - textStartX);
+        const ImVec2 badgeMin(textRightX - 88.0f, rect.Min.y + 14.0f);
+        const ImVec2 badgeMax(textRightX, rect.Min.y + 38.0f);
+        if (selected)
+        {
+            drawList->AddRectFilled(badgeMin, badgeMax, GetProjectTemplateAccent(definition.id, 0.95f), 6.0f);
+            drawList->AddText(ImVec2(badgeMin.x + 16.0f, badgeMin.y + 4.0f), IM_COL32(12, 14, 18, 255), "SELECTED");
+        }
+        else if (hovered)
+        {
+            drawList->AddRect(badgeMin, badgeMax, IM_COL32(255, 255, 255, 60), 6.0f);
+            drawList->AddText(ImVec2(badgeMin.x + 22.0f, badgeMin.y + 4.0f), IM_COL32(220, 224, 232, 180), "SELECT");
+        }
+
+        ImGui::SetCursorScreenPos(ImVec2(textStartX, rect.Min.y + 18.0f));
+        ImGui::PushTextWrapPos(textStartX + textWidth);
+        if (g_UIFontBold) ImGui::PushFont(g_UIFontBold);
+        ImGui::TextUnformatted(definition.name.c_str());
+        if (g_UIFontBold) ImGui::PopFont();
+        ImGui::Dummy(ImVec2(1.0f, 2.0f));
+        ImGui::TextColored(ImVec4(0.72f, 0.76f, 0.84f, 0.95f), "%s", definition.description.c_str());
+        ImGui::Dummy(ImVec2(1.0f, 8.0f));
+        ImGui::TextDisabled("Id: %s", definition.id.c_str());
+        ImGui::TextDisabled("Objects: %d", static_cast<int>(definition.objects.size()));
+        if (!definition.sourceScenePath.empty())
+            ImGui::TextDisabled("Uses source scene");
+        else if (!definition.copyEntries.empty())
+            ImGui::TextDisabled("Copies starter content");
+        else
+            ImGui::TextDisabled("Generated starter scene");
+        ImGui::PopTextWrapPos();
+
+        ImGui::PopID();
+        return pressed;
+    }
+
+    static bool CopyTemplateEntryToProject(const std::filesystem::path& templateRoot, const ProjectTemplateDefinition::CopyEntry& copyEntry, const std::filesystem::path& projectRoot)
+    {
+        const std::filesystem::path sourcePath = ResolvePathFromRoot(templateRoot, copyEntry.sourcePath);
+        const std::filesystem::path destinationPath = ResolvePathFromRoot(projectRoot, copyEntry.destinationPath);
+        if (!std::filesystem::exists(sourcePath))
+            return false;
+
+        std::error_code ec;
+        if (std::filesystem::is_directory(sourcePath, ec))
+        {
+            std::filesystem::create_directories(destinationPath, ec);
+            ec.clear();
+            std::filesystem::copy(sourcePath, destinationPath,
+                std::filesystem::copy_options::recursive |
+                std::filesystem::copy_options::overwrite_existing,
+                ec);
+            return !ec;
+        }
+
+        std::filesystem::create_directories(destinationPath.parent_path(), ec);
+        ec.clear();
+        std::filesystem::copy_file(sourcePath, destinationPath, std::filesystem::copy_options::overwrite_existing, ec);
+        return !ec;
+    }
+
+    static bool IsProjectRootLikeFolderName(const std::string& name)
+    {
+        const std::string normalized = ToLowerAscii(name);
+        return normalized == "assets" || normalized == "settings";
+    }
+
+    static std::filesystem::path GetImplicitTemplateDestinationRoot(const ProjectTemplateDefinition& definition, const std::filesystem::path& projectRoot)
+    {
+        if (definition.copyRoot.empty())
+            return projectRoot;
+        return ResolvePathFromRoot(projectRoot, definition.copyRoot);
+    }
+
+    static ProjectTemplateValidationResult ValidateProjectTemplateDefinition(const ProjectTemplateDefinition& definition)
+    {
+        ProjectTemplateValidationResult result{};
+
+        if (definition.id.empty())
+            result.errors.push_back("Template id is empty.");
+        if (definition.name.empty())
+            result.warnings.push_back("Template name is empty.");
+
+        if (!definition.sourceScenePath.empty())
+        {
+            const std::filesystem::path sourceSceneAbsolute = ResolvePathFromRoot(definition.templateRoot, definition.sourceScenePath);
+            if (!std::filesystem::exists(sourceSceneAbsolute))
+            {
+                result.errors.push_back(std::format("sourceScene not found: {}", sourceSceneAbsolute.string()));
+            }
+            else if (definition.copyEntries.empty())
+            {
+                std::filesystem::path inferredRoot = definition.templateRoot;
+                const std::filesystem::path sourceSceneRelative(definition.sourceScenePath);
+                std::vector<std::filesystem::path> parts;
+                for (const auto& part : sourceSceneRelative)
+                {
+                    if (!part.empty() && part != ".")
+                        parts.push_back(part);
+                }
+
+                bool foundRootMarker = false;
+                for (size_t i = 0; i < parts.size(); ++i)
+                {
+                    if (!IsProjectRootLikeFolderName(parts[i].string()))
+                        continue;
+
+                    for (size_t prefixIndex = 0; prefixIndex < i; ++prefixIndex)
+                        inferredRoot /= parts[prefixIndex];
+                    foundRootMarker = true;
+                    break;
+                }
+
+                if (!foundRootMarker)
+                    result.warnings.push_back("Implicit sourceScene copy could not infer an Assets/Settings root marker; consider adding copy= rules or copyRoot.");
+                else if (!std::filesystem::exists(inferredRoot))
+                    result.warnings.push_back(std::format("Implicit template copy root not found: {}", inferredRoot.string()));
+            }
+        }
+
+        for (const ProjectTemplateDefinition::CopyEntry& copyEntry : definition.copyEntries)
+        {
+            const std::filesystem::path sourcePath = ResolvePathFromRoot(definition.templateRoot, copyEntry.sourcePath);
+            if (!std::filesystem::exists(sourcePath))
+                result.errors.push_back(std::format("copy source not found: {}", sourcePath.string()));
+        }
+
+        if (definition.sourceScenePath.empty() && definition.copyEntries.empty() && definition.objects.empty())
+            result.warnings.push_back("Template has no sourceScene, copy rules, or object definitions; it will create an empty scene.");
+
+        return result;
+    }
+
+    static bool CopyTemplateDirectoryContentsToProject(const std::filesystem::path& sourceRoot, const std::filesystem::path& destinationRoot, const ProjectTemplateDefinition& definition)
+    {
+        std::error_code ec;
+        if (!std::filesystem::exists(sourceRoot, ec))
+            return false;
+
+        const std::filesystem::path thumbnailPath = definition.thumbnailPath.empty() ? std::filesystem::path() : std::filesystem::path(definition.thumbnailPath).lexically_normal();
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(sourceRoot, ec))
+        {
+            if (ec)
+                return false;
+
+            const std::filesystem::path sourcePath = entry.path().lexically_normal();
+            if (sourcePath == definition.definitionFilePath.lexically_normal())
+                continue;
+            if (!thumbnailPath.empty() && sourcePath == thumbnailPath)
+                continue;
+            if (sourcePath.extension() == ".tfztemplate")
+                continue;
+
+            const std::filesystem::path relativePath = std::filesystem::relative(sourcePath, sourceRoot, ec);
+            if (ec || relativePath.empty())
+                continue;
+
+            const std::filesystem::path destinationPath = (destinationRoot / relativePath).lexically_normal();
+            if (entry.is_directory())
+            {
+                std::filesystem::create_directories(destinationPath, ec);
+                if (ec)
+                    return false;
+                continue;
+            }
+
+            std::filesystem::create_directories(destinationPath.parent_path(), ec);
+            if (ec)
+                return false;
+            std::filesystem::copy_file(sourcePath, destinationPath, std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec)
+                return false;
+        }
+
+        return true;
+    }
+
+    static bool TryImplicitTemplateContentCopy(const ProjectTemplateDefinition& definition, const std::filesystem::path& projectRoot)
+    {
+        if (definition.sourceScenePath.empty())
+            return false;
+
+        const std::filesystem::path sourceSceneRelative(definition.sourceScenePath);
+        std::vector<std::filesystem::path> parts;
+        for (const auto& part : sourceSceneRelative)
+        {
+            if (!part.empty() && part != ".")
+                parts.push_back(part);
+        }
+
+        std::filesystem::path sourceContentRoot = definition.templateRoot;
+        for (size_t i = 0; i < parts.size(); ++i)
+        {
+            if (!IsProjectRootLikeFolderName(parts[i].string()))
+                continue;
+
+            std::filesystem::path prefix;
+            for (size_t prefixIndex = 0; prefixIndex < i; ++prefixIndex)
+                prefix /= parts[prefixIndex];
+
+            if (!prefix.empty())
+                sourceContentRoot /= prefix;
+            return CopyTemplateDirectoryContentsToProject(sourceContentRoot, GetImplicitTemplateDestinationRoot(definition, projectRoot), definition);
+        }
+
+        return false;
+    }
+
+    static bool TryApplyProjectTemplateSceneAssets(const ProjectTemplateDefinition& definition, const std::filesystem::path& projectRoot, std::string& outStartupScenePath)
+    {
+        if (definition.sourceScenePath.empty())
+            return false;
+
+        bool sourceSceneCoveredByCopyRule = false;
+        if (!definition.copyEntries.empty())
+        {
+            for (const ProjectTemplateDefinition::CopyEntry& copyEntry : definition.copyEntries)
+            {
+                if (!CopyTemplateEntryToProject(definition.templateRoot, copyEntry, projectRoot))
+                    continue;
+
+                const std::filesystem::path copiedSource = ResolvePathFromRoot(definition.templateRoot, copyEntry.sourcePath);
+                const std::filesystem::path sourceSceneAbsolute = ResolvePathFromRoot(definition.templateRoot, definition.sourceScenePath);
+                if (copiedSource == sourceSceneAbsolute || std::filesystem::is_directory(copiedSource))
+                    sourceSceneCoveredByCopyRule = true;
+            }
+        }
+        else if (TryImplicitTemplateContentCopy(definition, projectRoot))
+        {
+            sourceSceneCoveredByCopyRule = true;
+        }
+
+        const std::filesystem::path sourceSceneAbsolute = ResolvePathFromRoot(definition.templateRoot, definition.sourceScenePath);
+        const std::filesystem::path destinationSceneAbsolute = ResolvePathFromRoot(projectRoot, definition.sourceScenePath);
+        if (!sourceSceneCoveredByCopyRule)
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(destinationSceneAbsolute.parent_path(), ec);
+            ec.clear();
+            std::filesystem::copy_file(sourceSceneAbsolute, destinationSceneAbsolute, std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec)
+                return false;
+        }
+
+        if (!std::filesystem::exists(destinationSceneAbsolute))
+            return false;
+
+        outStartupScenePath = destinationSceneAbsolute.string();
+        return LoadSceneAssetFromPath(outStartupScenePath);
+    }
+
+    static void BuildProjectTemplateScene(const std::string& projectTemplateId, const std::filesystem::path& projectRoot, std::string& outStartupScenePath)
+    {
+        using namespace DirectX;
+
+        const ProjectTemplateDefinition* definition = FindProjectTemplateDefinition(projectTemplateId);
+        if (!definition)
+        {
+            Scene::NewScene();
+            outStartupScenePath = (projectRoot / GetDefaultSceneDirectory() / "Main.scene").string();
+            Scene::ClearSelection();
+            return;
+        }
+
+        if (TryApplyProjectTemplateSceneAssets(*definition, projectRoot, outStartupScenePath))
+            return;
+
+        Scene::NewScene();
+
+        if (definition->hasCameraOverride)
+        {
+            if (SceneInstance* mainCamera = Scene::GetMainCameraInstanceMutable())
+            {
+                mainCamera->position = definition->cameraPosition;
+                mainCamera->rotation = {
+                    XMConvertToRadians(definition->cameraRotationDegrees.x),
+                    XMConvertToRadians(definition->cameraRotationDegrees.y),
+                    XMConvertToRadians(definition->cameraRotationDegrees.z)
+                };
+            }
+        }
+
+        for (const ProjectTemplateDefinition::ObjectDefinition& object : definition->objects)
+        {
+            Scene::CreatePrimitive(object.primitive, object.position);
+            if (SceneInstance* selected = RenameSelectedInstance(object.name))
+                selected->scale = object.scale;
+        }
+
+        Scene::RebuildRenderInstancesFromSceneData();
+        Scene::MarkInstancesDirty();
+        Scene::ClearSelection();
+        outStartupScenePath = (projectRoot / GetDefaultSceneDirectory() / "Main.scene").string();
+    }
+
+    static std::string EscapeJsonString(std::string value)
+    {
+        std::string escaped;
+        escaped.reserve(value.size());
+        for (char c : value)
+        {
+            switch (c)
+            {
+            case '\\': escaped += "\\\\"; break;
+            case '"': escaped += "\\\""; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default: escaped += c; break;
+            }
+        }
+        return escaped;
+    }
+
+    static bool TryReadJsonStringField(const std::string& content, const char* key, std::string& outValue)
+    {
+        const std::string needle = std::string("\"") + key + "\"";
+        const size_t keyPos = content.find(needle);
+        if (keyPos == std::string::npos)
+            return false;
+
+        const size_t colonPos = content.find(':', keyPos + needle.size());
+        if (colonPos == std::string::npos)
+            return false;
+
+        const size_t firstQuote = content.find('"', colonPos + 1);
+        if (firstQuote == std::string::npos)
+            return false;
+
+        std::string result;
+        bool escape = false;
+        for (size_t i = firstQuote + 1; i < content.size(); ++i)
+        {
+            const char c = content[i];
+            if (escape)
+            {
+                switch (c)
+                {
+                case 'n': result += '\n'; break;
+                case 'r': result += '\r'; break;
+                case 't': result += '\t'; break;
+                case '\\': result += '\\'; break;
+                case '"': result += '"'; break;
+                default: result += c; break;
+                }
+                escape = false;
+                continue;
+            }
+
+            if (c == '\\')
+            {
+                escape = true;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                outValue = result;
+                return true;
+            }
+
+            result += c;
+        }
+
+        return false;
+    }
+
+    static std::filesystem::path GetProjectDefaultDirectory()
+    {
+        if (!g_CurrentProjectRoot.empty())
+            return g_CurrentProjectRoot;
+        return std::filesystem::current_path();
+    }
+
+    static std::filesystem::path GetRecentProjectsFilePath()
+    {
+        return GetApplicationSettingsDirectory() / "recent_projects.txt";
+    }
+
+    static void SaveRecentProjects()
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(GetApplicationSettingsDirectory(), ec);
+
+        std::ofstream file(GetRecentProjectsFilePath(), std::ios::trunc);
+        if (!file.is_open())
+            return;
+
+        for (const std::string& path : g_RecentProjectPaths)
+            file << path << "\n";
+    }
+
+    static void LoadRecentProjects()
+    {
+        if (g_RecentProjectsLoaded)
+            return;
+
+        g_RecentProjectsLoaded = true;
+        g_RecentProjectPaths.clear();
+
+        std::ifstream file(GetRecentProjectsFilePath());
+        if (!file.is_open())
+            return;
+
+        std::string line;
+        while (std::getline(file, line))
+        {
+            if (line.empty())
+                continue;
+            if (std::find(g_RecentProjectPaths.begin(), g_RecentProjectPaths.end(), line) == g_RecentProjectPaths.end())
+                g_RecentProjectPaths.push_back(line);
+        }
+    }
+
+    static void RememberRecentProject(const std::string& projectPath)
+    {
+        if (projectPath.empty())
+            return;
+
+        LoadRecentProjects();
+        g_RecentProjectPaths.erase(
+            std::remove(g_RecentProjectPaths.begin(), g_RecentProjectPaths.end(), projectPath),
+            g_RecentProjectPaths.end());
+        g_RecentProjectPaths.insert(g_RecentProjectPaths.begin(), projectPath);
+        constexpr size_t kMaxRecentProjects = 8;
+        if (g_RecentProjectPaths.size() > kMaxRecentProjects)
+            g_RecentProjectPaths.resize(kMaxRecentProjects);
+        SaveRecentProjects();
+    }
+
+    static bool ShowProjectFileDialog(bool saveDialog, std::string& inOutPath)
+    {
+        char fileBuffer[MAX_PATH] = {};
+        std::string initialPath = inOutPath;
+        if (initialPath.empty())
+            initialPath = (GetProjectDefaultDirectory() / "NewProject.tfzproj").string();
+        strncpy_s(fileBuffer, initialPath.c_str(), _TRUNCATE);
+
+        const std::filesystem::path initialDir = std::filesystem::path(initialPath).parent_path();
+        OPENFILENAMEA ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = Graphics::GetInstance().GetHWND();
+        ofn.lpstrFile = fileBuffer;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.lpstrFilter = "TFZ Project Files (*.tfzproj)\0*.tfzproj\0All Files (*.*)\0*.*\0";
+        ofn.nFilterIndex = 1;
+        const std::string initialDirString = initialDir.string();
+        ofn.lpstrInitialDir = initialDirString.empty() ? nullptr : initialDirString.c_str();
+        ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (saveDialog)
+            ofn.Flags |= OFN_OVERWRITEPROMPT;
+        else
+            ofn.Flags |= OFN_FILEMUSTEXIST;
+        ofn.lpstrDefExt = "tfzproj";
+
+        const BOOL result = saveDialog ? GetSaveFileNameA(&ofn) : GetOpenFileNameA(&ofn);
+        if (!result)
+            return false;
+
+        inOutPath = fileBuffer;
+        return true;
+    }
+
+    static void SyncProjectStateToEditor()
+    {
+        if (!g_engineInstance)
+            return;
+
+        EditorState& editor = g_engineInstance->GetEditorState();
+        editor.currentProjectName = g_CurrentProjectName;
+        editor.currentProjectPath = g_CurrentProjectPath;
+        editor.currentProjectRoot = g_CurrentProjectRoot.string();
+        editor.startupScenePath = g_ProjectStartupScenePath;
+        editor.lastOpenedScenePath = g_ProjectLastOpenedScenePath;
+    }
+
+    static void SetCurrentProjectState(const std::string& projectPath, const std::string& projectName, const std::filesystem::path& projectRoot, const std::string& startupScenePath, const std::string& lastOpenedScenePath)
+    {
+        g_CurrentProjectPath = projectPath;
+        g_CurrentProjectName = projectName;
+        g_CurrentProjectRoot = projectRoot;
+        g_ProjectStartupScenePath = startupScenePath;
+        g_ProjectLastOpenedScenePath = lastOpenedScenePath;
+        std::filesystem::current_path(projectRoot);
+        SyncProjectStateToEditor();
+        RememberRecentProject(projectPath);
+    }
+
+    static std::string MakePathRelativeToRoot(const std::filesystem::path& path, const std::filesystem::path& root)
+    {
+        if (path.empty())
+            return {};
+
+        std::error_code ec;
+        const std::filesystem::path absolutePath = std::filesystem::absolute(path, ec);
+        const std::filesystem::path absoluteRoot = std::filesystem::absolute(root, ec);
+        std::filesystem::path relative = std::filesystem::relative(absolutePath, absoluteRoot, ec);
+        if (ec || relative.empty())
+            return absolutePath.lexically_normal().string();
+        return relative.lexically_normal().string();
+    }
+
+    static std::string MakePathRelativeToProjectRoot(const std::filesystem::path& path)
+    {
+        return MakePathRelativeToRoot(path, g_CurrentProjectRoot);
+    }
+
+    static std::filesystem::path ResolvePathFromRoot(const std::filesystem::path& root, const std::string& relativeOrAbsolute)
+    {
+        if (relativeOrAbsolute.empty())
+            return {};
+        const std::filesystem::path path(relativeOrAbsolute);
+        if (path.is_absolute())
+            return path;
+        return (root / path).lexically_normal();
+    }
+
+    static std::filesystem::path ResolveProjectPath(const std::string& relativeOrAbsolute)
+    {
+        return ResolvePathFromRoot(g_CurrentProjectRoot, relativeOrAbsolute);
+    }
+
+    static void EnsureProjectDirectories(const std::filesystem::path& projectRoot)
+    {
+        std::filesystem::create_directories(projectRoot / "Assets");
+        std::filesystem::create_directories(projectRoot / "Assets" / "Scenes");
+        std::filesystem::create_directories(projectRoot / "Settings");
+    }
+
+    static bool SaveProjectFileWithPath(const std::string& projectPath)
+    {
+        if (projectPath.empty())
+            return false;
+
+        std::filesystem::path projectFilePath(projectPath);
+        const std::filesystem::path projectRoot = projectFilePath.parent_path();
+        if (projectRoot.empty())
+            return false;
+
+        EnsureProjectDirectories(projectRoot);
+
+        const std::string projectName = projectFilePath.stem().string();
+        std::string startupScenePath = g_ProjectStartupScenePath;
+        if (startupScenePath.empty())
+        {
+            startupScenePath = MakePathRelativeToRoot(projectRoot / GetDefaultSceneDirectory() / "Main.scene", projectRoot);
+        }
+
+        std::string lastOpenedScenePath = g_CurrentScenePath;
+        if (lastOpenedScenePath.empty())
+        {
+            const std::filesystem::path startupAbsolute = ResolvePathFromRoot(projectRoot, startupScenePath);
+            lastOpenedScenePath = startupAbsolute.string();
+        }
+
+        if (!std::filesystem::exists(ResolvePathFromRoot(projectRoot, startupScenePath)))
+        {
+            const std::filesystem::path startupAbsolute = ResolvePathFromRoot(projectRoot, startupScenePath);
+            Scene::SaveToFile(startupAbsolute.string());
+            g_CurrentScenePath = startupAbsolute.string();
+            lastOpenedScenePath = g_CurrentScenePath;
+        }
+
+        const std::string startupSceneRelative = MakePathRelativeToRoot(ResolvePathFromRoot(projectRoot, startupScenePath), projectRoot);
+        const std::string lastOpenedSceneRelative = MakePathRelativeToRoot(lastOpenedScenePath, projectRoot);
+
+        std::ofstream file(projectFilePath, std::ios::trunc);
+        if (!file.is_open())
+            return false;
+
+        file << "{\n";
+        file << "  \"projectVersion\": 1,\n";
+        file << "  \"name\": \"" << EscapeJsonString(projectName) << "\",\n";
+        file << "  \"projectRoot\": \".\",\n";
+        file << "  \"startupScene\": \"" << EscapeJsonString(startupSceneRelative) << "\",\n";
+        file << "  \"lastOpenedScene\": \"" << EscapeJsonString(lastOpenedSceneRelative) << "\"\n";
+        file << "}\n";
+        if (!file.good())
+            return false;
+
+        SetCurrentProjectState(projectFilePath.string(), projectName, projectRoot, startupSceneRelative, lastOpenedSceneRelative);
+        return true;
+    }
+
+    static bool LoadProjectFileFromPath(const std::string& projectPath)
+    {
+        if (projectPath.empty())
+            return false;
+
+        std::ifstream file(projectPath);
+        if (!file.is_open())
+            return false;
+
+        const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        std::string projectName;
+        std::string startupSceneRelative;
+        std::string lastOpenedSceneRelative;
+        if (!TryReadJsonStringField(content, "name", projectName))
+            projectName = std::filesystem::path(projectPath).stem().string();
+        (void)TryReadJsonStringField(content, "startupScene", startupSceneRelative);
+        (void)TryReadJsonStringField(content, "lastOpenedScene", lastOpenedSceneRelative);
+
+        const std::filesystem::path projectRoot = std::filesystem::path(projectPath).parent_path();
+        EnsureProjectDirectories(projectRoot);
+        SetCurrentProjectState(projectPath, projectName, projectRoot, startupSceneRelative, lastOpenedSceneRelative);
+
+        const std::string preferredSceneRelative = !lastOpenedSceneRelative.empty() ? lastOpenedSceneRelative : startupSceneRelative;
+        if (!preferredSceneRelative.empty())
+        {
+            const std::filesystem::path scenePath = ResolveProjectPath(preferredSceneRelative);
+            if (std::filesystem::exists(scenePath))
+            {
+                if (!LoadSceneAssetFromPath(scenePath.string()))
+                    return false;
+            }
+            else
+            {
+                Scene::NewScene();
+                g_CurrentScenePath.clear();
+            }
+        }
+        else
+        {
+            Scene::NewScene();
+            g_CurrentScenePath.clear();
+        }
+
+        return true;
+    }
+
+    static void DrawStartupProjectBrowser()
+    {
+        LoadRecentProjects();
+
+        if (!g_ShowProjectBrowser)
+            return;
+
+        if (!g_CurrentProjectPath.empty())
+        {
+            g_ShowProjectBrowser = false;
+            return;
+        }
+
+        if (g_RequestOpenProjectBrowserPopup)
+        {
+            ImGui::OpenPopup("Welcome to TheFletchZone Engine##ProjectBrowser");
+            g_RequestOpenProjectBrowserPopup = false;
+        }
+
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        if (viewport)
+        {
+            ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ImVec2(1040.0f, 720.0f), ImGuiCond_Appearing);
+        }
+
+        if (!ImGui::BeginPopupModal("Welcome to TheFletchZone Engine##ProjectBrowser", nullptr,
+            ImGuiWindowFlags_NoSavedSettings))
+            return;
+
+        if (g_UIFontBold) ImGui::PushFont(g_UIFontBold);
+        ImGui::TextUnformatted("Black Flame Project Browser");
+        if (g_UIFontBold) ImGui::PopFont();
+        ImGui::TextDisabled("Create, open, or reopen a project to begin.");
+        ImGui::Separator();
+
+        const auto& templates = GetProjectTemplateDefinitions();
+        const ProjectTemplateDefinition* selectedTemplate = FindProjectTemplateDefinition(g_SelectedProjectTemplateId);
+        const ProjectTemplateValidationResult selectedTemplateValidation = selectedTemplate
+            ? ValidateProjectTemplateDefinition(*selectedTemplate)
+            : ProjectTemplateValidationResult{};
+        const bool hasRecentProjects = !g_RecentProjectPaths.empty();
+
+        const float availableWidth = ImGui::GetContentRegionAvail().x;
+        const float availableHeight = ImGui::GetContentRegionAvail().y;
+        const float panelGap = 14.0f;
+        const float leftPanelWidth = (std::clamp)(availableWidth * 0.60f, 520.0f, availableWidth - 280.0f);
+        const float rightPanelWidth = (std::max)(220.0f, availableWidth - leftPanelWidth - panelGap);
+        const float bodyHeight = (std::max)(280.0f, availableHeight - 56.0f);
+
+        ImGui::BeginChild("##WelcomeTemplatePane", ImVec2(leftPanelWidth, bodyHeight), true);
+        ImGui::TextUnformatted("Choose a starter template");
+        ImGui::TextDisabled("Select a project starter below.");
+        ImGui::Separator();
+
+        const float innerWidth = ImGui::GetContentRegionAvail().x;
+        const ImVec2 cardSize((std::max)(300.0f, innerWidth - 6.0f), 156.0f);
+        for (size_t templateIndex = 0; templateIndex < templates.size(); ++templateIndex)
+        {
+            if (DrawProjectTemplateCard(templates[templateIndex], g_SelectedProjectTemplateId == templates[templateIndex].id, cardSize))
+                g_SelectedProjectTemplateId = templates[templateIndex].id;
+            if (templateIndex + 1u < templates.size())
+                ImGui::Dummy(ImVec2(1.0f, 6.0f));
+        }
+        ImGui::EndChild();
+
+        ImGui::SameLine(0.0f, panelGap);
+
+        ImGui::BeginChild("##WelcomeDetailsPane", ImVec2(rightPanelWidth, bodyHeight), true);
+        if (selectedTemplate)
+        {
+            if (g_UIFontBold) ImGui::PushFont(g_UIFontBold);
+            ImGui::TextUnformatted(selectedTemplate->name.c_str());
+            if (g_UIFontBold) ImGui::PopFont();
+            ImGui::TextWrapped("%s", selectedTemplate->description.c_str());
+            ImGui::Dummy(ImVec2(1.0f, 6.0f));
+
+            ImGui::TextDisabled("Template Id: %s", selectedTemplate->id.c_str());
+            ImGui::TextDisabled("Starter Objects: %d", static_cast<int>(selectedTemplate->objects.size()));
+            if (!selectedTemplate->sourceScenePath.empty())
+                ImGui::TextDisabled("Source Scene: %s", selectedTemplate->sourceScenePath.c_str());
+            if (!selectedTemplate->copyRoot.empty())
+                ImGui::TextDisabled("Implicit Copy Root: %s", selectedTemplate->copyRoot.c_str());
+        }
+        else
+        {
+            ImGui::TextDisabled("No template selected.");
+        }
+
+        if (selectedTemplate && (selectedTemplateValidation.HasErrors() || selectedTemplateValidation.HasWarnings()))
+        {
+            ImGui::Dummy(ImVec2(1.0f, 6.0f));
+            ImGui::BeginChild("##TemplateValidation", ImVec2(0.0f, 132.0f), true);
+            if (selectedTemplateValidation.HasErrors())
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.42f, 1.0f), "Template issues:");
+                for (const std::string& error : selectedTemplateValidation.errors)
+                {
+                    ImGui::Bullet();
+                    ImGui::SameLine();
+                    ImGui::PushTextWrapPos();
+                    ImGui::TextUnformatted(error.c_str());
+                    ImGui::PopTextWrapPos();
+                }
+            }
+            if (selectedTemplateValidation.HasWarnings())
+            {
+                if (selectedTemplateValidation.HasErrors())
+                    ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.36f, 1.0f), "Template warnings:");
+                for (const std::string& warning : selectedTemplateValidation.warnings)
+                {
+                    ImGui::Bullet();
+                    ImGui::SameLine();
+                    ImGui::PushTextWrapPos();
+                    ImGui::TextUnformatted(warning.c_str());
+                    ImGui::PopTextWrapPos();
+                }
+            }
+            ImGui::EndChild();
+        }
+
+        ImGui::Dummy(ImVec2(1.0f, 8.0f));
+        ImGui::TextUnformatted("Project Actions");
+        ImGui::Separator();
+
+        if (selectedTemplateValidation.HasErrors())
+            ImGui::BeginDisabled();
+        if (ImGui::Button("New Project...##Welcome", ImVec2(-1.0f, 0.0f)))
+        {
+            if (NewProject())
+            {
+                g_ShowProjectBrowser = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        if (selectedTemplateValidation.HasErrors())
+            ImGui::EndDisabled();
+        if (ImGui::Button("Open Project...##Welcome", ImVec2(-1.0f, 0.0f)))
+        {
+            if (OpenProject())
+            {
+                g_ShowProjectBrowser = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        if (!hasRecentProjects)
+            ImGui::BeginDisabled();
+        if (ImGui::Button("Open Last Project##Welcome", ImVec2(-1.0f, 0.0f)))
+        {
+            if (hasRecentProjects && LoadProjectFileFromPath(g_RecentProjectPaths.front()))
+            {
+                g_ShowProjectBrowser = false;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        if (!hasRecentProjects)
+            ImGui::EndDisabled();
+
+        ImGui::Dummy(ImVec2(1.0f, 12.0f));
+        ImGui::TextUnformatted("Recent Projects");
+        ImGui::BeginChild("##WelcomeRecentProjects", ImVec2(0.0f, 0.0f), true);
+        if (g_RecentProjectPaths.empty())
+        {
+            ImGui::TextDisabled("No recent projects yet.");
+        }
+        else
+        {
+            for (size_t recentIndex = 0; recentIndex < g_RecentProjectPaths.size(); ++recentIndex)
+            {
+                const std::filesystem::path recentPath(g_RecentProjectPaths[recentIndex]);
+                const std::string projectName = recentPath.stem().string();
+                const std::string buttonLabel = std::format("{}##WelcomeRecentProject{}", projectName, recentIndex);
+                if (ImGui::Selectable(buttonLabel.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick))
+                {
+                    if (LoadProjectFileFromPath(g_RecentProjectPaths[recentIndex]))
+                    {
+                        g_ShowProjectBrowser = false;
+                        ImGui::CloseCurrentPopup();
+                    }
+                }
+                ImGui::TextDisabled("%s", g_RecentProjectPaths[recentIndex].c_str());
+                if (recentIndex + 1u < g_RecentProjectPaths.size())
+                    ImGui::Separator();
+            }
+        }
+        ImGui::EndChild();
+        ImGui::EndChild();
+
+        ImGui::Dummy(ImVec2(1.0f, 10.0f));
+        if (ImGui::Button("Continue Without Project##Welcome", ImVec2(220.0f, 0.0f)))
+        {
+            g_ShowProjectBrowser = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
     }
 
     static std::string GetDefaultScenePathString()
@@ -149,6 +1676,11 @@ namespace UI {
         if (!Scene::LoadFromFile(path))
             return false;
         g_CurrentScenePath = path;
+        if (!g_CurrentProjectPath.empty())
+        {
+            g_ProjectLastOpenedScenePath = MakePathRelativeToProjectRoot(path);
+            SyncProjectStateToEditor();
+        }
         if (g_engineInstance)
             g_engineInstance->GetEditorState().selection.Clear();
         return true;
@@ -174,6 +1706,81 @@ namespace UI {
     void SetCurrentSceneAssetPath(const std::string& path)
     {
         g_CurrentScenePath = path;
+        if (!g_CurrentProjectPath.empty() && !path.empty())
+        {
+            g_ProjectLastOpenedScenePath = MakePathRelativeToProjectRoot(path);
+            SyncProjectStateToEditor();
+        }
+    }
+
+    bool NewProject()
+    {
+        std::string path = g_CurrentProjectPath;
+        if (!ShowProjectFileDialog(true, path))
+            return false;
+
+        const std::filesystem::path projectFilePath(path);
+        const std::filesystem::path projectRoot = projectFilePath.parent_path();
+        EnsureProjectDirectories(projectRoot);
+
+        BuildProjectTemplateScene(g_SelectedProjectTemplateId, projectRoot, g_CurrentScenePath);
+        if (!Scene::SaveToFile(g_CurrentScenePath))
+            return false;
+
+        g_ProjectStartupScenePath = MakePathRelativeToRoot(g_CurrentScenePath, projectRoot);
+        g_ProjectLastOpenedScenePath = g_ProjectStartupScenePath;
+
+        const bool saved = SaveProjectFileWithPath(path);
+        if (saved && g_engineInstance)
+        {
+            EditorState& editor = g_engineInstance->GetEditorState();
+            editor.selection.Clear();
+            editor.focusedMaterialIndex = -1;
+        }
+        if (saved)
+            g_ShowProjectBrowser = false;
+        return saved;
+    }
+
+    bool OpenProject()
+    {
+        std::string path = g_CurrentProjectPath;
+        if (!ShowProjectFileDialog(false, path))
+            return false;
+        const bool loaded = LoadProjectFileFromPath(path);
+        if (loaded)
+            g_ShowProjectBrowser = false;
+        return loaded;
+    }
+
+    bool SaveCurrentProject()
+    {
+        if (g_CurrentProjectPath.empty())
+            return SaveCurrentProjectAs();
+        return SaveProjectFileWithPath(g_CurrentProjectPath);
+    }
+
+    bool SaveCurrentProjectAs()
+    {
+        std::string path = g_CurrentProjectPath;
+        if (!ShowProjectFileDialog(true, path))
+            return false;
+        return SaveProjectFileWithPath(path);
+    }
+
+    std::string GetCurrentProjectPath()
+    {
+        return g_CurrentProjectPath;
+    }
+
+    std::string GetCurrentProjectName()
+    {
+        return g_CurrentProjectName;
+    }
+
+    std::string GetCurrentProjectRoot()
+    {
+        return g_CurrentProjectRoot.string();
     }
 
     bool IsImGuiDemoVisible() { return g_showImGuiDemo; }
@@ -258,6 +1865,7 @@ namespace UI {
         UI::DrawEditorPanels();
         UI::DrawOverlays();
         UI::EndDockSpaceFrame();
+        DrawStartupProjectBrowser();
 
         if (UI::IsImGuiDemoVisible())
             ImGui::ShowDemoWindow();
@@ -564,31 +2172,62 @@ namespace UI {
         // Command strip contents
         static void DrawCommandStripContents()
          {
-             static char s_projectNameBuffer[128] = "MyProject";
-
              const Engine::State s = Engine::GetState();
              const bool playing = (s == Engine::State::Playing);
              const bool paused = (s == Engine::State::Paused);
              const bool runtimeActive = playing || paused;
+             LoadRecentProjects();
 
              // Left
              if (ImGui::Button(ICON_FA_BARS " Project##CmdProject"))
                  ImGui::OpenPopup("Project##CmdProjectPopup");
              if (ImGui::BeginPopup("Project##CmdProjectPopup"))
              {
-                 ImGui::InputTextWithHint("##ProjectName", "Project name", s_projectNameBuffer, IM_ARRAYSIZE(s_projectNameBuffer));
-                 if (ImGui::MenuItem("Create Project (Stub)"))
-                 {
-                     const std::filesystem::path projectRoot = std::filesystem::path("Projects") / (s_projectNameBuffer[0] ? s_projectNameBuffer : "MyProject");
-                     std::error_code ec;
-                     std::filesystem::create_directories(projectRoot / "Assets", ec);
-                     std::filesystem::create_directories(projectRoot / "Scenes", ec);
-                     Logger::Log(LogLevel::Info, std::format("Project stub prepared at {}", projectRoot.string()), "[Project]");
-                 }
-                 ImGui::MenuItem("Open Project (Stub)", nullptr, false, false);
+                  if (!g_CurrentProjectName.empty())
+                      ImGui::TextDisabled("Current: %s", g_CurrentProjectName.c_str());
+                  if (ImGui::BeginMenu("New Project From Template##CmdProjectTemplate"))
+                  {
+                      for (const ProjectTemplateDefinition& definition : GetProjectTemplateDefinitions())
+                      {
+                          const bool selected = (g_SelectedProjectTemplateId == definition.id);
+                          if (ImGui::MenuItem(definition.name.c_str(), nullptr, selected))
+                          {
+                              g_SelectedProjectTemplateId = definition.id;
+                              NewProject();
+                          }
+                      }
+                      ImGui::EndMenu();
+                  }
+                  if (ImGui::MenuItem("New Project..."))
+                      NewProject();
+                  if (ImGui::MenuItem("Open Project..."))
+                      OpenProject();
+                  if (ImGui::MenuItem("Save Project", nullptr, false, !g_CurrentProjectPath.empty()))
+                      SaveCurrentProject();
+                  if (ImGui::MenuItem("Save Project As..."))
+                      SaveCurrentProjectAs();
+                  if (ImGui::BeginMenu("Recent Projects##CmdProjectRecent"))
+                  {
+                      if (g_RecentProjectPaths.empty())
+                      {
+                          ImGui::MenuItem("No recent projects", nullptr, false, false);
+                      }
+                      else
+                      {
+                          for (size_t recentIndex = 0; recentIndex < g_RecentProjectPaths.size(); ++recentIndex)
+                          {
+                              const std::string label = std::format("{}##CmdRecentProject{}", g_RecentProjectPaths[recentIndex], recentIndex);
+                              if (ImGui::MenuItem(label.c_str()))
+                                  LoadProjectFileFromPath(g_RecentProjectPaths[recentIndex]);
+                          }
+                      }
+                      ImGui::EndMenu();
+                  }
                  ImGui::EndPopup();
              }
              ImGui::SameLine();
+              ImGui::TextDisabled("%s", g_CurrentProjectName.empty() ? "No Project" : g_CurrentProjectName.c_str());
+              ImGui::SameLine();
 
              if (ImGui::Button("Scene##CmdScene"))
                  ImGui::OpenPopup("Scene##CmdScenePopup");
@@ -893,8 +2532,54 @@ namespace UI {
          static bool openAbout = false;
          static bool showCustomSizePopup = false;
 
+        LoadRecentProjects();
+
          // 📁 File
          if (ImGui::BeginMenu("File")) {
+              if (!g_CurrentProjectName.empty())
+              {
+                  ImGui::TextDisabled("Project: %s", g_CurrentProjectName.c_str());
+                  ImGui::Separator();
+              }
+              if (ImGui::BeginMenu("New Project From Template"))
+              {
+                  for (const ProjectTemplateDefinition& definition : GetProjectTemplateDefinitions())
+                  {
+                      const bool selected = (g_SelectedProjectTemplateId == definition.id);
+                      if (ImGui::MenuItem(definition.name.c_str(), nullptr, selected))
+                      {
+                          g_SelectedProjectTemplateId = definition.id;
+                          NewProject();
+                      }
+                  }
+                  ImGui::EndMenu();
+              }
+              if (ImGui::MenuItem("New Project..."))
+                  NewProject();
+              if (ImGui::MenuItem("Open Project..."))
+                  OpenProject();
+              if (ImGui::MenuItem("Save Project", nullptr, false, !g_CurrentProjectPath.empty()))
+                  SaveCurrentProject();
+              if (ImGui::MenuItem("Save Project As..."))
+                  SaveCurrentProjectAs();
+              if (ImGui::BeginMenu("Recent Projects"))
+              {
+                  if (g_RecentProjectPaths.empty())
+                  {
+                      ImGui::MenuItem("No recent projects", nullptr, false, false);
+                  }
+                  else
+                  {
+                      for (size_t recentIndex = 0; recentIndex < g_RecentProjectPaths.size(); ++recentIndex)
+                      {
+                          const std::string label = std::format("{}##RecentProject{}", g_RecentProjectPaths[recentIndex], recentIndex);
+                          if (ImGui::MenuItem(label.c_str()))
+                              LoadProjectFileFromPath(g_RecentProjectPaths[recentIndex]);
+                      }
+                  }
+                  ImGui::EndMenu();
+              }
+              ImGui::Separator();
               if (ImGui::MenuItem("New Scene", "Ctrl+N"))
               {
                   PushUndoSnapshot();
@@ -964,6 +2649,21 @@ namespace UI {
                   PushUndoSnapshot();
                   Scene::CreateCylinder();
               }
+               if (ImGui::MenuItem("Capsule"))
+               {
+                   PushUndoSnapshot();
+                   Scene::CreateCapsule();
+               }
+               if (ImGui::MenuItem("Torus"))
+               {
+                   PushUndoSnapshot();
+                   Scene::CreateTorus();
+               }
+               if (ImGui::MenuItem("Cone"))
+               {
+                   PushUndoSnapshot();
+                   Scene::CreateCone();
+               }
               ImGui::EndMenu();
           }
 

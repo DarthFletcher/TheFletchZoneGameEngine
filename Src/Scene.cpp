@@ -40,6 +40,12 @@ namespace
             return 0.15f;
         case ScenePrimitive::Plane:
             return 0.70710678f;
+        case ScenePrimitive::Capsule:
+            return 0.90138782f;
+        case ScenePrimitive::Torus:
+            return 0.68f;
+        case ScenePrimitive::Cone:
+            return 0.8660254f;
         case ScenePrimitive::Sphere:
         case ScenePrimitive::Cylinder:
         case ScenePrimitive::Cube:
@@ -234,6 +240,9 @@ namespace
         case ScenePrimitive::Sphere: return "Sphere";
         case ScenePrimitive::Plane: return "Plane";
         case ScenePrimitive::Cylinder: return "Cylinder";
+        case ScenePrimitive::Capsule: return "Capsule";
+        case ScenePrimitive::Torus: return "Torus";
+        case ScenePrimitive::Cone: return "Cone";
         case ScenePrimitive::Cube:
         default: return "Cube";
         }
@@ -244,6 +253,9 @@ namespace
         switch (value)
         {
         case 4: return ScenePrimitive::Empty;
+        case 5: return ScenePrimitive::Capsule;
+        case 6: return ScenePrimitive::Torus;
+        case 7: return ScenePrimitive::Cone;
         case 1: return ScenePrimitive::Sphere;
         case 2: return ScenePrimitive::Plane;
         case 3: return ScenePrimitive::Cylinder;
@@ -265,6 +277,9 @@ namespace
         case ScenePrimitive::Sphere: return gfx.GetSphereMesh();
         case ScenePrimitive::Plane: return gfx.GetPlaneMesh();
         case ScenePrimitive::Cylinder: return gfx.GetCylinderMesh();
+        case ScenePrimitive::Capsule: return gfx.GetCapsuleMesh();
+        case ScenePrimitive::Torus: return gfx.GetTorusMesh();
+        case ScenePrimitive::Cone: return gfx.GetConeMesh();
         case ScenePrimitive::Empty:
         case ScenePrimitive::Cube:
         default: return gfx.GetCubeMesh();
@@ -497,6 +512,16 @@ namespace
     static std::vector<SceneObject> g_sceneObjects;
     static bool g_loggedPhase45 = false;
 
+    enum class GridPlane : uint8_t
+    {
+        XZ,
+        XY,
+        YZ
+    };
+
+    static GridPlane g_CurrentGridPlane = GridPlane::XZ;
+    static float g_CurrentGridPlaneOffset = -0.01f;
+
     struct SceneDrawResources
     {
         ComPtr<ID3D12RootSignature> rootSig;
@@ -557,7 +582,7 @@ namespace
         return d;
     }
 
-    static std::vector<VertexPC> BuildGridVertices(const SceneGridSettings& settings)
+    static std::vector<VertexPC> BuildGridVertices(const SceneGridSettings& settings, GridPlane plane, float planeOffset)
     {
         const int divisions = (std::clamp)(settings.divisions, 2, 200);
         const float extent = (std::max)(settings.extent, 1.0f);
@@ -575,38 +600,114 @@ namespace
             verts.push_back(v);
         };
 
-        constexpr float kGridY = -0.01f;
         for (int i = 0; i <= divisions; ++i)
         {
             const float t = -half + (float)i * step;
 
             if (i == divisions / 2)
             {
-                push(-half, kGridY, t, 0.95f, 0.25f, 0.25f, 1.0f);
-                push(+half, kGridY, t, 0.95f, 0.25f, 0.25f, 1.0f);
-                push(t, kGridY, -half, 0.25f, 0.45f, 0.95f, 1.0f);
-                push(t, kGridY, +half, 0.25f, 0.45f, 0.95f, 1.0f);
+                switch (plane)
+                {
+                case GridPlane::XY:
+                    push(-half, t, planeOffset, 0.95f, 0.25f, 0.25f, 1.0f);
+                    push(+half, t, planeOffset, 0.95f, 0.25f, 0.25f, 1.0f);
+                    push(t, -half, planeOffset, 0.25f, 0.85f, 0.35f, 1.0f);
+                    push(t, +half, planeOffset, 0.25f, 0.85f, 0.35f, 1.0f);
+                    break;
+                case GridPlane::YZ:
+                    push(planeOffset, -half, t, 0.25f, 0.85f, 0.35f, 1.0f);
+                    push(planeOffset, +half, t, 0.25f, 0.85f, 0.35f, 1.0f);
+                    push(planeOffset, t, -half, 0.25f, 0.45f, 0.95f, 1.0f);
+                    push(planeOffset, t, +half, 0.25f, 0.45f, 0.95f, 1.0f);
+                    break;
+                case GridPlane::XZ:
+                default:
+                    push(-half, planeOffset, t, 0.95f, 0.25f, 0.25f, 1.0f);
+                    push(+half, planeOffset, t, 0.95f, 0.25f, 0.25f, 1.0f);
+                    push(t, planeOffset, -half, 0.25f, 0.45f, 0.95f, 1.0f);
+                    push(t, planeOffset, +half, 0.25f, 0.45f, 0.95f, 1.0f);
+                    break;
+                }
             }
             else
             {
                 const float c = 0.40f;
                 const float a = 0.80f;
-                push(-half, kGridY, t, c, c, c, a);
-                push(+half, kGridY, t, c, c, c, a);
-                push(t, kGridY, -half, c, c, c, a);
-                push(t, kGridY, +half, c, c, c, a);
+                switch (plane)
+                {
+                case GridPlane::XY:
+                    push(-half, t, planeOffset, c, c, c, a);
+                    push(+half, t, planeOffset, c, c, c, a);
+                    push(t, -half, planeOffset, c, c, c, a);
+                    push(t, +half, planeOffset, c, c, c, a);
+                    break;
+                case GridPlane::YZ:
+                    push(planeOffset, -half, t, c, c, c, a);
+                    push(planeOffset, +half, t, c, c, c, a);
+                    push(planeOffset, t, -half, c, c, c, a);
+                    push(planeOffset, t, +half, c, c, c, a);
+                    break;
+                case GridPlane::XZ:
+                default:
+                    push(-half, planeOffset, t, c, c, c, a);
+                    push(+half, planeOffset, t, c, c, c, a);
+                    push(t, planeOffset, -half, c, c, c, a);
+                    push(t, planeOffset, +half, c, c, c, a);
+                    break;
+                }
             }
         }
 
         return verts;
     }
 
+    static void ResolveGridPlaneFromSceneCamera(GridPlane& outPlane, float& outPlaneOffset)
+    {
+        outPlane = GridPlane::XZ;
+        outPlaneOffset = -0.01f;
+
+        SceneCamera& sceneCamera = Graphics::GetInstance().GetSceneCamera();
+        if (sceneCamera.GetProjectionMode() != SceneCamera::ProjectionMode::Orthographic)
+            return;
+
+        const DirectX::XMFLOAT3 forward = sceneCamera.GetForward();
+        const float absX = fabsf(forward.x);
+        const float absY = fabsf(forward.y);
+        const float absZ = fabsf(forward.z);
+
+        if (absY >= absX && absY >= absZ)
+        {
+            outPlane = GridPlane::XZ;
+            outPlaneOffset = (forward.y >= 0.0f) ? 0.01f : -0.01f;
+        }
+        else if (absZ >= absX && absZ >= absY)
+        {
+            outPlane = GridPlane::XY;
+            outPlaneOffset = (forward.z >= 0.0f) ? 0.01f : -0.01f;
+        }
+        else
+        {
+            outPlane = GridPlane::YZ;
+            outPlaneOffset = (forward.x >= 0.0f) ? 0.01f : -0.01f;
+        }
+    }
+
     static void UpdateGridGeometry(ID3D12Device* device)
     {
+        GridPlane desiredPlane = GridPlane::XZ;
+        float desiredPlaneOffset = -0.01f;
+        ResolveGridPlaneFromSceneCamera(desiredPlane, desiredPlaneOffset);
+        if (desiredPlane != g_CurrentGridPlane || fabsf(desiredPlaneOffset - g_CurrentGridPlaneOffset) > 1e-4f)
+        {
+            g_CurrentGridPlane = desiredPlane;
+            g_CurrentGridPlaneOffset = desiredPlaneOffset;
+            g_GridGeometryDirty = true;
+        }
+
         if (!device || (!g_GridGeometryDirty && g_scene.gridVb))
             return;
 
-        const std::vector<VertexPC> verts = BuildGridVertices(g_SceneGridSettings);
+        const std::vector<VertexPC> verts = BuildGridVertices(g_SceneGridSettings, g_CurrentGridPlane, g_CurrentGridPlaneOffset);
         const UINT vbSize = (UINT)(sizeof(VertexPC) * verts.size());
 
         if (!g_scene.gridVb || vbSize > g_scene.gridVbCapacityBytes)
@@ -1036,6 +1137,7 @@ namespace
         float parentValue = 0.0f;
         float materialValue = 0.0f;
         float primitiveValue = 0.0f;
+        float vaultTypeValue = 0.0f;
         if (readIdAndParent && !readNumber("\"id\"", idValue))
             return false;
         if (readIdAndParent)
@@ -1048,6 +1150,7 @@ namespace
         if (!readBool("\"visible\"", outInstance.visible)) return false;
         if (!readNumber("\"material\"", materialValue)) return false;
         readNumber("\"primitive\"", primitiveValue);
+        readNumber("\"vaultType\"", vaultTypeValue);
         readBool("\"cameraEnabled\"", outInstance.camera.enabled);
         readBool("\"cameraMain\"", outInstance.camera.isMain);
         readNumber("\"cameraFovY\"", outInstance.camera.fovY);
@@ -1058,6 +1161,7 @@ namespace
         outInstance.parentInstanceId = static_cast<uint32_t>(parentValue);
         outInstance.materialIndex = static_cast<int>(materialValue);
         outInstance.primitive = ScenePrimitiveFromValue(static_cast<int>(primitiveValue));
+        outInstance.vaultType = static_cast<VaultType>(static_cast<int>(vaultTypeValue));
         return true;
     }
 
@@ -1751,17 +1855,50 @@ bool Scene::CanParentInstance(uint32_t childInstanceId, uint32_t parentInstanceI
     return !IsDescendantOf(parentInstanceId, childInstanceId);
 }
 
+bool Scene::CanPreserveWorldTransformOnReparent(uint32_t childInstanceId, uint32_t parentInstanceId, std::string* outReason)
+{
+    if (outReason)
+        outReason->clear();
+
+    SceneInstance* child = FindSceneInstanceByIdMutable(childInstanceId);
+    if (!child || !CanParentInstance(childInstanceId, parentInstanceId))
+    {
+        if (outReason)
+            *outReason = "Invalid parent/child relationship.";
+        return false;
+    }
+
+    const DirectX::XMMATRIX childWorldBefore = BuildSceneInstanceWorld(*child);
+    DirectX::XMMATRIX local = childWorldBefore;
+    if (parentInstanceId != 0)
+    {
+        if (const SceneInstance* parent = FindSceneInstanceByIdConst(parentInstanceId))
+        {
+            const DirectX::XMMATRIX parentWorld = BuildSceneInstanceWorld(*parent);
+            local = XMMatrixMultiply(childWorldBefore, XMMatrixInverse(nullptr, parentWorld));
+        }
+    }
+
+    SceneInstance probe = *child;
+    if (!DecomposeWorldToLocal(local, probe))
+    {
+        if (outReason)
+            *outReason = "Cannot preserve world transform under this parent. Try Keep Local instead.";
+        return false;
+    }
+
+    return true;
+}
+
 bool Scene::SetParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId, bool keepWorldTransform)
 {
     SceneInstance* child = FindSceneInstanceByIdMutable(childInstanceId);
     if (!child || !CanParentInstance(childInstanceId, parentInstanceId))
         return false;
 
-    const DirectX::XMMATRIX childWorldBefore = BuildSceneInstanceWorld(*child);
-    child->parentInstanceId = parentInstanceId;
-
     if (keepWorldTransform)
     {
+        const DirectX::XMMATRIX childWorldBefore = BuildSceneInstanceWorld(*child);
         DirectX::XMMATRIX local = childWorldBefore;
         if (parentInstanceId != 0)
         {
@@ -1772,8 +1909,19 @@ bool Scene::SetParentInstance(uint32_t childInstanceId, uint32_t parentInstanceI
             }
         }
 
-        if (!DecomposeWorldToLocal(local, *child))
+        SceneInstance updatedChild = *child;
+        if (!DecomposeWorldToLocal(local, updatedChild))
+        {
+            Logger::Log(LogLevel::Error, std::format("Failed to preserve world transform while parenting instance {} under {}.", childInstanceId, parentInstanceId), "[Scene]");
             return false;
+        }
+
+        updatedChild.parentInstanceId = parentInstanceId;
+        *child = updatedChild;
+    }
+    else
+    {
+        child->parentInstanceId = parentInstanceId;
     }
 
     RebuildRenderInstancesFromSceneData();
@@ -1955,6 +2103,49 @@ void Scene::DeleteSelectedInstance()
     MarkInstancesDirty();
 }
 
+bool Scene::DeleteInstanceById(uint32_t instanceId)
+{
+    if (instanceId == 0)
+        return false;
+
+    const auto it = std::find_if(s_SceneInstances.begin(), s_SceneInstances.end(), [instanceId](const SceneInstance& instance)
+        {
+            return instance.instanceId == instanceId;
+        });
+    if (it == s_SceneInstances.end())
+        return false;
+
+    std::vector<uint32_t> childrenToUnparent;
+    for (const auto& instance : s_SceneInstances)
+    {
+        if (instance.parentInstanceId == instanceId && instance.instanceId != instanceId)
+            childrenToUnparent.push_back(instance.instanceId);
+    }
+
+    for (uint32_t childId : childrenToUnparent)
+        SetParentInstance(childId, 0, true);
+
+    s_SceneInstances.erase(std::remove_if(s_SceneInstances.begin(), s_SceneInstances.end(), [instanceId](const SceneInstance& instance)
+        {
+            return instance.instanceId == instanceId;
+        }), s_SceneInstances.end());
+
+    if (s_SelectedInstanceId == instanceId)
+        ClearSelection();
+    else
+        s_SelectedInstanceIds.erase(
+            std::remove(s_SelectedInstanceIds.begin(), s_SelectedInstanceIds.end(), instanceId),
+            s_SelectedInstanceIds.end());
+
+    if (s_HoveredInstanceId == instanceId)
+        s_HoveredInstanceId = 0;
+
+    s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+    return true;
+}
+
 void Scene::DuplicateSelectedInstance()
 {
     SceneInstance* selected = GetSelectedInstance();
@@ -2027,6 +2218,21 @@ void Scene::CreatePlane(const DirectX::XMFLOAT3& position)
 void Scene::CreateCylinder(const DirectX::XMFLOAT3& position)
 {
     CreatePrimitive(ScenePrimitive::Cylinder, position);
+}
+
+void Scene::CreateCapsule(const DirectX::XMFLOAT3& position)
+{
+    CreatePrimitive(ScenePrimitive::Capsule, position);
+}
+
+void Scene::CreateTorus(const DirectX::XMFLOAT3& position)
+{
+    CreatePrimitive(ScenePrimitive::Torus, position);
+}
+
+void Scene::CreateCone(const DirectX::XMFLOAT3& position)
+{
+    CreatePrimitive(ScenePrimitive::Cone, position);
 }
 
 void Scene::CreatePrimitive(ScenePrimitive primitive, const DirectX::XMFLOAT3& position)
@@ -2115,7 +2321,8 @@ bool Scene::SaveSelectedAsPrefab(const std::string& path)
     file << "  \"scale\": [" << prefab.scale.x << ", " << prefab.scale.y << ", " << prefab.scale.z << "],\n";
     file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
     file << "  \"material\": " << prefab.materialIndex << ",\n";
-    file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << "\n";
+    file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << ",\n";
+    file << "  \"vaultType\": " << static_cast<int>(prefab.vaultType) << "\n";
     file << "}\n";
     return file.good();
 }
@@ -2184,6 +2391,9 @@ bool Scene::ApplySelectedPrefabProperty(PrefabProperty property)
     case PrefabProperty::Material:
         prefab.materialIndex = selected->materialIndex;
         break;
+    case PrefabProperty::VaultType:
+        prefab.vaultType = selected->vaultType;
+        break;
     default:
         return false;
     }
@@ -2248,6 +2458,9 @@ bool Scene::RevertSelectedPrefabProperty(PrefabProperty property)
     case PrefabProperty::Material:
         selected->materialIndex = prefab.materialIndex;
         break;
+    case PrefabProperty::VaultType:
+        selected->vaultType = prefab.vaultType;
+        break;
     default:
         return false;
     }
@@ -2274,6 +2487,7 @@ bool Scene::TryGetPrefabOverrideState(uint32_t instanceId, PrefabOverrideState& 
     outState.scale = !NearlyEqualFloat3(instance->scale, prefab.scale);
     outState.visible = (instance->visible != prefab.visible);
     outState.material = (instance->materialIndex != prefab.materialIndex);
+    outState.vaultType = (instance->vaultType != prefab.vaultType);
     return true;
 }
 
@@ -2295,6 +2509,7 @@ std::string Scene::SerializeToString()
         out << "      \"visible\": " << (inst.visible ? "true" : "false") << ",\n";
         out << "      \"material\": " << inst.materialIndex << ",\n";
         out << "      \"primitive\": " << static_cast<int>(inst.primitive) << ",\n";
+        out << "      \"vaultType\": " << static_cast<int>(inst.vaultType) << ",\n";
         out << "      \"cameraEnabled\": " << (inst.camera.enabled ? "true" : "false") << ",\n";
         out << "      \"cameraMain\": " << (inst.camera.isMain ? "true" : "false") << ",\n";
         out << "      \"cameraFovY\": " << inst.camera.fovY << ",\n";

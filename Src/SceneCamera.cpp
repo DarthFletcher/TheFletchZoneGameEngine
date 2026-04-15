@@ -139,12 +139,34 @@ void SceneCamera::SetFrontView()
     orbitInteracting_ = false;
 }
 
+void SceneCamera::SetBackView()
+{
+    projectionMode_ = ProjectionMode::Orthographic;
+    viewPreset_ = ViewPreset::View3D;
+    const XMVECTOR target = orbitPivot_;
+    const XMVECTOR eye = target + XMVectorSet(0.0f, 0.0f, distance_, 0.0f);
+    ApplyLookAtState(eye, target, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), eye_, target_, up_, orbitPivot_, yaw_, pitch_, distance_);
+    freelooking_ = false;
+    orbitInteracting_ = false;
+}
+
 void SceneCamera::SetRightView()
 {
     projectionMode_ = ProjectionMode::Orthographic;
     viewPreset_ = ViewPreset::View3D;
     const XMVECTOR target = orbitPivot_;
     const XMVECTOR eye = target + XMVectorSet(distance_, 0.0f, 0.0f, 0.0f);
+    ApplyLookAtState(eye, target, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), eye_, target_, up_, orbitPivot_, yaw_, pitch_, distance_);
+    freelooking_ = false;
+    orbitInteracting_ = false;
+}
+
+void SceneCamera::SetLeftView()
+{
+    projectionMode_ = ProjectionMode::Orthographic;
+    viewPreset_ = ViewPreset::View3D;
+    const XMVECTOR target = orbitPivot_;
+    const XMVECTOR eye = target + XMVectorSet(-distance_, 0.0f, 0.0f, 0.0f);
     ApplyLookAtState(eye, target, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), eye_, target_, up_, orbitPivot_, yaw_, pitch_, distance_);
     freelooking_ = false;
     orbitInteracting_ = false;
@@ -157,6 +179,17 @@ void SceneCamera::SetTopView()
     const XMVECTOR target = orbitPivot_;
     const XMVECTOR eye = target + XMVectorSet(0.0f, distance_, 0.0f, 0.0f);
     ApplyLookAtState(eye, target, XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), eye_, target_, up_, orbitPivot_, yaw_, pitch_, distance_);
+    freelooking_ = false;
+    orbitInteracting_ = false;
+}
+
+void SceneCamera::SetBottomView()
+{
+    projectionMode_ = ProjectionMode::Orthographic;
+    viewPreset_ = ViewPreset::View3D;
+    const XMVECTOR target = orbitPivot_;
+    const XMVECTOR eye = target + XMVectorSet(0.0f, -distance_, 0.0f, 0.0f);
+    ApplyLookAtState(eye, target, XMVectorSet(0.0f, 0.0f, -1.0f, 0.0f), eye_, target_, up_, orbitPivot_, yaw_, pitch_, distance_);
     freelooking_ = false;
     orbitInteracting_ = false;
 }

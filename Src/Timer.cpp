@@ -5,10 +5,18 @@
 // =====================================================
 void Timer::Initialize() {
     lastTime = std::chrono::steady_clock::now();
+    deltaTime = 0.0f;
+    started = true;
 }
 
 // Call this every frame to update the delta time.
 void Timer::Update() {
+    if (!started)
+    {
+        Initialize();
+        return;
+    }
+
     auto currentTime = std::chrono::steady_clock::now();
     deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
     lastTime = currentTime;

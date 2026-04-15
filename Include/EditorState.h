@@ -189,6 +189,11 @@ struct EditorState
 
     std::vector<SceneHistoryEntry> undoSceneSnapshots;
     std::vector<SceneHistoryEntry> redoSceneSnapshots;
+    std::string currentProjectName;
+    std::string currentProjectPath;
+    std::string currentProjectRoot;
+    std::string startupScenePath;
+    std::string lastOpenedScenePath;
 
     void ResetAllInteraction()
     {

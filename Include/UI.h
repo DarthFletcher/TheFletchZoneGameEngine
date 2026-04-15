@@ -52,6 +52,13 @@ namespace UI {
     bool SaveCurrentSceneAssetAs();
     std::string GetCurrentSceneAssetPath();
     void SetCurrentSceneAssetPath(const std::string& path);
+    bool NewProject();
+    bool OpenProject();
+    bool SaveCurrentProject();
+    bool SaveCurrentProjectAs();
+    std::string GetCurrentProjectPath();
+    std::string GetCurrentProjectName();
+    std::string GetCurrentProjectRoot();
 
     // Applies a pending default dock layout build. Call this once per frame AFTER windows are drawn.
     void EndDockSpaceFrame();
