@@ -167,6 +167,7 @@
     <ClInclude Include="include\Config.h" />
     <ClInclude Include="include\CrashDiagnostics.h" />
     <ClInclude Include="Include\DX12Common.h" />
+    <ClInclude Include="Include\EditorCommands.h" />
     <ClInclude Include="Include\EditorCommon.h" />
     <ClInclude Include="Include\EditorGizmo.h" />
     <ClInclude Include="Include\EditorIcons.h" />
@@ -176,6 +177,7 @@
     <ClInclude Include="include\framework.h" />
     <ClInclude Include="Include\Frustum.h" />
     <ClInclude Include="include\Game.h" />
+    <ClInclude Include="include\GameplayAudio.h" />
     <ClInclude Include="Include\Graphics.h" />
     <ClInclude Include="include\HintMacros.h" />
     <ClInclude Include="include\ImGuiPlatformIO_Extended.h" />
@@ -220,12 +222,14 @@
     <ClCompile Include="Src\CameraSystem.cpp" />
     <ClCompile Include="src\Config.cpp" />
     <ClCompile Include="src\CrashDiagnostics.cpp" />
+    <ClCompile Include="Src\EditorCommands.cpp" />
     <ClCompile Include="Src\EditorGizmo.cpp" />
     <ClCompile Include="Src\EditorPanels.cpp" />
     <ClCompile Include="Src\EditorPanels_BlackFlame.cpp" />
     <ClCompile Include="src\Engine.cpp" />
     <ClCompile Include="Src\Frustum.cpp" />
     <ClCompile Include="src\Game.cpp" />
+    <ClCompile Include="src\GameplayAudio.cpp" />
     <ClCompile Include="Src\Graphics.cpp" />
     <ClCompile Include="Src\Graphics_Contracts_Restore.cpp" />
     <ClCompile Include="Src\Graphics_Picking.cpp" />

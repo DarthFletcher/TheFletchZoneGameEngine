@@ -5,12 +5,14 @@
 #include <commdlg.h>
 #include <string>
 #include <Engine.h>
+#include <GameplayAudio.h>
 #include <Graphics.h>
 #include "SplashScreen.h"
 #include "EditorPanels.h"
 #include "EditorState.h"
 #include "EditorIcons.h"
 #include "ImGuiUtils.h"
+#include "imgui_internal.h"
 #include <filesystem>
 
 #include <algorithm>
@@ -50,8 +52,15 @@ namespace UI {
 
         editor.undoSceneSnapshots.push_back(snapshot);
         if (editor.undoSceneSnapshots.size() > kMaxUndoSnapshots)
+        {
             editor.undoSceneSnapshots.erase(editor.undoSceneSnapshots.begin());
+            auto oldestSnapshotIt = std::find(editor.undoEntryKinds.begin(), editor.undoEntryKinds.end(), EditorUndoEntryKind::Snapshot);
+            if (oldestSnapshotIt != editor.undoEntryKinds.end())
+                editor.undoEntryKinds.erase(oldestSnapshotIt);
+        }
+        editor.undoEntryKinds.push_back(EditorUndoEntryKind::Snapshot);
         editor.redoSceneSnapshots.clear();
+        editor.redoEntryKinds.clear();
     }
 
     // 🔧 Current theme tracking
@@ -240,13 +249,14 @@ namespace UI {
         ProjectTemplateDefinition vault{};
         vault.id = "vaultprototype";
         vault.name = "Vault Prototype";
-        vault.description = "Creates a starter Siniavault scene with a core, rings, and activatable nodes.";
+        vault.description = "Creates a starter Siniavault scene with a player avatar, activatable nodes, a stabilizable core, and an exit gate.";
         vault.thumbnailPath = (GetProjectTemplateThumbnailsDirectory() / "vaultprototype.png").string();
         vault.copyRoot.clear();
         vault.hasCameraOverride = true;
         vault.cameraPosition = { 0.0f, 3.0f, -8.0f };
         vault.cameraRotationDegrees = { 12.0f, 0.0f, 0.0f };
         vault.objects = {
+            { ScenePrimitive::Capsule, "VaultRunner", { 0.0f, 0.9f, -4.0f }, { 0.75f, 1.8f, 0.75f } },
             { ScenePrimitive::Plane, "Vault Floor", { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 1.0f } },
             { ScenePrimitive::Sphere, "VaultCore", { 0.0f, 0.75f, 0.0f }, { 1.25f, 1.25f, 1.25f } },
             { ScenePrimitive::Torus, "VaultRing_1", { 0.0f, 0.55f, 0.0f }, { 1.7f, 1.0f, 1.7f } },
@@ -254,6 +264,7 @@ namespace UI {
             { ScenePrimitive::Capsule, "VaultNode_1", { 0.0f, 0.75f, 3.0f }, { 1.0f, 1.0f, 1.0f } },
             { ScenePrimitive::Capsule, "VaultNode_2", { 2.6f, 0.75f, -1.5f }, { 1.0f, 1.0f, 1.0f } },
             { ScenePrimitive::Capsule, "VaultNode_3", { -2.6f, 0.75f, -1.5f }, { 1.0f, 1.0f, 1.0f } },
+            { ScenePrimitive::Cube, "VaultExitGate", { 0.0f, 1.2f, -7.0f }, { 1.8f, 2.6f, 0.35f } },
         };
         definitions.push_back(std::move(vault));
 
@@ -374,9 +385,6 @@ namespace UI {
         for (const ProjectTemplateDefinition& definition : GetDefaultProjectTemplateDefinitions())
         {
             const std::filesystem::path filePath = templateDir / std::format("{}.tfztemplate", definition.id);
-            if (std::filesystem::exists(filePath))
-                continue;
-
             std::ofstream file(filePath, std::ios::trunc);
             if (!file.is_open())
                 continue;
@@ -1389,12 +1397,24 @@ namespace UI {
             {
                 Scene::NewScene();
                 g_CurrentScenePath.clear();
+                if (g_engineInstance)
+                {
+                    EditorState& editor = g_engineInstance->GetEditorState();
+                    editor.selection.Clear();
+                    editor.ClearHistory();
+                }
             }
         }
         else
         {
             Scene::NewScene();
             g_CurrentScenePath.clear();
+            if (g_engineInstance)
+            {
+                EditorState& editor = g_engineInstance->GetEditorState();
+                editor.selection.Clear();
+                editor.ClearHistory();
+            }
         }
 
         return true;
@@ -1661,12 +1681,7 @@ namespace UI {
         std::string path = g_CurrentScenePath.empty() ? GetDefaultScenePathString() : g_CurrentScenePath;
         if (!ShowSceneFileDialog(false, path))
             return false;
-        if (!Scene::LoadFromFile(path))
-            return false;
-        g_CurrentScenePath = path;
-        if (g_engineInstance)
-            g_engineInstance->GetEditorState().selection.Clear();
-        return true;
+        return LoadSceneAssetFromPath(path);
     }
 
     bool LoadSceneAssetFromPath(const std::string& path)
@@ -1682,7 +1697,11 @@ namespace UI {
             SyncProjectStateToEditor();
         }
         if (g_engineInstance)
-            g_engineInstance->GetEditorState().selection.Clear();
+        {
+            EditorState& editor = g_engineInstance->GetEditorState();
+            editor.selection.Clear();
+            editor.ClearHistory();
+        }
         return true;
     }
 
@@ -2072,6 +2091,7 @@ namespace UI {
     namespace
     {
          ImGuiID g_dockspaceID = 0;
+         ImGuiID g_inspectorDockNodeID = 0;
          bool g_dockInitialized = false;
          bool g_requestResetLayout = false;
          bool g_buildLayoutNextFrame = false;
@@ -2079,12 +2099,54 @@ namespace UI {
          enum class UILayoutPreset : int
          {
              Default = 0,
+             Authoring,
+             LevelDesign,
+             Materials,
+             AIBlackFlame,
              Debug,
              Minimal,
          };
 
          static void BuildDockLayout(UILayoutPreset preset, ImGuiID dockspaceID, ImGuiViewport* viewport);
          static void BuildDefaultDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport);
+         static void BuildAuthoringDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport);
+         static void BuildLevelDesignDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport);
+         static void BuildMaterialsDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport);
+         static void BuildAIBlackFlameDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport);
+         static void BuildDebugDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport);
+         static void BuildMinimalDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport);
+         static void ApplyLayoutPreset(UILayoutPreset preset);
+
+         static ImGuiID FindDockNodeForWindow(const char* windowName)
+         {
+             if (!windowName || !windowName[0])
+                 return 0;
+
+             if (ImGuiWindow* window = ImGui::FindWindowByName(windowName))
+                 return window->DockId;
+
+             return 0;
+         }
+
+         static void DockPanelWithInspectorOnOpen(EditorPanel& panel, bool& wasOpenLastFrame)
+         {
+             if (!panel.open)
+             {
+                 wasOpenLastFrame = false;
+                 return;
+             }
+
+             if (!wasOpenLastFrame)
+             {
+                 ImGuiID targetDockNodeID = FindDockNodeForWindow(EditorPanels::Inspector().name);
+                 if (targetDockNodeID == 0)
+                     targetDockNodeID = g_inspectorDockNodeID;
+                 if (targetDockNodeID != 0)
+                     ImGui::DockBuilderDockWindow(panel.name, targetDockNodeID);
+             }
+
+             wasOpenLastFrame = true;
+         }
 
          static UILayoutPreset g_layoutPreset = UILayoutPreset::Default;
 
@@ -2093,6 +2155,10 @@ namespace UI {
              switch (p)
              {
              case UILayoutPreset::Default: return "Default";
+             case UILayoutPreset::Authoring: return "Authoring";
+             case UILayoutPreset::LevelDesign: return "Level Design";
+             case UILayoutPreset::Materials: return "Materials";
+             case UILayoutPreset::AIBlackFlame: return "AI / Black Flame";
              case UILayoutPreset::Debug:   return "Debug";
              case UILayoutPreset::Minimal: return "Minimal";
              default: return "(unknown)";
@@ -2104,25 +2170,181 @@ namespace UI {
              switch (p)
              {
              case UILayoutPreset::Default: return "imgui_default.ini";
+             case UILayoutPreset::Authoring: return "imgui_authoring.ini";
+             case UILayoutPreset::LevelDesign: return "imgui_level_design.ini";
+             case UILayoutPreset::Materials: return "imgui_materials.ini";
+             case UILayoutPreset::AIBlackFlame: return "imgui_ai_black_flame.ini";
              case UILayoutPreset::Debug:   return "imgui_debug.ini";
              case UILayoutPreset::Minimal: return "imgui_minimal.ini";
              default: return "imgui.ini";
              }
          }
 
+         static void ConfigurePanelsForLayout(UILayoutPreset preset)
+         {
+             auto& scene = EditorPanels::Scene();
+             auto& game = EditorPanels::Game();
+             auto& hierarchy = EditorPanels::Hierarchy();
+             auto& inspector = EditorPanels::Inspector();
+             auto& assets = EditorPanels::Assets();
+             auto& diagnostics = EditorPanels::Diagnostics();
+             auto& logViewer = EditorPanels::LogViewer();
+             auto& instancing = EditorPanels::Instancing();
+             auto& materialPreview = EditorPanels::MaterialPreview();
+             auto& blackFlame = EditorPanels::BlackFlame();
+             auto& promptHelper = EditorPanels::PromptHelper();
+             auto& prefabWorkflow = EditorPanels::PrefabWorkflow();
+
+             scene.open = true;
+             hierarchy.open = true;
+             inspector.open = true;
+
+             switch (preset)
+             {
+             case UILayoutPreset::Authoring:
+                 game.open = false;
+                 assets.open = true;
+                 diagnostics.open = false;
+                 logViewer.open = true;
+                 instancing.open = false;
+                 materialPreview.open = true;
+                 blackFlame.open = true;
+                 promptHelper.open = true;
+                 prefabWorkflow.open = false;
+                 break;
+             case UILayoutPreset::LevelDesign:
+                 game.open = false;
+                 assets.open = true;
+                 diagnostics.open = false;
+                 logViewer.open = false;
+                 instancing.open = false;
+                 materialPreview.open = false;
+                 blackFlame.open = false;
+                 promptHelper.open = false;
+                 prefabWorkflow.open = true;
+                 break;
+             case UILayoutPreset::Materials:
+                 game.open = false;
+                 assets.open = true;
+                 diagnostics.open = false;
+                 logViewer.open = false;
+                 instancing.open = false;
+                 materialPreview.open = true;
+                 blackFlame.open = false;
+                 promptHelper.open = false;
+                 prefabWorkflow.open = false;
+                 break;
+             case UILayoutPreset::AIBlackFlame:
+                 game.open = false;
+                 assets.open = false;
+                 diagnostics.open = false;
+                 logViewer.open = true;
+                 instancing.open = false;
+                 materialPreview.open = false;
+                 blackFlame.open = true;
+                 promptHelper.open = true;
+                 prefabWorkflow.open = false;
+                 break;
+             case UILayoutPreset::Debug:
+                 game.open = true;
+                 assets.open = true;
+                 diagnostics.open = true;
+                 logViewer.open = true;
+                 instancing.open = true;
+                 materialPreview.open = false;
+                 blackFlame.open = true;
+                 promptHelper.open = false;
+                 prefabWorkflow.open = false;
+                 break;
+             case UILayoutPreset::Minimal:
+                 game.open = false;
+                 assets.open = false;
+                 diagnostics.open = false;
+                 logViewer.open = false;
+                 instancing.open = false;
+                 materialPreview.open = false;
+                 blackFlame.open = false;
+                 promptHelper.open = false;
+                 prefabWorkflow.open = false;
+                 break;
+             case UILayoutPreset::Default:
+             default:
+                 game.open = true;
+                 assets.open = true;
+                 diagnostics.open = false;
+                 logViewer.open = true;
+                 instancing.open = false;
+                 materialPreview.open = false;
+                 blackFlame.open = true;
+                 promptHelper.open = false;
+                 prefabWorkflow.open = false;
+                 break;
+             }
+         }
+
+         static void DrawLayoutPresetMenuItems()
+         {
+             auto drawLayoutPresetItem = [](const char* label, UILayoutPreset preset, const char* description)
+             {
+                 if (ImGui::MenuItem(label, nullptr, g_layoutPreset == preset))
+                     ApplyLayoutPreset(preset);
+                 if (description && description[0] != '\0' && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                     ImGui::SetTooltip("%s", description);
+             };
+
+             ImGui::TextDisabled("Current: %s", LayoutPresetLabel(g_layoutPreset));
+             ImGui::Separator();
+
+             drawLayoutPresetItem("Default", UILayoutPreset::Default, "Balanced editor layout with Scene/Game centered, Hierarchy on the left, Inspector on the right, and supporting panels along the bottom.");
+             drawLayoutPresetItem("Authoring", UILayoutPreset::Authoring, "Content-focused workspace with Black Flame, prompts, and material tools grouped beside the Inspector.");
+             drawLayoutPresetItem("Level Design", UILayoutPreset::LevelDesign, "Optimized for building scenes with Hierarchy, Inspector, Prefab Workflow, and Assets kept close to the Scene view.");
+             drawLayoutPresetItem("Materials", UILayoutPreset::Materials, "Surface-tuning layout with Scene, Inspector, and Material Preview emphasized for rapid material iteration.");
+             drawLayoutPresetItem("AI / Black Flame", UILayoutPreset::AIBlackFlame, "AI-focused workspace that keeps Scene, Inspector, Black Flame Prompts, and Black Flame output visible together.");
+             drawLayoutPresetItem("Debug", UILayoutPreset::Debug, "Engineering-oriented layout with diagnostics, logs, instancing, and runtime panels easier to monitor at once.");
+             drawLayoutPresetItem("Minimal", UILayoutPreset::Minimal, "Reduced distraction layout with only the essential scene editing panels visible by default.");
+
+             ImGui::Separator();
+             if (ImGui::MenuItem("Rebuild Current Layout"))
+                 ApplyLayoutPreset(g_layoutPreset);
+         }
+
          static void ApplyLayoutPreset(UILayoutPreset preset)
          {
              g_layoutPreset = preset;
+             ConfigurePanelsForLayout(preset);
              ImGui::LoadIniSettingsFromMemory("");
+             g_inspectorDockNodeID = 0;
              g_dockInitialized = false;
              g_buildLayoutNextFrame = true;
          }
 
          static void BuildDockLayout(UILayoutPreset preset, ImGuiID dockspaceID, ImGuiViewport* viewport)
          {
-             (void)preset;
-             // For now, all presets share the same layout skeleton.
-             BuildDefaultDockLayout(dockspaceID, viewport);
+             switch (preset)
+             {
+             case UILayoutPreset::Authoring:
+                 BuildAuthoringDockLayout(dockspaceID, viewport);
+                 break;
+             case UILayoutPreset::LevelDesign:
+                 BuildLevelDesignDockLayout(dockspaceID, viewport);
+                 break;
+             case UILayoutPreset::Materials:
+                 BuildMaterialsDockLayout(dockspaceID, viewport);
+                 break;
+             case UILayoutPreset::AIBlackFlame:
+                 BuildAIBlackFlameDockLayout(dockspaceID, viewport);
+                 break;
+             case UILayoutPreset::Debug:
+                 BuildDebugDockLayout(dockspaceID, viewport);
+                 break;
+             case UILayoutPreset::Minimal:
+                 BuildMinimalDockLayout(dockspaceID, viewport);
+                 break;
+             case UILayoutPreset::Default:
+             default:
+                 BuildDefaultDockLayout(dockspaceID, viewport);
+                 break;
+             }
          }
 
          void BuildDefaultDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport)
@@ -2152,12 +2374,14 @@ namespace UI {
             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.20f, &dock_left, &dock_main);
             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.25f, &dock_right, &dock_main);
             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.25f, &dock_bottom, &dock_main);
+            g_inspectorDockNodeID = dock_right;
 
             // Names must match ImGui::Begin("...") titles
             ImGui::DockBuilderDockWindow(EditorPanels::Scene().name, dock_main);
             ImGui::DockBuilderDockWindow(EditorPanels::Game().name, dock_main);
             ImGui::DockBuilderDockWindow(EditorPanels::Hierarchy().name, dock_left);
             ImGui::DockBuilderDockWindow(EditorPanels::Inspector().name, dock_right);
+            ImGui::DockBuilderDockWindow(EditorPanels::PromptHelper().name, dock_right);
 
             // Bottom region: tab these together by docking into the same node.
             ImGui::DockBuilderDockWindow(EditorPanels::Assets().name, dock_bottom);
@@ -2167,6 +2391,242 @@ namespace UI {
             ImGui::DockBuilderDockWindow(EditorPanels::BlackFlame().name, dock_bottom);
 
             ImGui::DockBuilderFinish(dockspaceID);
+         }
+
+         void BuildAuthoringDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport)
+         {
+             if (!viewport)
+                 return;
+
+             ImGui::DockBuilderRemoveNode(dockspaceID);
+             ImGui::DockBuilderAddNode(dockspaceID, ImGuiDockNodeFlags_DockSpace);
+
+             const float toolbarH = GetCommandStripReservedHeight();
+             const float topPadding = ImGui::GetStyle().ItemSpacing.y;
+             constexpr float kMinDockDim = 64.0f;
+             const float safeW = (std::max)(kMinDockDim, viewport->WorkSize.x);
+             const float safeH = (std::max)(kMinDockDim, viewport->WorkSize.y - toolbarH - topPadding);
+             ImGui::DockBuilderSetNodeSize(dockspaceID, ImVec2(safeW, safeH));
+
+             ImGuiID dock_main = dockspaceID;
+             ImGuiID dock_left = 0;
+             ImGuiID dock_right = 0;
+             ImGuiID dock_bottom = 0;
+
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.18f, &dock_left, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.30f, &dock_right, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.24f, &dock_bottom, &dock_main);
+             g_inspectorDockNodeID = dock_right;
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Scene().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Game().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Hierarchy().name, dock_left);
+             ImGui::DockBuilderDockWindow(EditorPanels::Inspector().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::PromptHelper().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::MaterialPreview().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::BlackFlame().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::PrefabWorkflow().name, dock_right);
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Assets().name, dock_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::LogViewer().name, dock_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::Diagnostics().name, dock_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::Instancing().name, dock_bottom);
+
+             ImGui::DockBuilderFinish(dockspaceID);
+         }
+
+         void BuildLevelDesignDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport)
+         {
+             if (!viewport)
+                 return;
+
+             ImGui::DockBuilderRemoveNode(dockspaceID);
+             ImGui::DockBuilderAddNode(dockspaceID, ImGuiDockNodeFlags_DockSpace);
+
+             const float toolbarH = GetCommandStripReservedHeight();
+             const float topPadding = ImGui::GetStyle().ItemSpacing.y;
+             constexpr float kMinDockDim = 64.0f;
+             const float safeW = (std::max)(kMinDockDim, viewport->WorkSize.x);
+             const float safeH = (std::max)(kMinDockDim, viewport->WorkSize.y - toolbarH - topPadding);
+             ImGui::DockBuilderSetNodeSize(dockspaceID, ImVec2(safeW, safeH));
+
+             ImGuiID dock_main = dockspaceID;
+             ImGuiID dock_left = 0;
+             ImGuiID dock_right = 0;
+             ImGuiID dock_bottom = 0;
+
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.20f, &dock_left, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.26f, &dock_right, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.24f, &dock_bottom, &dock_main);
+             g_inspectorDockNodeID = dock_right;
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Scene().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Game().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Hierarchy().name, dock_left);
+             ImGui::DockBuilderDockWindow(EditorPanels::Inspector().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::PrefabWorkflow().name, dock_right);
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Assets().name, dock_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::LogViewer().name, dock_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::Instancing().name, dock_bottom);
+
+             ImGui::DockBuilderFinish(dockspaceID);
+         }
+
+         void BuildMaterialsDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport)
+         {
+             if (!viewport)
+                 return;
+
+             ImGui::DockBuilderRemoveNode(dockspaceID);
+             ImGui::DockBuilderAddNode(dockspaceID, ImGuiDockNodeFlags_DockSpace);
+
+             const float toolbarH = GetCommandStripReservedHeight();
+             const float topPadding = ImGui::GetStyle().ItemSpacing.y;
+             constexpr float kMinDockDim = 64.0f;
+             const float safeW = (std::max)(kMinDockDim, viewport->WorkSize.x);
+             const float safeH = (std::max)(kMinDockDim, viewport->WorkSize.y - toolbarH - topPadding);
+             ImGui::DockBuilderSetNodeSize(dockspaceID, ImVec2(safeW, safeH));
+
+             ImGuiID dock_main = dockspaceID;
+             ImGuiID dock_left = 0;
+             ImGuiID dock_right = 0;
+             ImGuiID dock_right_bottom = 0;
+             ImGuiID dock_bottom = 0;
+
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.16f, &dock_left, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.30f, &dock_right, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Down, 0.52f, &dock_right_bottom, &dock_right);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.22f, &dock_bottom, &dock_main);
+             g_inspectorDockNodeID = dock_right;
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Scene().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Game().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Hierarchy().name, dock_left);
+             ImGui::DockBuilderDockWindow(EditorPanels::Inspector().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::MaterialPreview().name, dock_right_bottom);
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Assets().name, dock_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::LogViewer().name, dock_bottom);
+
+             ImGui::DockBuilderFinish(dockspaceID);
+         }
+
+         void BuildAIBlackFlameDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport)
+         {
+             if (!viewport)
+                 return;
+
+             ImGui::DockBuilderRemoveNode(dockspaceID);
+             ImGui::DockBuilderAddNode(dockspaceID, ImGuiDockNodeFlags_DockSpace);
+
+             const float toolbarH = GetCommandStripReservedHeight();
+             const float topPadding = ImGui::GetStyle().ItemSpacing.y;
+             constexpr float kMinDockDim = 64.0f;
+             const float safeW = (std::max)(kMinDockDim, viewport->WorkSize.x);
+             const float safeH = (std::max)(kMinDockDim, viewport->WorkSize.y - toolbarH - topPadding);
+             ImGui::DockBuilderSetNodeSize(dockspaceID, ImVec2(safeW, safeH));
+
+             ImGuiID dock_main = dockspaceID;
+             ImGuiID dock_left = 0;
+             ImGuiID dock_right = 0;
+             ImGuiID dock_right_bottom = 0;
+             ImGuiID dock_bottom = 0;
+
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.17f, &dock_left, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.34f, &dock_right, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Down, 0.48f, &dock_right_bottom, &dock_right);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.20f, &dock_bottom, &dock_main);
+             g_inspectorDockNodeID = dock_right;
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Scene().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Game().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Hierarchy().name, dock_left);
+             ImGui::DockBuilderDockWindow(EditorPanels::Inspector().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::PromptHelper().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::BlackFlame().name, dock_right_bottom);
+
+             ImGui::DockBuilderDockWindow(EditorPanels::LogViewer().name, dock_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::Diagnostics().name, dock_bottom);
+
+             ImGui::DockBuilderFinish(dockspaceID);
+         }
+
+         void BuildDebugDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport)
+         {
+             if (!viewport)
+                 return;
+
+             ImGui::DockBuilderRemoveNode(dockspaceID);
+             ImGui::DockBuilderAddNode(dockspaceID, ImGuiDockNodeFlags_DockSpace);
+
+             const float toolbarH = GetCommandStripReservedHeight();
+             const float topPadding = ImGui::GetStyle().ItemSpacing.y;
+             constexpr float kMinDockDim = 64.0f;
+             const float safeW = (std::max)(kMinDockDim, viewport->WorkSize.x);
+             const float safeH = (std::max)(kMinDockDim, viewport->WorkSize.y - toolbarH - topPadding);
+             ImGui::DockBuilderSetNodeSize(dockspaceID, ImVec2(safeW, safeH));
+
+             ImGuiID dock_main = dockspaceID;
+             ImGuiID dock_left = 0;
+             ImGuiID dock_right = 0;
+             ImGuiID dock_bottom = 0;
+             ImGuiID dock_right_bottom = 0;
+
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.18f, &dock_left, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.28f, &dock_right, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Down, 0.28f, &dock_bottom, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_right, ImGuiDir_Down, 0.46f, &dock_right_bottom, &dock_right);
+             g_inspectorDockNodeID = dock_right;
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Scene().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Game().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Hierarchy().name, dock_left);
+             ImGui::DockBuilderDockWindow(EditorPanels::Inspector().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::MaterialPreview().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::PromptHelper().name, dock_right);
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Assets().name, dock_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::Instancing().name, dock_bottom);
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Diagnostics().name, dock_right_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::LogViewer().name, dock_right_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::BlackFlame().name, dock_right_bottom);
+             ImGui::DockBuilderDockWindow(EditorPanels::PrefabWorkflow().name, dock_right_bottom);
+
+             ImGui::DockBuilderFinish(dockspaceID);
+         }
+
+         void BuildMinimalDockLayout(ImGuiID dockspaceID, ImGuiViewport* viewport)
+         {
+             if (!viewport)
+                 return;
+
+             ImGui::DockBuilderRemoveNode(dockspaceID);
+             ImGui::DockBuilderAddNode(dockspaceID, ImGuiDockNodeFlags_DockSpace);
+
+             const float toolbarH = GetCommandStripReservedHeight();
+             const float topPadding = ImGui::GetStyle().ItemSpacing.y;
+             constexpr float kMinDockDim = 64.0f;
+             const float safeW = (std::max)(kMinDockDim, viewport->WorkSize.x);
+             const float safeH = (std::max)(kMinDockDim, viewport->WorkSize.y - toolbarH - topPadding);
+             ImGui::DockBuilderSetNodeSize(dockspaceID, ImVec2(safeW, safeH));
+
+             ImGuiID dock_main = dockspaceID;
+             ImGuiID dock_left = 0;
+             ImGuiID dock_right = 0;
+
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Left, 0.16f, &dock_left, &dock_main);
+             ImGui::DockBuilderSplitNode(dock_main, ImGuiDir_Right, 0.24f, &dock_right, &dock_main);
+             g_inspectorDockNodeID = dock_right;
+
+             ImGui::DockBuilderDockWindow(EditorPanels::Scene().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Game().name, dock_main);
+             ImGui::DockBuilderDockWindow(EditorPanels::Hierarchy().name, dock_left);
+             ImGui::DockBuilderDockWindow(EditorPanels::Inspector().name, dock_right);
+             ImGui::DockBuilderDockWindow(EditorPanels::PromptHelper().name, dock_right);
+
+             ImGui::DockBuilderFinish(dockspaceID);
          }
 
         // Command strip contents
@@ -2372,6 +2832,12 @@ namespace UI {
                     ImGui::MenuItem("Smooth Look", nullptr, &editor->smoothLook);
                 }
                 ImGui::Separator();
+                if (ImGui::BeginMenu("Layouts"))
+                {
+                    DrawLayoutPresetMenuItems();
+                    ImGui::EndMenu();
+                }
+                ImGui::Separator();
                 if (ImGui::MenuItem("Reset Layout"))
                     RequestResetLayout();
                 ImGui::EndPopup();
@@ -2500,12 +2966,16 @@ namespace UI {
 	// 🔄 Request layout reset on next frame
     void RequestResetLayout()
     {
+        ConfigurePanelsForLayout(g_layoutPreset);
+        g_inspectorDockNodeID = 0;
         g_requestResetLayout = true;
     }
 
 	// 🛠️ Draw all editor panels
     void UI::DrawEditorPanels()
     {
+        static bool s_promptHelperWasOpenLastFrame = false;
+
         EditorPanels::DrawAll();
 
         auto& materialPreview = EditorPanels::MaterialPreview();
@@ -2518,7 +2988,14 @@ namespace UI {
 
         auto& promptHelper = EditorPanels::PromptHelper();
         if (promptHelper.open)
+        {
+            DockPanelWithInspectorOnOpen(promptHelper, s_promptHelperWasOpenLastFrame);
             promptHelper.draw();
+        }
+        else
+        {
+            s_promptHelperWasOpenLastFrame = false;
+        }
 
         auto& prefabWorkflow = EditorPanels::PrefabWorkflow();
         if (prefabWorkflow.open)
@@ -2586,7 +3063,11 @@ namespace UI {
                   Scene::NewScene();
                   g_CurrentScenePath.clear();
                   if (g_engineInstance)
-                      g_engineInstance->GetEditorState().selection.Clear();
+                  {
+                      EditorState& editor = g_engineInstance->GetEditorState();
+                      editor.selection.Clear();
+                      editor.ClearHistory();
+                  }
               }
               if (ImGui::MenuItem("Load Scene...", "Ctrl+L"))
                   LoadSceneFromDialog();
@@ -2610,11 +3091,31 @@ namespace UI {
          }
 
          if (ImGui::BeginMenu("Edit")) {
+             const bool canUndo = EditorPanels::CanUndoCommand();
+             const bool canRedo = EditorPanels::CanRedoCommand();
              const bool hasSelection = (Scene::GetSelectedInstance() != nullptr);
+             const bool canUnpackPrefab = EditorPanels::CanUnpackPrefabSelection();
+             if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndo))
+                 EditorPanels::ExecuteUndoCommand();
+             if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canRedo))
+                 EditorPanels::ExecuteRedoCommand();
+             ImGui::Separator();
+             if (ImGui::MenuItem("Rename", nullptr, false, hasSelection))
+                 EditorPanels::ExecuteRenameSelectionCommand();
              if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, hasSelection))
-                 Scene::DuplicateSelectedInstance();
+                 EditorPanels::ExecuteDuplicateSelectionCommand();
              if (ImGui::MenuItem("Delete", "Delete", false, hasSelection))
-                 Scene::DeleteSelectedInstance();
+                 EditorPanels::ExecuteDeleteSelectionCommand();
+             ImGui::Separator();
+             if (ImGui::MenuItem("Focus Selected", "F", false, hasSelection))
+                 EditorPanels::ExecuteFocusSelectionCommand();
+             if (ImGui::MenuItem("Create Empty Parent", nullptr, false, hasSelection))
+                 EditorPanels::ExecuteCreateEmptyParentCommand();
+             ImGui::Separator();
+             if (ImGui::MenuItem("Save Prefab", nullptr, false, hasSelection))
+                 EditorPanels::ExecuteSaveSelectionAsPrefabCommand();
+             if (ImGui::MenuItem("Unpack Prefab", nullptr, false, canUnpackPrefab))
+                 EditorPanels::ExecuteUnpackPrefabCommand();
              ImGui::EndMenu();
          }
 
@@ -2680,6 +3181,14 @@ namespace UI {
 
          // ⚙️ Options
          if (ImGui::BeginMenu("Options")) {
+             if (ImGui::BeginMenu("Layouts"))
+             {
+                 DrawLayoutPresetMenuItems();
+                 ImGui::EndMenu();
+             }
+
+             ImGui::Separator();
+
              if (ImGui::MenuItem("VSync", nullptr, vsyncEnabled)) {
                  vsyncEnabled = !vsyncEnabled;
                  Logger::Log(LogLevel::Info, vsyncEnabled ? "✅ VSync Enabled" : "⛔ VSync Disabled");
@@ -3079,7 +3588,95 @@ namespace UI {
 
        // 🔍 Optional Debug Overlay
        void DrawOverlays() {
-           // Debug overlay is now a dockable panel (see EditorPanels::DebugOverlay()).
+            if (!g_engineInstance)
+                return;
+
+            if (Engine::GetState() == Engine::State::Editing)
+                return;
+
+            const Game& game = g_engineInstance->GetGame();
+            const VaultMissionState missionState = game.GetVaultMissionState();
+
+            ImGuiViewport* viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowViewport(viewport->ID);
+            ImGui::SetNextWindowBgAlpha(0.75f);
+            ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 16.0f, viewport->WorkPos.y + 16.0f), ImGuiCond_Always);
+
+            const ImGuiWindowFlags overlayFlags =
+                ImGuiWindowFlags_NoDecoration |
+                ImGuiWindowFlags_NoDocking |
+                ImGuiWindowFlags_AlwaysAutoResize |
+                ImGuiWindowFlags_NoSavedSettings |
+                ImGuiWindowFlags_NoFocusOnAppearing |
+                ImGuiWindowFlags_NoNav;
+
+            if (ImGui::Begin("Vault Mission Overlay##Runtime", nullptr, overlayFlags))
+            {
+                ImGui::TextUnformatted(game.GetVaultMissionObjectiveText());
+                ImGui::Separator();
+                ImGui::Text("Nodes: %d / %d", game.GetVaultActiveNodeCount(), game.GetVaultTotalNodeCount());
+
+                if (missionState == VaultMissionState::CoreUnlocked)
+                    ImGui::TextColored(ImVec4(1.0f, 0.86f, 0.42f, 1.0f), "Core Unlocked - Reach the Core");
+                else if (missionState == VaultMissionState::Completed)
+                    ImGui::TextColored(ImVec4(0.56f, 1.0f, 0.72f, 1.0f), "Exit Open - Reach the Gate");
+
+                if (const char* interactionPrompt = game.GetInteractionPrompt())
+                    ImGui::TextColored(ImVec4(1.0f, 0.92f, 0.45f, 1.0f), "%s", interactionPrompt);
+
+                if (game.HasVaultWarning())
+                    ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.32f, 1.0f), "%s", game.GetVaultWarningText());
+
+                if (missionState == VaultMissionState::Completed)
+                    ImGui::TextColored(ImVec4(0.56f, 1.0f, 0.72f, 1.0f), "Mission Complete!");
+
+                float gameplayVolume = GA_GetMasterVolume();
+                ImGui::SetNextItemWidth(160.0f);
+                if (ImGui::SliderFloat("Gameplay Volume", &gameplayVolume, 0.0f, 1.0f, "%.2f"))
+                    GA_SetMasterVolume(gameplayVolume);
+            }
+            ImGui::End();
+
+            if (missionState == VaultMissionState::Escaped)
+            {
+                ImDrawList* foreground = ImGui::GetForegroundDrawList(viewport);
+                foreground->AddRectFilled(viewport->WorkPos, ImVec2(viewport->WorkPos.x + viewport->WorkSize.x, viewport->WorkPos.y + viewport->WorkSize.y), IM_COL32(0, 0, 0, 170));
+
+                ImGui::SetNextWindowViewport(viewport->ID);
+                ImGui::SetNextWindowPos(viewport->WorkPos, ImGuiCond_Always);
+                ImGui::SetNextWindowSize(viewport->WorkSize, ImGuiCond_Always);
+                const ImGuiWindowFlags endOverlayFlags =
+                    ImGuiWindowFlags_NoDecoration |
+                    ImGuiWindowFlags_NoDocking |
+                    ImGuiWindowFlags_NoSavedSettings |
+                    ImGuiWindowFlags_NoFocusOnAppearing |
+                    ImGuiWindowFlags_NoNav |
+                    ImGuiWindowFlags_NoBackground;
+
+                if (ImGui::Begin("Vault Escaped Overlay##Runtime", nullptr, endOverlayFlags))
+                {
+                    const char* title = "VAULT ESCAPED";
+                    const char* subtitle = "The core is stabilized and the exit is open.";
+                    const char* restartText = "Press R to Restart";
+                    const char* returnText = "Press Enter to Return to Editor";
+
+                    const ImVec2 titleSize = ImGui::CalcTextSize(title);
+                    const ImVec2 subtitleSize = ImGui::CalcTextSize(subtitle);
+                    const ImVec2 restartSize = ImGui::CalcTextSize(restartText);
+                    const ImVec2 returnSize = ImGui::CalcTextSize(returnText);
+                    const float centerY = viewport->WorkSize.y * 0.38f;
+
+                    ImGui::SetCursorPos(ImVec2((viewport->WorkSize.x - titleSize.x) * 0.5f, centerY));
+                    ImGui::TextColored(ImVec4(0.88f, 1.0f, 0.92f, 1.0f), "%s", title);
+                    ImGui::SetCursorPos(ImVec2((viewport->WorkSize.x - subtitleSize.x) * 0.5f, centerY + 34.0f));
+                    ImGui::TextDisabled("%s", subtitle);
+                    ImGui::SetCursorPos(ImVec2((viewport->WorkSize.x - restartSize.x) * 0.5f, centerY + 84.0f));
+                    ImGui::TextColored(ImVec4(1.0f, 0.92f, 0.45f, 1.0f), "%s", restartText);
+                    ImGui::SetCursorPos(ImVec2((viewport->WorkSize.x - returnSize.x) * 0.5f, centerY + 108.0f));
+                    ImGui::TextColored(ImVec4(0.72f, 0.86f, 1.0f, 1.0f), "%s", returnText);
+                }
+                ImGui::End();
+            }
        }
 
        void DrawSplashOverlay()

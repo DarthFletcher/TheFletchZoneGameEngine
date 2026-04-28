@@ -2,6 +2,7 @@
 
 #include "imgui.h"
 #include "EditorCommon.h"
+#include "EditorCommands.h"
 #include "Graphics.h"
 #include "Logger.h"
 #include "EditorState.h"
@@ -62,6 +63,7 @@ namespace EditorPanels
     static char g_SceneRenameBuffer[128] = {};
     static char g_AssetRenameBuffer[128] = {};
     static char g_MaterialRenameBuffer[128] = {};
+    static char g_SceneInstanceRenameBuffer[128] = {};
     static std::filesystem::path g_AssetCurrentFolder = std::filesystem::path("Assets");
     static std::filesystem::path g_PendingFolderRenamePath;
     static std::filesystem::path g_PendingSceneRenamePath;
@@ -83,6 +85,8 @@ namespace EditorPanels
     static uint32_t g_PendingReparentParentId = 0;
     static std::string g_PendingReparentKeepWorldReason;
     static bool g_RequestOpenReparentPopup = false;
+    static uint32_t g_PendingSceneInstanceRenameId = 0;
+    static bool g_RequestOpenSceneInstanceRenamePopup = false;
     static std::unordered_map<std::string, ImTextureID> g_AssetThumbnailCache;
     static int GetAssetTileColumnCount(float availableWidth, float tileWidth, float spacing);
     static ImTextureID GetAssetThumbnailTexture(const std::string& assetId, const std::string& fallbackTexturePath);
@@ -115,6 +119,10 @@ namespace EditorPanels
     static SceneInstance* FindSceneInstanceById(uint32_t instanceId);
     static bool CanAssignMaterialToInstance(const SceneInstance* instance);
     static bool ApplyMaterialToSceneInstance(EditorState& editor, SceneInstance* instance, int materialIndex);
+    static std::filesystem::path BuildDefaultSelectionPrefabPath();
+    static bool SaveCurrentSelectionAsPrefab(EditorState& editor);
+    static bool CreateEmptyParentForSelection(EditorState& editor);
+    static bool SelectionContainsPrefabInstance();
 
     static const char* GetAssetCategoryLabel(AssetCategory category)
     {
@@ -129,6 +137,8 @@ namespace EditorPanels
         default: return "All";
         }
     }
+
+    static void PushUndoSnapshot(EditorState& editor);
 
     static SceneHistoryEntry MakeHistoryEntry()
     {
@@ -149,6 +159,103 @@ namespace EditorPanels
         if (name.empty())
             name = "Prefab";
         return name;
+    }
+
+    static std::filesystem::path BuildDefaultSelectionPrefabPath()
+    {
+        SceneInstance* selected = Scene::GetSelectedInstance();
+        std::string baseName = selected ? SanitizeAssetName(selected->name) : std::string("Prefab");
+        if (Scene::GetSelectedInstanceIds().size() > 1u)
+            baseName += "_Group";
+        return std::filesystem::path("Assets") / "Prefabs" / (baseName + ".prefab.json");
+    }
+
+    static bool SaveCurrentSelectionAsPrefab(EditorState& editor)
+    {
+        if (!Scene::GetSelectedInstance())
+            return false;
+
+        const std::filesystem::path prefabPath = BuildDefaultSelectionPrefabPath();
+        if (!Scene::SaveSelectedAsPrefab(prefabPath.string()))
+        {
+            Logger::Log(LogLevel::Error, std::format("Failed to save prefab: {}", prefabPath.string()), "[Editor]");
+            return false;
+        }
+
+        PrefabWorkflow().open = true;
+        return true;
+    }
+
+    static bool ExecuteEditorCommand(EditorState& editor, std::unique_ptr<IEditorCommand> command)
+    {
+        if (!editor.commandManager.ExecuteCommand(std::move(command)))
+            return false;
+
+        editor.undoEntryKinds.push_back(EditorUndoEntryKind::Command);
+        editor.redoEntryKinds.clear();
+        return true;
+    }
+
+    static bool DuplicateCurrentSelection(EditorState& editor)
+    {
+        std::vector<uint32_t> selectionIds = Scene::GetSelectedInstanceIds();
+        if (selectionIds.empty())
+        {
+            if (const uint32_t activeId = Scene::GetSelectedInstanceId(); activeId != 0)
+                selectionIds.push_back(activeId);
+        }
+        if (selectionIds.empty())
+            return false;
+
+        if (!ExecuteEditorCommand(editor, std::make_unique<DuplicateSelectionCommand>(selectionIds)))
+            return false;
+        editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+        return true;
+    }
+
+    static bool DeleteCurrentSelection(EditorState& editor)
+    {
+        std::vector<uint32_t> selectionIds = Scene::GetSelectedInstanceIds();
+        if (selectionIds.empty())
+        {
+            if (const uint32_t activeId = Scene::GetSelectedInstanceId(); activeId != 0)
+                selectionIds.push_back(activeId);
+        }
+        if (selectionIds.empty())
+            return false;
+
+        if (!ExecuteEditorCommand(editor, std::make_unique<DeleteSelectionCommand>(selectionIds)))
+            return false;
+        editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+        return true;
+    }
+
+    static bool CreateEmptyParentForSelection(EditorState& editor)
+    {
+        const std::vector<uint32_t> selectionIds = Scene::GetSelectedInstanceIds();
+        if (selectionIds.empty())
+            return false;
+
+        if (!ExecuteEditorCommand(editor, std::make_unique<CreateEmptyParentCommand>(selectionIds)))
+            return false;
+        editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+        return true;
+    }
+
+    static bool SelectionContainsPrefabInstance()
+    {
+        const std::vector<uint32_t>& selectionIds = Scene::GetSelectedInstanceIds();
+        for (uint32_t instanceId : selectionIds)
+        {
+            if (SceneInstance* instance = FindSceneInstanceById(instanceId))
+            {
+                if (!instance->prefabSourcePath.empty())
+                    return true;
+            }
+        }
+        if (SceneInstance* selected = Scene::GetSelectedInstance())
+            return !selected->prefabSourcePath.empty();
+        return false;
     }
 
     static std::vector<std::filesystem::path> EnumeratePrefabAssets()
@@ -187,8 +294,15 @@ namespace EditorPanels
 
         editor.undoSceneSnapshots.push_back(snapshot);
         if (editor.undoSceneSnapshots.size() > kMaxUndoSnapshots)
+        {
             editor.undoSceneSnapshots.erase(editor.undoSceneSnapshots.begin());
+            auto oldestSnapshotIt = std::find(editor.undoEntryKinds.begin(), editor.undoEntryKinds.end(), EditorUndoEntryKind::Snapshot);
+            if (oldestSnapshotIt != editor.undoEntryKinds.end())
+                editor.undoEntryKinds.erase(oldestSnapshotIt);
+        }
+        editor.undoEntryKinds.push_back(EditorUndoEntryKind::Snapshot);
         editor.redoSceneSnapshots.clear();
+        editor.redoEntryKinds.clear();
     }
 
     static bool DrawTickFloat(const char* label, float& value, float minValue, float maxValue, float step, const char* format = "%.2f")
@@ -463,29 +577,81 @@ namespace EditorPanels
 
     static bool PerformUndo(EditorState& editor)
     {
-        if (editor.undoSceneSnapshots.empty())
+        if (editor.undoEntryKinds.empty())
             return false;
+
+        const EditorUndoEntryKind entryKind = editor.undoEntryKinds.back();
+        editor.undoEntryKinds.pop_back();
+
+        if (entryKind == EditorUndoEntryKind::Command)
+        {
+            if (!editor.commandManager.UndoCommand())
+            {
+                editor.undoEntryKinds.push_back(EditorUndoEntryKind::Command);
+                return false;
+            }
+            editor.redoEntryKinds.push_back(EditorUndoEntryKind::Command);
+            return true;
+        }
+
+        if (editor.undoSceneSnapshots.empty())
+        {
+            editor.undoEntryKinds.push_back(EditorUndoEntryKind::Snapshot);
+            return false;
+        }
 
         editor.redoSceneSnapshots.push_back(MakeHistoryEntry());
         const SceneHistoryEntry snapshot = editor.undoSceneSnapshots.back();
         editor.undoSceneSnapshots.pop_back();
         if (!Scene::LoadFromString(snapshot.sceneSnapshot))
+        {
+            editor.undoSceneSnapshots.push_back(snapshot);
+            editor.redoSceneSnapshots.pop_back();
+            editor.undoEntryKinds.push_back(EditorUndoEntryKind::Snapshot);
             return false;
+        }
         Scene::RestoreSelectionState(snapshot.activeSelectedInstanceId, snapshot.selectedInstanceIds);
+        editor.redoEntryKinds.push_back(EditorUndoEntryKind::Snapshot);
         return true;
     }
 
     static bool PerformRedo(EditorState& editor)
     {
-        if (editor.redoSceneSnapshots.empty())
+        if (editor.redoEntryKinds.empty())
             return false;
+
+        const EditorUndoEntryKind entryKind = editor.redoEntryKinds.back();
+        editor.redoEntryKinds.pop_back();
+
+        if (entryKind == EditorUndoEntryKind::Command)
+        {
+            if (!editor.commandManager.RedoCommand())
+            {
+                editor.redoEntryKinds.push_back(EditorUndoEntryKind::Command);
+                return false;
+            }
+            editor.undoEntryKinds.push_back(EditorUndoEntryKind::Command);
+            return true;
+        }
+
+        if (editor.redoSceneSnapshots.empty())
+        {
+            editor.redoEntryKinds.push_back(EditorUndoEntryKind::Snapshot);
+            return false;
+        }
 
         editor.undoSceneSnapshots.push_back(MakeHistoryEntry());
         const SceneHistoryEntry snapshot = editor.redoSceneSnapshots.back();
         editor.redoSceneSnapshots.pop_back();
         if (!Scene::LoadFromString(snapshot.sceneSnapshot))
+        {
+            editor.redoSceneSnapshots.push_back(snapshot);
+            editor.undoSceneSnapshots.pop_back();
+            editor.redoEntryKinds.push_back(EditorUndoEntryKind::Snapshot);
             return false;
+        }
         Scene::RestoreSelectionState(snapshot.activeSelectedInstanceId, snapshot.selectedInstanceIds);
+        editor.undoEntryKinds.push_back(EditorUndoEntryKind::Snapshot);
         return true;
     }
 
@@ -858,6 +1024,14 @@ namespace EditorPanels
                     extern Engine* g_engineInstance;
                     EditorState& editor = g_engineInstance->GetEditorState();
 
+                    if (hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+                    {
+                        const ImVec2 rightDragDelta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right);
+                        const float rightDragDistanceSq = rightDragDelta.x * rightDragDelta.x + rightDragDelta.y * rightDragDelta.y;
+                        if (rightDragDistanceSq < 16.0f && !g_EditorGizmo.IsDragging())
+                            ImGui::OpenPopup("Scene Context##SceneViewport");
+                    }
+
                     if (ImGui::BeginDragDropTarget())
                     {
                         CameraData dropCamera{};
@@ -951,6 +1125,113 @@ namespace EditorPanels
                         ImGui::EndDragDropTarget();
                     }
 
+                    if (ImGui::BeginPopup("Scene Context##SceneViewport"))
+                    {
+                        CameraData contextCamera{};
+                        DirectX::XMFLOAT3 spawnPos{ 0.0f, 0.5f, 0.0f };
+                        if (Scene::TryGetLastRenderCameraData(contextCamera))
+                            spawnPos = ComputeSceneDropSpawnPosition(contextCamera, sceneMin, size, ImGui::GetMousePos());
+
+                        const bool canUndo = CanUndoCommand();
+                        const bool canRedo = CanRedoCommand();
+                        const bool hasSelection = (Scene::GetSelectedInstance() != nullptr);
+                        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndo))
+                            ExecuteUndoCommand();
+                        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canRedo))
+                            ExecuteRedoCommand();
+                        if (canUndo || canRedo)
+                            ImGui::Separator();
+                        if (ImGui::MenuItem("Focus", "F", false, hasSelection))
+                        {
+                            DirectX::XMFLOAT3 focusPoint{};
+                            if (TryGetCurrentSelectionAnchor(editor, focusPoint))
+                                gfx.GetSceneCamera().FocusOnPoint(focusPoint, ComputeSelectionFocusDistance(editor));
+                        }
+                        if (ImGui::MenuItem("Rename", nullptr, false, hasSelection))
+                        {
+                            if (SceneInstance* selected = Scene::GetSelectedInstance())
+                            {
+                                g_PendingSceneInstanceRenameId = selected->instanceId;
+                                strncpy_s(g_SceneInstanceRenameBuffer, selected->name.c_str(), _TRUNCATE);
+                                g_RequestOpenSceneInstanceRenamePopup = true;
+                            }
+                        }
+                        if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, hasSelection))
+                        {
+                            if (ExecuteEditorCommand(editor, std::make_unique<DuplicateSelectionCommand>(Scene::GetSelectedInstanceIds())))
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
+                        if (ImGui::MenuItem("Delete", "Delete", false, hasSelection))
+                        {
+                            DeleteCurrentSelection(editor);
+                        }
+                        if (ImGui::MenuItem("Create Empty Parent", nullptr, false, hasSelection))
+                            CreateEmptyParentForSelection(editor);
+                        if (ImGui::MenuItem("Save Prefab", nullptr, false, hasSelection))
+                            SaveCurrentSelectionAsPrefab(editor);
+                        if (ImGui::MenuItem("Unpack Prefab", nullptr, false, hasSelection && SelectionContainsPrefabInstance()))
+                        {
+                            if (ExecuteEditorCommand(editor, std::make_unique<UnpackPrefabCommand>(Scene::GetSelectedInstanceIds())))
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
+
+                        ImGui::Separator();
+                        if (ImGui::BeginMenu("Create"))
+                        {
+                            if (ImGui::MenuItem("Empty Object"))
+                            {
+                                PushUndoSnapshot(editor);
+                                Scene::CreateEmpty({ spawnPos.x, 0.0f, spawnPos.z });
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                            }
+                            if (ImGui::MenuItem("Cube"))
+                            {
+                                PushUndoSnapshot(editor);
+                                Scene::CreateCube(spawnPos);
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                            }
+                            if (ImGui::MenuItem("Sphere"))
+                            {
+                                PushUndoSnapshot(editor);
+                                Scene::CreateSphere(spawnPos);
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                            }
+                            if (ImGui::MenuItem("Plane"))
+                            {
+                                PushUndoSnapshot(editor);
+                                Scene::CreatePlane({ spawnPos.x, 0.0f, spawnPos.z });
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                            }
+                            if (ImGui::MenuItem("Cylinder"))
+                            {
+                                PushUndoSnapshot(editor);
+                                Scene::CreateCylinder(spawnPos);
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                            }
+                            if (ImGui::MenuItem("Capsule"))
+                            {
+                                PushUndoSnapshot(editor);
+                                Scene::CreateCapsule({ spawnPos.x, spawnPos.y + 0.25f, spawnPos.z });
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                            }
+                            if (ImGui::MenuItem("Torus"))
+                            {
+                                PushUndoSnapshot(editor);
+                                Scene::CreateTorus(spawnPos);
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                            }
+                            if (ImGui::MenuItem("Cone"))
+                            {
+                                PushUndoSnapshot(editor);
+                                Scene::CreateCone(spawnPos);
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                            }
+                            ImGui::EndMenu();
+                        }
+
+                        ImGui::EndPopup();
+                    }
+
                     const char* modeText = "Translate";
                     switch (g_EditorGizmo.GetMode())
                     {
@@ -1012,7 +1293,12 @@ namespace EditorPanels
 
                     if (focused && !Engine::IsKeyboardCapturedByUI())
                     {
-                        if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
+                        if (ImGui::GetIO().KeyCtrl && ImGui::GetIO().KeyShift && ImGui::IsKeyPressed(ImGuiKey_Z))
+                        {
+                            if (PerformRedo(editor))
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
+                        else if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
                         {
                             if (PerformUndo(editor))
                                 editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
@@ -1045,14 +1331,13 @@ namespace EditorPanels
 
                         if (ImGui::IsKeyPressed(ImGuiKey_Delete))
                         {
-                            PushUndoSnapshot(editor);
-                            Scene::DeleteSelectedInstance();
+                            DeleteCurrentSelection(editor);
                         }
 
                         if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D))
                         {
-                            PushUndoSnapshot(editor);
-                            Scene::DuplicateSelectedInstance();
+                            if (ExecuteEditorCommand(editor, std::make_unique<DuplicateSelectionCommand>(Scene::GetSelectedInstanceIds())))
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
                         }
                     }
 
@@ -1217,17 +1502,37 @@ namespace EditorPanels
                     if (g_engineInstance)
                     {
                         const ::Game& game = g_engineInstance->GetGame();
+                        const VaultMissionState missionState = game.GetVaultMissionState();
                         ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 64.0f));
+                        ImGui::TextColored(ImVec4(0.72f, 0.86f, 1.0f, 1.0f),
+                            "%s",
+                            game.GetVaultMissionObjectiveText());
+                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 82.0f));
                         ImGui::TextColored(ImVec4(0.72f, 0.86f, 1.0f, 1.0f),
                             "Vault: %d / %d nodes | Core: %s",
                             game.GetVaultActiveNodeCount(),
                             game.GetVaultTotalNodeCount(),
                             game.IsVaultCoreUnlocked() ? "Unlocked" : "Locked");
+                        if (missionState == VaultMissionState::Completed)
+                        {
+                            ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 100.0f));
+                            ImGui::TextColored(ImVec4(0.56f, 1.0f, 0.72f, 1.0f), "Exit Open - Reach the Gate");
+                        }
                     }
                     if (g_engineInstance && g_engineInstance->GetGame().HasInteractionTarget())
                     {
-                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 82.0f));
-                        ImGui::TextColored(ImVec4(1.0f, 0.92f, 0.45f, 1.0f), "Press E to activate");
+                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 118.0f));
+                        ImGui::TextColored(ImVec4(1.0f, 0.92f, 0.45f, 1.0f), "%s", g_engineInstance->GetGame().GetInteractionPrompt());
+                    }
+                    if (g_engineInstance && g_engineInstance->GetGame().HasVaultWarning())
+                    {
+                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 136.0f));
+                        ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.32f, 1.0f), "%s", g_engineInstance->GetGame().GetVaultWarningText());
+                    }
+                    if (g_engineInstance && g_engineInstance->GetGame().IsVaultMissionEscaped())
+                    {
+                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 154.0f));
+                        ImGui::TextColored(ImVec4(0.56f, 1.0f, 0.72f, 1.0f), "Vault Escaped!");
                     }
                 }
                 else
@@ -1412,6 +1717,17 @@ namespace EditorPanels
             else
                 Scene::SetSelectedInstanceId(instance->instanceId);
         }
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        {
+            if (!isSelected)
+            {
+                Scene::SetSelectedInstanceId(instance->instanceId);
+                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+            }
+            g_PendingSceneInstanceRenameId = instance->instanceId;
+            strncpy_s(g_SceneInstanceRenameBuffer, instance->name.c_str(), _TRUNCATE);
+            g_RequestOpenSceneInstanceRenamePopup = true;
+        }
 
         if (ImGui::BeginDragDropSource())
         {
@@ -1443,6 +1759,57 @@ namespace EditorPanels
                 }
             }
             ImGui::EndDragDropTarget();
+        }
+
+        if (ImGui::BeginPopupContextItem("##HierarchyItemContext"))
+        {
+            if (!isSelected)
+            {
+                Scene::SetSelectedInstanceId(instance->instanceId);
+                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+            }
+
+            const bool canUndo = CanUndoCommand();
+            const bool canRedo = CanRedoCommand();
+            const bool hasSelection = (Scene::GetSelectedInstance() != nullptr);
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndo))
+                ExecuteUndoCommand();
+            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canRedo))
+                ExecuteRedoCommand();
+            if (canUndo || canRedo)
+                ImGui::Separator();
+            if (ImGui::MenuItem("Focus", "F", false, hasSelection))
+            {
+                DirectX::XMFLOAT3 focusPoint{};
+                if (TryGetCurrentSelectionAnchor(editor, focusPoint))
+                    Graphics::GetInstance().GetSceneCamera().FocusOnPoint(focusPoint, ComputeSelectionFocusDistance(editor));
+            }
+            if (ImGui::MenuItem("Rename", nullptr, false, hasSelection))
+            {
+                g_PendingSceneInstanceRenameId = instance->instanceId;
+                strncpy_s(g_SceneInstanceRenameBuffer, instance->name.c_str(), _TRUNCATE);
+                g_RequestOpenSceneInstanceRenamePopup = true;
+            }
+            if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, hasSelection))
+            {
+                if (ExecuteEditorCommand(editor, std::make_unique<DuplicateSelectionCommand>(Scene::GetSelectedInstanceIds())))
+                    editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+            }
+            if (ImGui::MenuItem("Delete", "Delete", false, hasSelection))
+            {
+                DeleteCurrentSelection(editor);
+            }
+            if (ImGui::MenuItem("Create Empty Parent", nullptr, false, hasSelection))
+                CreateEmptyParentForSelection(editor);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Save Prefab", nullptr, false, hasSelection))
+                SaveCurrentSelectionAsPrefab(editor);
+            if (ImGui::MenuItem("Unpack Prefab", nullptr, false, hasSelection && SelectionContainsPrefabInstance()))
+            {
+                            if (ExecuteEditorCommand(editor, std::make_unique<UnpackPrefabCommand>(Scene::GetSelectedInstanceIds())))
+                                editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+            }
+            ImGui::EndPopup();
         }
 
         if (open)
@@ -1528,8 +1895,7 @@ namespace EditorPanels
                         ImGui::BeginDisabled();
                     if (ImGui::Button("Keep World##Reparent", ImVec2(120.0f, 0.0f)))
                     {
-                        PushUndoSnapshot(editor);
-                        if (Scene::SetParentInstance(g_PendingReparentChildId, g_PendingReparentParentId, true))
+                        if (ExecuteEditorCommand(editor, std::make_unique<ReparentCommand>(g_PendingReparentChildId, g_PendingReparentParentId, true)))
                             editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
                         g_PendingReparentChildId = 0;
                         g_PendingReparentParentId = 0;
@@ -1547,8 +1913,7 @@ namespace EditorPanels
                     ImGui::SameLine();
                     if (ImGui::Button("Keep Local##Reparent", ImVec2(120.0f, 0.0f)))
                     {
-                        PushUndoSnapshot(editor);
-                        if (Scene::SetParentInstance(g_PendingReparentChildId, g_PendingReparentParentId, false))
+                        if (ExecuteEditorCommand(editor, std::make_unique<ReparentCommand>(g_PendingReparentChildId, g_PendingReparentParentId, false)))
                             editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
                         g_PendingReparentChildId = 0;
                         g_PendingReparentParentId = 0;
@@ -1562,6 +1927,44 @@ namespace EditorPanels
                         g_PendingReparentChildId = 0;
                         g_PendingReparentParentId = 0;
                         g_PendingReparentKeepWorldReason.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::EndPopup();
+                }
+
+                if (g_RequestOpenSceneInstanceRenamePopup)
+                {
+                    ImGui::OpenPopup("Rename Scene Object##Hierarchy");
+                    g_RequestOpenSceneInstanceRenamePopup = false;
+                }
+
+                if (ImGui::BeginPopupModal("Rename Scene Object##Hierarchy", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    SceneInstance* pendingRenameInstance = FindSceneInstanceById(g_PendingSceneInstanceRenameId);
+                    ImGui::TextUnformatted("Rename selected object");
+                    ImGui::Separator();
+                    ImGui::InputText("Name", g_SceneInstanceRenameBuffer, IM_ARRAYSIZE(g_SceneInstanceRenameBuffer));
+
+                    if (ImGui::Button("Rename##SceneInstance"))
+                    {
+                        if (pendingRenameInstance && g_SceneInstanceRenameBuffer[0] != '\0')
+                        {
+                            ExecuteEditorCommand(editor, std::make_unique<RenameSceneInstanceCommand>(
+                                pendingRenameInstance->instanceId,
+                                pendingRenameInstance->name,
+                                g_SceneInstanceRenameBuffer));
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        }
+                        g_PendingSceneInstanceRenameId = 0;
+                        g_SceneInstanceRenameBuffer[0] = '\0';
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel##SceneInstanceRename"))
+                    {
+                        g_PendingSceneInstanceRenameId = 0;
+                        g_SceneInstanceRenameBuffer[0] = '\0';
                         ImGui::CloseCurrentPopup();
                     }
 
@@ -1662,16 +2065,13 @@ namespace EditorPanels
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Duplicate"))
                     {
-                        PushUndoSnapshot(editor);
-                        Scene::DuplicateSelectedInstance();
-                        editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        if (ExecuteEditorCommand(editor, std::make_unique<DuplicateSelectionCommand>(Scene::GetSelectedInstanceIds())))
+                            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
                     }
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Delete"))
                     {
-                        PushUndoSnapshot(editor);
-                        Scene::DeleteSelectedInstance();
-                        editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                        DeleteCurrentSelection(editor);
                     }
                     ImGui::SameLine();
                     if (ImGui::SmallButton("Save Prefab"))
@@ -2812,6 +3212,135 @@ namespace EditorPanels
         if (g_debugOverlay.open) g_debugOverlay.draw();
         if (g_diagnostics.open) g_diagnostics.draw();
         if (g_logViewer.open) g_logViewer.draw();
+
+        if (g_engineInstance &&
+            Engine::GetState() == Engine::State::Editing &&
+            !Engine::IsKeyboardCapturedByUI() &&
+            !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
+            Scene::GetSelectedInstance() != nullptr &&
+            ImGui::IsKeyPressed(ImGuiKey_Delete))
+        {
+            EditorState& editor = g_engineInstance->GetEditorState();
+            DeleteCurrentSelection(editor);
+        }
+    }
+
+    bool ExecuteDuplicateSelectionCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+        return DuplicateCurrentSelection(g_engineInstance->GetEditorState());
+    }
+
+    bool ExecuteFocusSelectionCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+
+        EditorState& editor = g_engineInstance->GetEditorState();
+        DirectX::XMFLOAT3 focusPoint{};
+        if (!TryGetCurrentSelectionAnchor(editor, focusPoint))
+            return false;
+
+        Graphics::GetInstance().GetSceneCamera().FocusOnPoint(focusPoint, ComputeSelectionFocusDistance(editor));
+        editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+        return true;
+    }
+
+    bool ExecuteRenameSelectionCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+
+        SceneInstance* selected = Scene::GetSelectedInstance();
+        if (!selected)
+            return false;
+
+        g_PendingSceneInstanceRenameId = selected->instanceId;
+        strncpy_s(g_SceneInstanceRenameBuffer, selected->name.c_str(), _TRUNCATE);
+        g_RequestOpenSceneInstanceRenamePopup = true;
+        return true;
+    }
+
+    bool ExecuteCreateEmptyParentCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+        return CreateEmptyParentForSelection(g_engineInstance->GetEditorState());
+    }
+
+    bool ExecuteSaveSelectionAsPrefabCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+        return SaveCurrentSelectionAsPrefab(g_engineInstance->GetEditorState());
+    }
+
+    bool ExecuteUnpackPrefabCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+
+        EditorState& editor = g_engineInstance->GetEditorState();
+        if (!SelectionContainsPrefabInstance())
+            return false;
+
+        const bool success = ExecuteEditorCommand(editor, std::make_unique<UnpackPrefabCommand>(Scene::GetSelectedInstanceIds()));
+        if (success)
+            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+        return success;
+    }
+
+    bool CanUnpackPrefabSelection()
+    {
+        if (!g_engineInstance)
+            return false;
+        return SelectionContainsPrefabInstance();
+    }
+
+    bool ExecuteUndoCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+
+        EditorState& editor = g_engineInstance->GetEditorState();
+        const bool success = PerformUndo(editor);
+        if (success)
+            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+        return success;
+    }
+
+    bool ExecuteRedoCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+
+        EditorState& editor = g_engineInstance->GetEditorState();
+        const bool success = PerformRedo(editor);
+        if (success)
+            editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+        return success;
+    }
+
+    bool CanUndoCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+        return !g_engineInstance->GetEditorState().undoEntryKinds.empty();
+    }
+
+    bool CanRedoCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+        return !g_engineInstance->GetEditorState().redoEntryKinds.empty();
+    }
+
+    bool ExecuteDeleteSelectionCommand()
+    {
+        if (!g_engineInstance)
+            return false;
+        return DeleteCurrentSelection(g_engineInstance->GetEditorState());
     }
 
     static int GetAssetTileColumnCount(float availableWidth, float tileWidth, float spacing)
@@ -2944,6 +3473,14 @@ namespace EditorPanels
     {
         g_SelectedAssetId = assetId;
         g_PendingAssetRevealId = assetId;
+    }
+
+    void RevealAssetInBrowser(const std::string& assetId)
+    {
+        if (assetId.empty())
+            return;
+        QueueAssetSelection(assetId);
+        Assets().open = true;
     }
 
     static void QueueMaterialSelection(int materialIndex, const std::string& materialName)
@@ -3198,7 +3735,7 @@ namespace EditorPanels
         drawList->AddCircleFilled(targetScreen, kRadius - 5.0f, fillColor, 24);
         drawList->AddCircle(targetScreen, kRadius, ringColor, 24, 2.5f);
         drawList->AddCircle(targetScreen, kRadius + 6.0f, IM_COL32(32, 24, 10, 220), 24, 1.5f);
-        drawList->AddText(ImVec2(targetScreen.x + 18.0f, targetScreen.y - 8.0f), ringColor, "Activate");
+        drawList->AddText(ImVec2(targetScreen.x + 18.0f, targetScreen.y - 8.0f), ringColor, game.GetInteractionActionLabel());
     }
 
     static void SetInstanceAsMainCamera(SceneInstance* selected)

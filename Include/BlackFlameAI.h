@@ -209,6 +209,8 @@ public:
         activeSuggestions.clear();
         suggestionCooldown = 0.0f;
         lastRecommendationNudgeAt = {};
+        lastRecommendationKey.clear();
+        lastRecommendationWasHighConfidence = false;
     }
 
     void Shutdown()
@@ -427,26 +429,35 @@ public:
             success ? std::chrono::milliseconds(300) : std::chrono::milliseconds(900));
     }
 
-    void NotifySuggestionConfidence(float topScore)
+    void NotifySuggestionConfidence(const std::string& recommendationKey, float topScore)
     {
-        const auto now = std::chrono::steady_clock::now();
-        const auto cooldown = std::chrono::milliseconds(1800);
-        if (lastRecommendationNudgeAt != std::chrono::steady_clock::time_point{} && now - lastRecommendationNudgeAt < cooldown)
+        if (recommendationKey.empty())
             return;
 
-        if (topScore > 85.0f)
+        const auto now = std::chrono::steady_clock::now();
+        const auto cooldown = std::chrono::milliseconds(1800);
+        const bool isHighConfidence = topScore > 85.0f;
+        const bool isMediumConfidence = topScore > 60.0f;
+        const bool recommendationChanged = recommendationKey != lastRecommendationKey;
+        const bool gainedHighConfidence = isHighConfidence && (recommendationChanged || !lastRecommendationWasHighConfidence);
+        const bool canNudge = lastRecommendationNudgeAt == std::chrono::steady_clock::time_point{} || now - lastRecommendationNudgeAt >= cooldown;
+
+        if (gainedHighConfidence && canNudge)
         {
             AccumulatePulse(visualState.AdminPulse, 0.12f);
             visualState.ColorBias = { 1.0f, 0.80f, 0.40f };
             BlackFlameAudio::Get().Play(BlackFlameSoundEvent::HighConfidence, BlackFlameSoundStyle::Arcane, topScore / 100.0f);
             lastRecommendationNudgeAt = now;
         }
-        else if (topScore > 60.0f)
+        else if (isMediumConfidence && recommendationChanged && canNudge)
         {
             AccumulatePulse(visualState.ExecPulse, 0.06f);
             AccumulatePulse(visualState.FocusPulse, 0.05f);
             lastRecommendationNudgeAt = now;
         }
+
+        lastRecommendationKey = recommendationKey;
+        lastRecommendationWasHighConfidence = isHighConfidence;
     }
 
     void OnSceneEvent(const SceneEvent& evt)
@@ -1433,4 +1444,6 @@ private:
     std::vector<BlackFlameSuggestion> activeSuggestions;
     float suggestionCooldown = 0.0f;
     std::chrono::steady_clock::time_point lastRecommendationNudgeAt{};
+    std::string lastRecommendationKey;
+    bool lastRecommendationWasHighConfidence = false;
 };

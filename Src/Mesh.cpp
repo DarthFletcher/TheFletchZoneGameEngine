@@ -165,8 +165,8 @@ namespace
         {
             const uint16_t base = static_cast<uint16_t>(slice * 2u);
             indices.push_back(base);
-            indices.push_back(static_cast<uint16_t>(base + 1u));
             indices.push_back(static_cast<uint16_t>(base + 2u));
+            indices.push_back(static_cast<uint16_t>(base + 1u));
         }
 
         const uint16_t baseCenter = static_cast<uint16_t>(vertices.size());

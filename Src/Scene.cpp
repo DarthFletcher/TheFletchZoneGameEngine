@@ -12,10 +12,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
+#include <unordered_set>
 #include <fstream>
 #include <filesystem>
+#include <format>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -151,6 +155,18 @@ namespace
             current = FindSceneInstanceByIdConst(current->parentInstanceId);
         }
         return false;
+    }
+
+    static void AppendSubtreeInstanceIds(uint32_t rootInstanceId, std::vector<uint32_t>& outIds)
+    {
+        if (rootInstanceId == 0)
+            return;
+
+        if (std::find(outIds.begin(), outIds.end(), rootInstanceId) == outIds.end())
+            outIds.push_back(rootInstanceId);
+
+        for (uint32_t childId : Scene::GetChildInstanceIds(rootInstanceId))
+            AppendSubtreeInstanceIds(childId, outIds);
     }
 
     static bool HasAnyEnabledCamera()
@@ -1135,6 +1151,7 @@ namespace
 
         float idValue = 0.0f;
         float parentValue = 0.0f;
+        float prefabLocalIdValue = 0.0f;
         float materialValue = 0.0f;
         float primitiveValue = 0.0f;
         float vaultTypeValue = 0.0f;
@@ -1142,6 +1159,7 @@ namespace
             return false;
         if (readIdAndParent)
             readNumber("\"parent\"", parentValue);
+        readNumber("\"prefabLocalId\"", prefabLocalIdValue);
         if (!readString("\"name\"", outInstance.name)) return false;
         readString("\"prefabSource\"", outInstance.prefabSourcePath);
         if (!readVector3("\"position\"", outInstance.position)) return false;
@@ -1159,6 +1177,7 @@ namespace
 
         outInstance.instanceId = static_cast<uint32_t>(idValue);
         outInstance.parentInstanceId = static_cast<uint32_t>(parentValue);
+        outInstance.prefabLocalInstanceId = static_cast<uint32_t>(prefabLocalIdValue);
         outInstance.materialIndex = static_cast<int>(materialValue);
         outInstance.primitive = ScenePrimitiveFromValue(static_cast<int>(primitiveValue));
         outInstance.vaultType = static_cast<VaultType>(static_cast<int>(vaultTypeValue));
@@ -1211,17 +1230,644 @@ namespace
         return result;
     }
 
+    static std::string TrimStringCopy(std::string value)
+    {
+        const auto isSpace = [](unsigned char c) { return std::isspace(c) != 0; };
+        value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](char c) { return !isSpace(static_cast<unsigned char>(c)); }));
+        value.erase(std::find_if(value.rbegin(), value.rend(), [&](char c) { return !isSpace(static_cast<unsigned char>(c)); }).base(), value.end());
+        return value;
+    }
+
+    static std::string NormalizePrefabCategory(std::string category)
+    {
+        category = TrimStringCopy(std::move(category));
+        if (category.empty())
+            return "General";
+        return category;
+    }
+
+    static std::string NormalizePrefabTag(std::string tag)
+    {
+        return TrimStringCopy(std::move(tag));
+    }
+
+    static bool TryReadJsonStringField(const std::string& content, const std::string& key, std::string& outValue);
+    static bool TryLoadPrefabAssetText(const std::string& path, std::string& outContent);
+
+    static std::vector<std::string> NormalizePrefabTags(const std::vector<std::string>& tags)
+    {
+        std::vector<std::string> normalized;
+        std::unordered_set<std::string> seen;
+        for (const std::string& tag : tags)
+        {
+            std::string cleaned = NormalizePrefabTag(tag);
+            if (cleaned.empty())
+                continue;
+
+            std::string lowered = cleaned;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c)
+            {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (!seen.insert(lowered).second)
+                continue;
+            normalized.push_back(std::move(cleaned));
+        }
+        return normalized;
+    }
+
+    struct PrefabVariantOverrides
+    {
+        bool Name = false;
+        bool Position = false;
+        bool Rotation = false;
+        bool Scale = false;
+        bool Visible = false;
+        bool Material = false;
+        bool VaultType = false;
+
+        bool Any() const
+        {
+            return Name || Position || Rotation || Scale || Visible || Material || VaultType;
+        }
+    };
+
+    struct PrefabVariantInstance
+    {
+        SceneInstance Instance;
+        PrefabVariantOverrides Overrides;
+    };
+
+    static std::string InferPrefabCategoryFromPath(const std::string& path)
+    {
+        const std::filesystem::path prefabPath(path);
+        const std::filesystem::path prefabRoot = std::filesystem::path("Assets") / "Prefabs";
+        std::error_code ec;
+        const std::filesystem::path parent = prefabPath.parent_path();
+        const std::filesystem::path relativeParent = parent.lexically_relative(prefabRoot);
+        const std::string relativeParentString = relativeParent.generic_string();
+        if (!relativeParent.empty() && relativeParentString != "." && relativeParentString.find("..") == std::string::npos)
+            return NormalizePrefabCategory(relativeParentString);
+        return "General";
+    }
+
+    static std::string ResolvePrefabReferencePath(const std::string& sourcePath, const std::string& referencePath)
+    {
+        if (referencePath.empty())
+            return {};
+
+        const std::filesystem::path reference(referencePath);
+        if (reference.is_absolute())
+            return reference.lexically_normal().string();
+
+        const std::filesystem::path resolved = std::filesystem::path(sourcePath).parent_path() / reference;
+        return resolved.lexically_normal().string();
+    }
+
+    static bool TryReadPrefabBaseReferenceRaw(const std::string& path, std::string& outBasePrefabPath)
+    {
+        outBasePrefabPath.clear();
+
+        std::string content;
+        if (!TryLoadPrefabAssetText(path, content))
+            return false;
+
+        std::string parsedBasePrefab;
+        if (TryReadJsonStringField(content, "\"basePrefab\"", parsedBasePrefab))
+            outBasePrefabPath = ResolvePrefabReferencePath(path, parsedBasePrefab);
+        return true;
+    }
+
+    static bool TryCollectPrefabInheritanceChain(const std::string& path, std::string* outCyclePath)
+    {
+        std::unordered_set<std::string> visited;
+        std::string currentPath = std::filesystem::path(path).lexically_normal().string();
+        while (!currentPath.empty())
+        {
+            if (!visited.insert(currentPath).second)
+            {
+                if (outCyclePath)
+                    *outCyclePath = currentPath;
+                return false;
+            }
+
+            std::string nextBasePath;
+            if (!TryReadPrefabBaseReferenceRaw(currentPath, nextBasePath) || nextBasePath.empty())
+                return true;
+            currentPath = std::filesystem::path(nextBasePath).lexically_normal().string();
+        }
+
+        return true;
+    }
+
+    static bool WouldPrefabReferenceCreateCycle(const std::string& prefabPath, const std::string& candidateBasePath, std::string* outCyclePath)
+    {
+        const std::string normalizedPrefabPath = std::filesystem::path(prefabPath).lexically_normal().string();
+        std::string currentPath = std::filesystem::path(candidateBasePath).lexically_normal().string();
+        std::unordered_set<std::string> visited;
+
+        while (!currentPath.empty())
+        {
+            if (currentPath == normalizedPrefabPath)
+            {
+                if (outCyclePath)
+                    *outCyclePath = currentPath;
+                return true;
+            }
+            if (!visited.insert(currentPath).second)
+            {
+                if (outCyclePath)
+                    *outCyclePath = currentPath;
+                return true;
+            }
+
+            std::string nextBasePath;
+            if (!TryReadPrefabBaseReferenceRaw(currentPath, nextBasePath) || nextBasePath.empty())
+                return false;
+            currentPath = std::filesystem::path(nextBasePath).lexically_normal().string();
+        }
+
+        return false;
+    }
+
+    static bool TryReadJsonStringField(const std::string& content, const std::string& key, std::string& outValue)
+    {
+        const size_t keyPos = content.find(key);
+        if (keyPos == std::string::npos)
+            return false;
+        const size_t colon = content.find(':', keyPos);
+        if (colon == std::string::npos)
+            return false;
+        const size_t begin = content.find('"', colon + 1);
+        if (begin == std::string::npos)
+            return false;
+        size_t end = begin + 1;
+        while ((end = content.find('"', end)) != std::string::npos)
+        {
+            if (content[end - 1] != '\\')
+                break;
+            ++end;
+        }
+        if (end == std::string::npos)
+            return false;
+        outValue = UnescapeJsonString(content.substr(begin + 1, end - begin - 1));
+        return true;
+    }
+
+    static PrefabVariantOverrides ParsePrefabVariantOverridesFromJson(const std::string& content)
+    {
+        PrefabVariantOverrides overrides{};
+
+        auto readBool = [&](const std::string& key, bool& outValue) -> bool
+        {
+            const size_t keyPos = content.find(key);
+            if (keyPos == std::string::npos) return false;
+            const size_t colon = content.find(':', keyPos);
+            if (colon == std::string::npos) return false;
+            const size_t begin = content.find_first_not_of(" \t\r\n", colon + 1);
+            if (begin == std::string::npos) return false;
+            if (content.compare(begin, 4, "true") == 0) { outValue = true; return true; }
+            if (content.compare(begin, 5, "false") == 0) { outValue = false; return true; }
+            return false;
+        };
+
+        readBool("\"overrideName\"", overrides.Name);
+        readBool("\"overridePosition\"", overrides.Position);
+        readBool("\"overrideRotation\"", overrides.Rotation);
+        readBool("\"overrideScale\"", overrides.Scale);
+        readBool("\"overrideVisible\"", overrides.Visible);
+        readBool("\"overrideMaterial\"", overrides.Material);
+        readBool("\"overrideVaultType\"", overrides.VaultType);
+        return overrides;
+    }
+
+    static bool TryReadJsonStringArrayField(const std::string& content, const std::string& key, std::vector<std::string>& outValues)
+    {
+        outValues.clear();
+
+        const size_t keyPos = content.find(key);
+        if (keyPos == std::string::npos)
+            return false;
+        const size_t colon = content.find(':', keyPos);
+        if (colon == std::string::npos)
+            return false;
+        const size_t open = content.find('[', colon + 1);
+        if (open == std::string::npos)
+            return false;
+        const size_t close = content.find(']', open + 1);
+        if (close == std::string::npos)
+            return false;
+
+        size_t pos = open + 1;
+        while (pos < close)
+        {
+            pos = content.find('"', pos);
+            if (pos == std::string::npos || pos >= close)
+                break;
+
+            const size_t begin = pos;
+            size_t end = begin + 1;
+            while ((end = content.find('"', end)) != std::string::npos)
+            {
+                if (content[end - 1] != '\\')
+                    break;
+                ++end;
+            }
+            if (end == std::string::npos || end > close)
+                return false;
+
+            outValues.push_back(UnescapeJsonString(content.substr(begin + 1, end - begin - 1)));
+            pos = end + 1;
+        }
+
+        return true;
+    }
+
+    static bool TryLoadPrefabAssetText(const std::string& path, std::string& outContent)
+    {
+        std::ifstream file(path);
+        if (!file.is_open())
+            return false;
+        outContent.assign((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        return true;
+    }
+
+    static bool UpsertPrefabCategoryField(std::string& content, const std::string& category)
+    {
+        const std::string escapedCategory = EscapeJsonString(NormalizePrefabCategory(category));
+        const std::string key = "\"category\"";
+        const size_t keyPos = content.find(key);
+        if (keyPos != std::string::npos)
+        {
+            const size_t colon = content.find(':', keyPos);
+            if (colon == std::string::npos)
+                return false;
+            const size_t begin = content.find('"', colon + 1);
+            if (begin == std::string::npos)
+                return false;
+            size_t end = begin + 1;
+            while ((end = content.find('"', end)) != std::string::npos)
+            {
+                if (content[end - 1] != '\\')
+                    break;
+                ++end;
+            }
+            if (end == std::string::npos)
+                return false;
+            content.replace(begin + 1, end - begin - 1, escapedCategory);
+            return true;
+        }
+
+        const size_t versionPos = content.find("\"prefabVersion\"");
+        if (versionPos == std::string::npos)
+            return false;
+        const size_t lineEnd = content.find('\n', versionPos);
+        if (lineEnd == std::string::npos)
+            return false;
+        content.insert(lineEnd + 1, std::format("  \"category\": \"{}\",\n", escapedCategory));
+        return true;
+    }
+
+    static std::string BuildPrefabTagsJsonArray(const std::vector<std::string>& tags)
+    {
+        std::string result = "[";
+        for (size_t i = 0; i < tags.size(); ++i)
+        {
+            if (i > 0)
+                result += ", ";
+            result += std::format("\"{}\"", EscapeJsonString(tags[i]));
+        }
+        result += "]";
+        return result;
+    }
+
+    static bool UpsertPrefabTagsField(std::string& content, const std::vector<std::string>& tags)
+    {
+        const std::string serializedTags = BuildPrefabTagsJsonArray(NormalizePrefabTags(tags));
+        const std::string key = "\"tags\"";
+        const size_t keyPos = content.find(key);
+        if (keyPos != std::string::npos)
+        {
+            const size_t colon = content.find(':', keyPos);
+            if (colon == std::string::npos)
+                return false;
+            const size_t begin = content.find('[', colon + 1);
+            if (begin == std::string::npos)
+                return false;
+            const size_t end = content.find(']', begin + 1);
+            if (end == std::string::npos)
+                return false;
+            content.replace(begin, end - begin + 1, serializedTags);
+            return true;
+        }
+
+        const size_t categoryPos = content.find("\"category\"");
+        size_t insertAfterPos = categoryPos;
+        if (insertAfterPos == std::string::npos)
+            insertAfterPos = content.find("\"prefabVersion\"");
+        if (insertAfterPos == std::string::npos)
+            return false;
+        const size_t lineEnd = content.find('\n', insertAfterPos);
+        if (lineEnd == std::string::npos)
+            return false;
+        content.insert(lineEnd + 1, std::format("  \"tags\": {},\n", serializedTags));
+        return true;
+    }
+
+    static bool SavePrefabAssetText(const std::string& path, const std::string& content)
+    {
+        std::ofstream file(path, std::ios::trunc);
+        if (!file.is_open())
+            return false;
+        file << content;
+        return file.good();
+    }
+
+    static void WriteSceneInstanceJson(std::ostream& out, const SceneInstance& instance, bool includeIdAndParent, int indentSpaces)
+    {
+        const std::string indent(static_cast<size_t>(indentSpaces), ' ');
+        out << indent << "{\n";
+        if (includeIdAndParent)
+        {
+            out << indent << "  \"id\": " << instance.instanceId << ",\n";
+            out << indent << "  \"parent\": " << instance.parentInstanceId << ",\n";
+        }
+        out << indent << "  \"prefabLocalId\": " << instance.prefabLocalInstanceId << ",\n";
+        out << indent << "  \"name\": \"" << EscapeJsonString(instance.name) << "\",\n";
+        out << indent << "  \"prefabSource\": \"" << EscapeJsonString(instance.prefabSourcePath) << "\",\n";
+        out << indent << "  \"position\": [" << instance.position.x << ", " << instance.position.y << ", " << instance.position.z << "],\n";
+        out << indent << "  \"rotation\": [" << instance.rotation.x << ", " << instance.rotation.y << ", " << instance.rotation.z << "],\n";
+        out << indent << "  \"scale\": [" << instance.scale.x << ", " << instance.scale.y << ", " << instance.scale.z << "],\n";
+        out << indent << "  \"visible\": " << (instance.visible ? "true" : "false") << ",\n";
+        out << indent << "  \"material\": " << instance.materialIndex << ",\n";
+        out << indent << "  \"primitive\": " << static_cast<int>(instance.primitive) << ",\n";
+        out << indent << "  \"vaultType\": " << static_cast<int>(instance.vaultType) << ",\n";
+        out << indent << "  \"cameraEnabled\": " << (instance.camera.enabled ? "true" : "false") << ",\n";
+        out << indent << "  \"cameraMain\": " << (instance.camera.isMain ? "true" : "false") << ",\n";
+        out << indent << "  \"cameraFovY\": " << instance.camera.fovY << ",\n";
+        out << indent << "  \"cameraNearClip\": " << instance.camera.nearClip << ",\n";
+        out << indent << "  \"cameraFarClip\": " << instance.camera.farClip << "\n";
+        out << indent << "}";
+    }
+
+    static void WritePrefabVariantInstanceJson(std::ostream& out, const PrefabVariantInstance& instance, int indentSpaces)
+    {
+        const std::string indent(static_cast<size_t>(indentSpaces), ' ');
+        out << indent << "{\n";
+        out << indent << "  \"id\": " << instance.Instance.instanceId << ",\n";
+        out << indent << "  \"parent\": " << instance.Instance.parentInstanceId << ",\n";
+        out << indent << "  \"prefabLocalId\": " << instance.Instance.prefabLocalInstanceId << ",\n";
+        out << indent << "  \"name\": \"" << EscapeJsonString(instance.Instance.name) << "\",\n";
+        out << indent << "  \"prefabSource\": \"\",\n";
+        out << indent << "  \"position\": [" << instance.Instance.position.x << ", " << instance.Instance.position.y << ", " << instance.Instance.position.z << "],\n";
+        out << indent << "  \"rotation\": [" << instance.Instance.rotation.x << ", " << instance.Instance.rotation.y << ", " << instance.Instance.rotation.z << "],\n";
+        out << indent << "  \"scale\": [" << instance.Instance.scale.x << ", " << instance.Instance.scale.y << ", " << instance.Instance.scale.z << "],\n";
+        out << indent << "  \"visible\": " << (instance.Instance.visible ? "true" : "false") << ",\n";
+        out << indent << "  \"material\": " << instance.Instance.materialIndex << ",\n";
+        out << indent << "  \"primitive\": " << static_cast<int>(instance.Instance.primitive) << ",\n";
+        out << indent << "  \"vaultType\": " << static_cast<int>(instance.Instance.vaultType) << ",\n";
+        out << indent << "  \"cameraEnabled\": " << (instance.Instance.camera.enabled ? "true" : "false") << ",\n";
+        out << indent << "  \"cameraMain\": " << (instance.Instance.camera.isMain ? "true" : "false") << ",\n";
+        out << indent << "  \"cameraFovY\": " << instance.Instance.camera.fovY << ",\n";
+        out << indent << "  \"cameraNearClip\": " << instance.Instance.camera.nearClip << ",\n";
+        out << indent << "  \"cameraFarClip\": " << instance.Instance.camera.farClip << ",\n";
+        out << indent << "  \"overrideName\": " << (instance.Overrides.Name ? "true" : "false") << ",\n";
+        out << indent << "  \"overridePosition\": " << (instance.Overrides.Position ? "true" : "false") << ",\n";
+        out << indent << "  \"overrideRotation\": " << (instance.Overrides.Rotation ? "true" : "false") << ",\n";
+        out << indent << "  \"overrideScale\": " << (instance.Overrides.Scale ? "true" : "false") << ",\n";
+        out << indent << "  \"overrideVisible\": " << (instance.Overrides.Visible ? "true" : "false") << ",\n";
+        out << indent << "  \"overrideMaterial\": " << (instance.Overrides.Material ? "true" : "false") << ",\n";
+        out << indent << "  \"overrideVaultType\": " << (instance.Overrides.VaultType ? "true" : "false") << "\n";
+        out << indent << "}";
+    }
+
+    static bool TryLoadPrefabAssetInstancesRaw(const std::string& path, std::vector<SceneInstance>& outInstances)
+    {
+        outInstances.clear();
+
+        std::string content;
+        if (!TryLoadPrefabAssetText(path, content))
+            return false;
+
+        const size_t instancesKeyPos = content.find("\"instances\"");
+        if (instancesKeyPos == std::string::npos)
+        {
+            SceneInstance instance{};
+            if (!ParseSceneInstanceFromJson(content, instance, false))
+                return false;
+            instance.instanceId = 1;
+            instance.parentInstanceId = 0;
+            outInstances.push_back(instance);
+            return true;
+        }
+
+        const size_t arrayBegin = content.find('[', instancesKeyPos);
+        if (arrayBegin == std::string::npos)
+            return false;
+
+        size_t pos = arrayBegin + 1;
+        int depth = 0;
+        size_t objectBegin = std::string::npos;
+        while (pos < content.size())
+        {
+            const char c = content[pos];
+            if (c == '{')
+            {
+                if (depth == 0)
+                    objectBegin = pos;
+                ++depth;
+            }
+            else if (c == '}')
+            {
+                --depth;
+                if (depth == 0 && objectBegin != std::string::npos)
+                {
+                    SceneInstance instance{};
+                    if (!ParseSceneInstanceFromJson(content.substr(objectBegin, pos - objectBegin + 1), instance, true))
+                        return false;
+                    outInstances.push_back(instance);
+                    objectBegin = std::string::npos;
+                }
+            }
+            else if (c == ']' && depth == 0)
+            {
+                break;
+            }
+            ++pos;
+        }
+
+        return !outInstances.empty();
+    }
+
+    static SceneInstance* FindBestMatchingPrefabInstance(std::vector<SceneInstance>& instances, const PrefabVariantInstance& variant)
+    {
+        if (variant.Instance.prefabLocalInstanceId != 0)
+        {
+            auto it = std::find_if(instances.begin(), instances.end(), [&](const SceneInstance& instance)
+            {
+                return instance.instanceId == variant.Instance.prefabLocalInstanceId;
+            });
+            if (it != instances.end())
+                return &(*it);
+        }
+
+        auto it = std::find_if(instances.begin(), instances.end(), [&](const SceneInstance& instance)
+        {
+            return instance.instanceId == variant.Instance.instanceId;
+        });
+        if (it != instances.end())
+            return &(*it);
+
+        it = std::find_if(instances.begin(), instances.end(), [&](const SceneInstance& instance)
+        {
+            return instance.parentInstanceId == variant.Instance.parentInstanceId &&
+                instance.primitive == variant.Instance.primitive &&
+                instance.vaultType == variant.Instance.vaultType &&
+                instance.name == variant.Instance.name;
+        });
+        if (it != instances.end())
+            return &(*it);
+
+        it = std::find_if(instances.begin(), instances.end(), [&](const SceneInstance& instance)
+        {
+            return instance.parentInstanceId == variant.Instance.parentInstanceId &&
+                instance.primitive == variant.Instance.primitive &&
+                instance.vaultType == variant.Instance.vaultType;
+        });
+        if (it != instances.end())
+            return &(*it);
+
+        if (instances.size() == 1)
+            return &instances.front();
+        return nullptr;
+    }
+
+    static bool TryLoadPrefabVariantInstancesRaw(const std::string& path, std::vector<PrefabVariantInstance>& outInstances)
+    {
+        outInstances.clear();
+
+        std::string content;
+        if (!TryLoadPrefabAssetText(path, content))
+            return false;
+
+        const size_t instancesKeyPos = content.find("\"instances\"");
+        if (instancesKeyPos == std::string::npos)
+        {
+            PrefabVariantInstance instance{};
+            if (!ParseSceneInstanceFromJson(content, instance.Instance, false))
+                return false;
+            instance.Instance.instanceId = 1;
+            instance.Instance.parentInstanceId = 0;
+            instance.Overrides = ParsePrefabVariantOverridesFromJson(content);
+            outInstances.push_back(std::move(instance));
+            return true;
+        }
+
+        const size_t arrayBegin = content.find('[', instancesKeyPos);
+        if (arrayBegin == std::string::npos)
+            return false;
+
+        size_t pos = arrayBegin + 1;
+        int depth = 0;
+        size_t objectBegin = std::string::npos;
+        while (pos < content.size())
+        {
+            const char c = content[pos];
+            if (c == '{')
+            {
+                if (depth == 0)
+                    objectBegin = pos;
+                ++depth;
+            }
+            else if (c == '}')
+            {
+                --depth;
+                if (depth == 0 && objectBegin != std::string::npos)
+                {
+                    const std::string objectJson = content.substr(objectBegin, pos - objectBegin + 1);
+                    PrefabVariantInstance instance{};
+                    if (!ParseSceneInstanceFromJson(objectJson, instance.Instance, true))
+                        return false;
+                    instance.Overrides = ParsePrefabVariantOverridesFromJson(objectJson);
+                    outInstances.push_back(std::move(instance));
+                    objectBegin = std::string::npos;
+                }
+            }
+            else if (c == ']' && depth == 0)
+            {
+                break;
+            }
+            ++pos;
+        }
+
+        return !outInstances.empty();
+    }
+
+    static bool TryLoadPrefabAssetInstances(const std::string& path, std::vector<SceneInstance>& outInstances)
+    {
+        outInstances.clear();
+
+        std::string cyclePath;
+        if (!TryCollectPrefabInheritanceChain(path, &cyclePath))
+            return false;
+
+        std::string basePrefabPath;
+        if (!Scene::GetPrefabAssetBasePrefab(path, basePrefabPath) || basePrefabPath.empty())
+            return TryLoadPrefabAssetInstancesRaw(path, outInstances);
+
+        if (basePrefabPath == std::filesystem::path(path).lexically_normal().string())
+            return false;
+
+        if (!TryLoadPrefabAssetInstances(basePrefabPath, outInstances))
+            return false;
+
+        std::vector<PrefabVariantInstance> variantInstances;
+        if (!TryLoadPrefabVariantInstancesRaw(path, variantInstances))
+            return false;
+
+        for (const PrefabVariantInstance& variant : variantInstances)
+        {
+            SceneInstance* it = FindBestMatchingPrefabInstance(outInstances, variant);
+            if (!it)
+                continue;
+
+            if (variant.Overrides.Name)
+                it->name = variant.Instance.name;
+            if (variant.Overrides.Position)
+                it->position = variant.Instance.position;
+            if (variant.Overrides.Rotation)
+                it->rotation = variant.Instance.rotation;
+            if (variant.Overrides.Scale)
+                it->scale = variant.Instance.scale;
+            if (variant.Overrides.Visible)
+                it->visible = variant.Instance.visible;
+            if (variant.Overrides.Material)
+                it->materialIndex = variant.Instance.materialIndex;
+            if (variant.Overrides.VaultType)
+                it->vaultType = variant.Instance.vaultType;
+        }
+
+        return !outInstances.empty();
+    }
+
     static bool TryLoadPrefabForInstance(const SceneInstance& instance, SceneInstance& outPrefab)
     {
         if (instance.prefabSourcePath.empty())
             return false;
 
-        std::ifstream file(instance.prefabSourcePath);
-        if (!file.is_open())
+        std::vector<SceneInstance> prefabInstances;
+        if (!TryLoadPrefabAssetInstances(instance.prefabSourcePath, prefabInstances))
             return false;
 
-        const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        return ParseSceneInstanceFromJson(content, outPrefab, false);
+        auto matchIt = std::find_if(prefabInstances.begin(), prefabInstances.end(), [&](const SceneInstance& candidate)
+        {
+            return (instance.prefabLocalInstanceId != 0 && candidate.instanceId == instance.prefabLocalInstanceId) ||
+                (candidate.name == instance.name &&
+                candidate.primitive == instance.primitive &&
+                candidate.vaultType == instance.vaultType);
+        });
+        outPrefab = (matchIt != prefabInstances.end()) ? *matchIt : prefabInstances.front();
+        return true;
     }
 
     static bool SavePrefabAsset(const std::string& path, const SceneInstance& prefab)
@@ -1234,8 +1880,15 @@ namespace
         if (!file.is_open())
             return false;
 
+        std::string category = InferPrefabCategoryFromPath(path);
+        Scene::GetPrefabAssetCategory(path, category);
+        std::vector<std::string> tags;
+        Scene::GetPrefabAssetTags(path, tags);
+
         file << "{\n";
         file << "  \"prefabVersion\": 1,\n";
+        file << "  \"category\": \"" << EscapeJsonString(category) << "\",\n";
+        file << "  \"tags\": " << BuildPrefabTagsJsonArray(tags) << ",\n";
         file << "  \"name\": \"" << EscapeJsonString(prefab.name) << "\",\n";
         file << "  \"position\": [" << prefab.position.x << ", " << prefab.position.y << ", " << prefab.position.z << "],\n";
         file << "  \"rotation\": [" << prefab.rotation.x << ", " << prefab.rotation.y << ", " << prefab.rotation.z << "],\n";
@@ -1243,12 +1896,13 @@ namespace
         file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
         file << "  \"material\": " << prefab.materialIndex << ",\n";
         file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << ",\n";
+        file << "  \"vaultType\": " << static_cast<int>(prefab.vaultType) << ",\n";
         file << "  \"cameraEnabled\": " << (prefab.camera.enabled ? "true" : "false") << ",\n";
         file << "  \"cameraMain\": " << (prefab.camera.isMain ? "true" : "false") << ",\n";
         file << "  \"cameraFovY\": " << prefab.camera.fovY << ",\n";
         file << "  \"cameraNearClip\": " << prefab.camera.nearClip << ",\n";
         file << "  \"cameraFarClip\": " << prefab.camera.farClip << "\n";
-        file << "}\n";
+        file << "\n}\n";
         return file.good();
     }
 }
@@ -1842,6 +2496,161 @@ DirectX::XMFLOAT3 Scene::GetSelectionCenterOrActivePosition()
     return GetInstanceWorldPosition(s_SelectedInstanceId);
 }
 
+void Scene::FilterRootInstanceIds(const std::vector<uint32_t>& instanceIds, std::vector<uint32_t>& outRootIds)
+{
+    outRootIds.clear();
+    std::unordered_set<uint32_t> inputIds(instanceIds.begin(), instanceIds.end());
+    std::unordered_set<uint32_t> emittedIds;
+
+    for (const SceneInstance& instance : s_SceneInstances)
+    {
+        if (!inputIds.contains(instance.instanceId))
+            continue;
+        if (instance.parentInstanceId != 0 && inputIds.contains(instance.parentInstanceId))
+            continue;
+        if (emittedIds.insert(instance.instanceId).second)
+            outRootIds.push_back(instance.instanceId);
+    }
+}
+
+void Scene::CaptureParentTransformState(const std::vector<uint32_t>& instanceIds, std::vector<ParentTransformState>& outStates)
+{
+    outStates.clear();
+    std::unordered_set<uint32_t> seenIds;
+    outStates.reserve(instanceIds.size());
+
+    for (uint32_t instanceId : instanceIds)
+    {
+        if (instanceId == 0 || seenIds.contains(instanceId))
+            continue;
+
+        const SceneInstance* instance = FindSceneInstanceByIdConst(instanceId);
+        if (!instance)
+            continue;
+
+        ParentTransformState state{};
+        state.instanceId = instanceId;
+        state.parentInstanceId = instance->parentInstanceId;
+        state.localPosition = instance->position;
+        state.localRotation = instance->rotation;
+        state.localScale = instance->scale;
+        TryGetInstanceWorldMatrix(instanceId, state.worldMatrix);
+        outStates.push_back(state);
+        seenIds.insert(instanceId);
+    }
+}
+
+bool Scene::RestoreParentTransformState(const std::vector<ParentTransformState>& states)
+{
+    if (states.empty())
+        return false;
+
+    bool restoredAny = false;
+    for (const ParentTransformState& state : states)
+    {
+        SceneInstance* instance = FindSceneInstanceByIdMutable(state.instanceId);
+        if (!instance)
+            continue;
+        instance->parentInstanceId = state.parentInstanceId;
+        restoredAny = true;
+    }
+
+    if (!restoredAny)
+        return false;
+
+    for (const ParentTransformState& state : states)
+    {
+        SceneInstance* instance = FindSceneInstanceByIdMutable(state.instanceId);
+        if (!instance)
+            continue;
+        instance->position = state.localPosition;
+        instance->rotation = state.localRotation;
+        instance->scale = state.localScale;
+    }
+
+    ValidateSelection();
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+    return true;
+}
+
+bool Scene::SerializeInstances(const std::vector<uint32_t>& instanceIds, std::string& outData)
+{
+    outData.clear();
+
+    std::vector<uint32_t> rootIds;
+    FilterRootInstanceIds(instanceIds, rootIds);
+    if (rootIds.empty())
+        return false;
+
+    std::vector<uint32_t> orderedIds;
+    for (uint32_t rootId : rootIds)
+        AppendSubtreeInstanceIds(rootId, orderedIds);
+    if (orderedIds.empty())
+        return false;
+
+    std::ostringstream out;
+    out << "{\n  \"sceneVersion\": 1,\n  \"instances\": [\n";
+    for (size_t i = 0; i < orderedIds.size(); ++i)
+    {
+        const SceneInstance* instance = FindSceneInstanceByIdConst(orderedIds[i]);
+        if (!instance)
+            continue;
+
+        WriteSceneInstanceJson(out, *instance, true, 4);
+        if (i + 1 < orderedIds.size())
+            out << ",";
+        out << "\n";
+    }
+    out << "  ]\n}\n";
+    outData = out.str();
+    return true;
+}
+
+bool Scene::DeserializeInstances(const std::string& data, std::vector<uint32_t>& outRestoredIds)
+{
+    outRestoredIds.clear();
+    if (data.empty())
+        return false;
+
+    std::vector<SceneInstance> restoredInstances;
+    size_t searchPos = 0;
+    while ((searchPos = data.find("\"id\"", searchPos)) != std::string::npos)
+    {
+        const size_t objectBegin = data.rfind('{', searchPos);
+        const size_t objectEnd = data.find('}', searchPos);
+        if (objectBegin == std::string::npos || objectEnd == std::string::npos)
+            break;
+
+        SceneInstance instance{};
+        if (!ParseSceneInstanceFromJson(data.substr(objectBegin, objectEnd - objectBegin + 1), instance, true))
+            return false;
+        if (FindSceneInstanceByIdConst(instance.instanceId))
+            return false;
+
+        restoredInstances.push_back(instance);
+        searchPos = objectEnd + 1;
+    }
+
+    if (restoredInstances.empty())
+        return false;
+
+    uint32_t maxId = s_NextInstanceId;
+    for (const SceneInstance& instance : restoredInstances)
+    {
+        s_SceneInstances.push_back(instance);
+        outRestoredIds.push_back(instance.instanceId);
+        maxId = (std::max)(maxId, instance.instanceId + 1u);
+    }
+
+    s_NextInstanceId = maxId;
+    s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
+    ValidateSelection();
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+    return true;
+}
+
 bool Scene::CanParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId)
 {
     if (childInstanceId == 0)
@@ -2072,15 +2881,29 @@ void Scene::DeleteSelectedInstance()
     if (selectedIds.empty())
         return;
 
-    const auto isSelectedId = [&selectedIds](uint32_t id)
+    DeleteInstances(selectedIds);
+}
+
+bool Scene::DeleteInstances(const std::vector<uint32_t>& instanceIds)
+{
+    std::unordered_set<uint32_t> idsToDelete;
+    for (uint32_t instanceId : instanceIds)
     {
-        return std::find(selectedIds.begin(), selectedIds.end(), id) != selectedIds.end();
+        if (instanceId != 0)
+            idsToDelete.insert(instanceId);
+    }
+    if (idsToDelete.empty())
+        return false;
+
+    const auto shouldDeleteId = [&idsToDelete](uint32_t id)
+    {
+        return idsToDelete.contains(id);
     };
 
     std::vector<uint32_t> childrenToUnparent;
     for (const auto& instance : s_SceneInstances)
     {
-        if (instance.parentInstanceId != 0 && isSelectedId(instance.parentInstanceId) && !isSelectedId(instance.instanceId))
+        if (instance.parentInstanceId != 0 && shouldDeleteId(instance.parentInstanceId) && !shouldDeleteId(instance.instanceId))
             childrenToUnparent.push_back(instance.instanceId);
     }
 
@@ -2088,19 +2911,25 @@ void Scene::DeleteSelectedInstance()
         SetParentInstance(childId, 0, true);
 
     s_SceneInstances.erase(
-        std::remove_if(s_SceneInstances.begin(), s_SceneInstances.end(), [&isSelectedId](const SceneInstance& instance)
+        std::remove_if(s_SceneInstances.begin(), s_SceneInstances.end(), [&shouldDeleteId](const SceneInstance& instance)
             {
-                return isSelectedId(instance.instanceId);
+                return shouldDeleteId(instance.instanceId);
             }),
         s_SceneInstances.end());
 
-    if (isSelectedId(s_HoveredInstanceId))
+    if (shouldDeleteId(s_HoveredInstanceId))
         s_HoveredInstanceId = 0;
 
-    ClearSelection();
+    s_SelectedInstanceIds.erase(
+        std::remove_if(s_SelectedInstanceIds.begin(), s_SelectedInstanceIds.end(), shouldDeleteId),
+        s_SelectedInstanceIds.end());
+    if (shouldDeleteId(s_SelectedInstanceId))
+        s_SelectedInstanceId = s_SelectedInstanceIds.empty() ? 0 : s_SelectedInstanceIds.front();
+    ValidateSelection();
     s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
     RebuildRenderInstancesFromSceneData();
     MarkInstancesDirty();
+    return true;
 }
 
 bool Scene::DeleteInstanceById(uint32_t instanceId)
@@ -2108,38 +2937,61 @@ bool Scene::DeleteInstanceById(uint32_t instanceId)
     if (instanceId == 0)
         return false;
 
-    const auto it = std::find_if(s_SceneInstances.begin(), s_SceneInstances.end(), [instanceId](const SceneInstance& instance)
-        {
-            return instance.instanceId == instanceId;
-        });
-    if (it == s_SceneInstances.end())
+    return DeleteInstances({ instanceId });
+}
+
+bool Scene::DuplicateInstances(const std::vector<uint32_t>& sourceInstanceIds, std::vector<uint32_t>& outCreatedInstanceIds)
+{
+    outCreatedInstanceIds.clear();
+
+    std::vector<uint32_t> rootSourceIds;
+    FilterRootInstanceIds(sourceInstanceIds, rootSourceIds);
+    if (rootSourceIds.empty())
         return false;
 
-    std::vector<uint32_t> childrenToUnparent;
-    for (const auto& instance : s_SceneInstances)
+    std::vector<uint32_t> orderedSourceIds;
+    for (uint32_t rootId : rootSourceIds)
+        AppendSubtreeInstanceIds(rootId, orderedSourceIds);
+    if (orderedSourceIds.empty())
+        return false;
+
+    std::unordered_map<uint32_t, uint32_t> duplicatedIdMap;
+    for (uint32_t sourceId : orderedSourceIds)
     {
-        if (instance.parentInstanceId == instanceId && instance.instanceId != instanceId)
-            childrenToUnparent.push_back(instance.instanceId);
+        SceneInstance* source = FindSceneInstanceByIdMutable(sourceId);
+        if (!source)
+            continue;
+
+        SceneInstance copy = *source;
+        copy.instanceId = s_NextInstanceId++;
+        copy.parentInstanceId = source->parentInstanceId;
+        copy.name += "_Copy";
+        s_SceneInstances.push_back(copy);
+        duplicatedIdMap[sourceId] = copy.instanceId;
+        outCreatedInstanceIds.push_back(copy.instanceId);
     }
 
-    for (uint32_t childId : childrenToUnparent)
-        SetParentInstance(childId, 0, true);
+    if (outCreatedInstanceIds.empty())
+        return false;
 
-    s_SceneInstances.erase(std::remove_if(s_SceneInstances.begin(), s_SceneInstances.end(), [instanceId](const SceneInstance& instance)
-        {
-            return instance.instanceId == instanceId;
-        }), s_SceneInstances.end());
+    for (uint32_t sourceId : orderedSourceIds)
+    {
+        const auto duplicatedIt = duplicatedIdMap.find(sourceId);
+        if (duplicatedIt == duplicatedIdMap.end())
+            continue;
 
-    if (s_SelectedInstanceId == instanceId)
-        ClearSelection();
-    else
-        s_SelectedInstanceIds.erase(
-            std::remove(s_SelectedInstanceIds.begin(), s_SelectedInstanceIds.end(), instanceId),
-            s_SelectedInstanceIds.end());
+        SceneInstance* duplicate = FindSceneInstanceByIdMutable(duplicatedIt->second);
+        SceneInstance* source = FindSceneInstanceByIdMutable(sourceId);
+        if (!duplicate || !source)
+            continue;
 
-    if (s_HoveredInstanceId == instanceId)
-        s_HoveredInstanceId = 0;
+        const auto parentIt = duplicatedIdMap.find(source->parentInstanceId);
+        if (parentIt != duplicatedIdMap.end())
+            duplicate->parentInstanceId = parentIt->second;
+    }
 
+    s_SelectedInstanceId = outCreatedInstanceIds.front();
+    s_SelectedInstanceIds = outCreatedInstanceIds;
     s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
     RebuildRenderInstancesFromSceneData();
     MarkInstancesDirty();
@@ -2148,21 +3000,12 @@ bool Scene::DeleteInstanceById(uint32_t instanceId)
 
 void Scene::DuplicateSelectedInstance()
 {
-    SceneInstance* selected = GetSelectedInstance();
-    if (!selected)
-        return;
+    std::vector<uint32_t> selectedIds = s_SelectedInstanceIds;
+    if (selectedIds.empty() && s_SelectedInstanceId != 0)
+        selectedIds.push_back(s_SelectedInstanceId);
 
-    SceneInstance copy = *selected;
-    copy.instanceId = s_NextInstanceId++;
-    copy.name += "_Copy";
-    copy.position.x += 0.5f;
-    copy.position.z += 0.5f;
-
-    s_SceneInstances.push_back(copy);
-    s_SelectedInstanceId = copy.instanceId;
-    s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
-    RebuildRenderInstancesFromSceneData();
-    MarkInstancesDirty();
+    std::vector<uint32_t> createdIds;
+    DuplicateInstances(selectedIds, createdIds);
 }
 
 void Scene::CreateEmpty(const DirectX::XMFLOAT3& position)
@@ -2198,6 +3041,19 @@ void Scene::CreateCamera(const DirectX::XMFLOAT3& position)
     SceneInstance* createdInstance = s_SceneInstances.empty() ? nullptr : &s_SceneInstances.back();
     EmitSceneEvent(SceneEventType::EntityCreated, createdInstance, 1.3f);
     EmitSceneEvent(SceneEventType::EntitySelected, createdInstance, 0.8f);
+}
+
+bool Scene::RenameInstance(uint32_t instanceId, const std::string& newName)
+{
+    if (instanceId == 0 || newName.empty())
+        return false;
+
+    SceneInstance* instance = FindSceneInstanceByIdMutable(instanceId);
+    if (!instance)
+        return false;
+
+    instance->name = newName;
+    return true;
 }
 
 void Scene::CreateCube(const DirectX::XMFLOAT3& position)
@@ -2280,6 +3136,101 @@ void Scene::NewScene()
     Logger::Log(LogLevel::Info, "Created new empty scene", "[Scene]");
 }
 
+static bool BuildSelectedPrefabInstances(std::vector<SceneInstance>& outPrefabInstances)
+{
+    outPrefabInstances.clear();
+
+    SceneInstance* selected = Scene::GetSelectedInstance();
+    if (!selected)
+        return false;
+
+    const std::vector<uint32_t>& selectionIds = Scene::GetSelectedInstanceIds();
+    std::vector<uint32_t> orderedSelectedIds;
+    orderedSelectedIds.reserve(selectionIds.empty() ? 1u : selectionIds.size());
+    const std::unordered_set<uint32_t> selectedIdSet(selectionIds.begin(), selectionIds.end());
+    for (const SceneInstance& instance : Scene::GetInstances())
+    {
+        if ((selectionIds.empty() && instance.instanceId == selected->instanceId) ||
+            (!selectionIds.empty() && selectedIdSet.contains(instance.instanceId)))
+        {
+            orderedSelectedIds.push_back(instance.instanceId);
+        }
+    }
+    if (orderedSelectedIds.empty())
+        orderedSelectedIds.push_back(selected->instanceId);
+
+    DirectX::XMFLOAT3 anchorPosition = selected->position;
+    if (selected->instanceId != 0)
+    {
+        DirectX::XMFLOAT4X4 anchorWorld{};
+        SceneInstance anchorDecomposed = *selected;
+        if (Scene::TryGetInstanceWorldMatrix(selected->instanceId, anchorWorld) &&
+            DecomposeWorldToLocal(DirectX::XMLoadFloat4x4(&anchorWorld), anchorDecomposed))
+        {
+            anchorPosition = anchorDecomposed.position;
+        }
+    }
+
+    std::unordered_map<uint32_t, uint32_t> prefabIdBySceneId;
+    std::unordered_set<uint32_t> reservedPrefabIds;
+    uint32_t nextPrefabId = 1;
+    for (uint32_t sceneId : orderedSelectedIds)
+    {
+        SceneInstance* source = FindSceneInstanceByIdMutable(sceneId);
+        if (source && source->prefabLocalInstanceId != 0 && reservedPrefabIds.insert(source->prefabLocalInstanceId).second)
+            prefabIdBySceneId[sceneId] = source->prefabLocalInstanceId;
+    }
+    while (reservedPrefabIds.contains(nextPrefabId))
+        ++nextPrefabId;
+    for (uint32_t sceneId : orderedSelectedIds)
+    {
+        if (prefabIdBySceneId.contains(sceneId))
+            continue;
+        while (reservedPrefabIds.contains(nextPrefabId))
+            ++nextPrefabId;
+        prefabIdBySceneId[sceneId] = nextPrefabId;
+        reservedPrefabIds.insert(nextPrefabId);
+        ++nextPrefabId;
+    }
+
+    outPrefabInstances.reserve(orderedSelectedIds.size());
+    for (uint32_t sceneId : orderedSelectedIds)
+    {
+        SceneInstance* source = FindSceneInstanceByIdMutable(sceneId);
+        if (!source)
+            continue;
+
+        SceneInstance prefab = *source;
+        prefab.prefabSourcePath.clear();
+        prefab.instanceId = prefabIdBySceneId[sceneId];
+        prefab.prefabLocalInstanceId = prefab.instanceId;
+
+        const bool parentIsSelected = source->parentInstanceId != 0 && prefabIdBySceneId.contains(source->parentInstanceId);
+        prefab.parentInstanceId = parentIsSelected ? prefabIdBySceneId[source->parentInstanceId] : 0;
+
+        if (!parentIsSelected)
+        {
+            DirectX::XMFLOAT4X4 world{};
+            SceneInstance worldDecomposed = prefab;
+            if (Scene::TryGetInstanceWorldMatrix(sceneId, world) &&
+                DecomposeWorldToLocal(DirectX::XMLoadFloat4x4(&world), worldDecomposed))
+            {
+                prefab.position = {
+                    worldDecomposed.position.x - anchorPosition.x,
+                    worldDecomposed.position.y - anchorPosition.y,
+                    worldDecomposed.position.z - anchorPosition.z
+                };
+                prefab.rotation = worldDecomposed.rotation;
+                prefab.scale = worldDecomposed.scale;
+            }
+        }
+
+        outPrefabInstances.push_back(std::move(prefab));
+    }
+
+    return !outPrefabInstances.empty();
+}
+
 bool Scene::SaveSelectedAsPrefab(const std::string& path)
 {
     SceneInstance* selected = GetSelectedInstance();
@@ -2290,64 +3241,241 @@ bool Scene::SaveSelectedAsPrefab(const std::string& path)
     if (outPath.has_parent_path())
         std::filesystem::create_directories(outPath.parent_path());
 
-    SceneInstance prefab = *selected;
-    prefab.instanceId = 0;
-    prefab.parentInstanceId = 0;
+    std::ofstream file(outPath, std::ios::trunc);
+    if (!file.is_open())
+        return false;
 
-    if (selected->instanceId != 0)
+    std::vector<SceneInstance> prefabInstances;
+    if (!BuildSelectedPrefabInstances(prefabInstances))
+        return false;
+
+    std::string category = InferPrefabCategoryFromPath(path);
+    Scene::GetPrefabAssetCategory(path, category);
+    std::vector<std::string> tags;
+    Scene::GetPrefabAssetTags(path, tags);
+
+    file << "{\n";
+    file << "  \"prefabVersion\": " << (prefabInstances.size() > 1 ? 2 : 1) << ",\n";
+    file << "  \"category\": \"" << EscapeJsonString(category) << "\",\n";
+    file << "  \"tags\": " << BuildPrefabTagsJsonArray(tags) << ",\n";
+    if (prefabInstances.size() == 1)
     {
-        DirectX::XMFLOAT4X4 world{};
-        if (TryGetInstanceWorldMatrix(selected->instanceId, world))
-        {
-            SceneInstance decomposed = prefab;
-            if (DecomposeWorldToLocal(DirectX::XMLoadFloat4x4(&world), decomposed))
-            {
-                prefab.position = decomposed.position;
-                prefab.rotation = decomposed.rotation;
-                prefab.scale = decomposed.scale;
-            }
-        }
+        const SceneInstance& prefab = prefabInstances.front();
+        file << "  \"name\": \"" << EscapeJsonString(prefab.name) << "\",\n";
+        file << "  \"position\": [" << prefab.position.x << ", " << prefab.position.y << ", " << prefab.position.z << "],\n";
+        file << "  \"rotation\": [" << prefab.rotation.x << ", " << prefab.rotation.y << ", " << prefab.rotation.z << "],\n";
+        file << "  \"scale\": [" << prefab.scale.x << ", " << prefab.scale.y << ", " << prefab.scale.z << "],\n";
+        file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
+        file << "  \"material\": " << prefab.materialIndex << ",\n";
+        file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << ",\n";
+        file << "  \"vaultType\": " << static_cast<int>(prefab.vaultType) << ",\n";
+        file << "  \"cameraEnabled\": " << (prefab.camera.enabled ? "true" : "false") << ",\n";
+        file << "  \"cameraMain\": " << (prefab.camera.isMain ? "true" : "false") << ",\n";
+        file << "  \"cameraFovY\": " << prefab.camera.fovY << ",\n";
+        file << "  \"cameraNearClip\": " << prefab.camera.nearClip << ",\n";
+        file << "  \"cameraFarClip\": " << prefab.camera.farClip << "\n";
     }
+    else
+    {
+        file << "  \"instances\": [\n";
+        for (size_t i = 0; i < prefabInstances.size(); ++i)
+        {
+            WriteSceneInstanceJson(file, prefabInstances[i], true, 4);
+            if (i + 1 < prefabInstances.size())
+                file << ",";
+            file << "\n";
+        }
+        file << "  ]\n";
+    }
+    file << "}\n";
+    return file.good();
+}
+
+bool Scene::LoadPrefabAssetInstances(const std::string& path, std::vector<SceneInstance>& outInstances)
+{
+    return TryLoadPrefabAssetInstances(path, outInstances);
+}
+
+bool Scene::GetPrefabAssetBasePrefab(const std::string& path, std::string& outBasePrefabPath)
+{
+    return TryReadPrefabBaseReferenceRaw(path, outBasePrefabPath);
+}
+
+bool Scene::HasCircularPrefabInheritance(const std::string& path, std::string* outCyclePath)
+{
+    return TryCollectPrefabInheritanceChain(path, outCyclePath);
+}
+
+bool Scene::GetPrefabAssetCategory(const std::string& path, std::string& outCategory)
+{
+    outCategory = InferPrefabCategoryFromPath(path);
+
+    std::string content;
+    if (!TryLoadPrefabAssetText(path, content))
+        return false;
+
+    std::string parsedCategory;
+    if (TryReadJsonStringField(content, "\"category\"", parsedCategory))
+        outCategory = NormalizePrefabCategory(std::move(parsedCategory));
+    return true;
+}
+
+bool Scene::GetPrefabAssetTags(const std::string& path, std::vector<std::string>& outTags)
+{
+    outTags.clear();
+
+    std::string content;
+    if (!TryLoadPrefabAssetText(path, content))
+        return false;
+
+    std::vector<std::string> parsedTags;
+    if (TryReadJsonStringArrayField(content, "\"tags\"", parsedTags))
+        outTags = NormalizePrefabTags(parsedTags);
+    return true;
+}
+
+bool Scene::SetPrefabAssetCategory(const std::string& path, const std::string& category)
+{
+    std::string content;
+    if (!TryLoadPrefabAssetText(path, content))
+        return false;
+    if (!UpsertPrefabCategoryField(content, category))
+        return false;
+    return SavePrefabAssetText(path, content);
+}
+
+bool Scene::SetPrefabAssetTags(const std::string& path, const std::vector<std::string>& tags)
+{
+    std::string content;
+    if (!TryLoadPrefabAssetText(path, content))
+        return false;
+    if (!UpsertPrefabTagsField(content, tags))
+        return false;
+    return SavePrefabAssetText(path, content);
+}
+
+bool Scene::SaveSelectedAsPrefabVariant(const std::string& path, const std::string& basePrefabPath)
+{
+    if (basePrefabPath.empty())
+        return false;
+
+    const std::string resolvedBasePrefabPath = std::filesystem::path(basePrefabPath).lexically_normal().string();
+    std::string cyclePath;
+    if (WouldPrefabReferenceCreateCycle(path, resolvedBasePrefabPath, &cyclePath))
+        return false;
+
+    std::vector<SceneInstance> prefabInstances;
+    if (!BuildSelectedPrefabInstances(prefabInstances))
+        return false;
+
+    std::vector<SceneInstance> baseInstances;
+    if (!TryLoadPrefabAssetInstances(resolvedBasePrefabPath, baseInstances) || baseInstances.empty())
+        return false;
+
+    std::vector<PrefabVariantInstance> variantInstances;
+    for (const SceneInstance& prefabInstance : prefabInstances)
+    {
+        PrefabVariantInstance matchProbe{};
+        matchProbe.Instance = prefabInstance;
+        matchProbe.Instance.prefabLocalInstanceId = prefabInstance.instanceId;
+        SceneInstance* baseIt = FindBestMatchingPrefabInstance(baseInstances, matchProbe);
+        if (!baseIt)
+            continue;
+
+        PrefabVariantInstance variant{};
+        variant.Instance = prefabInstance;
+        variant.Instance.prefabSourcePath.clear();
+        variant.Overrides.Name = (prefabInstance.name != baseIt->name);
+        variant.Overrides.Position = !NearlyEqualFloat3(prefabInstance.position, baseIt->position);
+        variant.Overrides.Rotation = !NearlyEqualFloat3(prefabInstance.rotation, baseIt->rotation);
+        variant.Overrides.Scale = !NearlyEqualFloat3(prefabInstance.scale, baseIt->scale);
+        variant.Overrides.Visible = (prefabInstance.visible != baseIt->visible);
+        variant.Overrides.Material = (prefabInstance.materialIndex != baseIt->materialIndex);
+        variant.Overrides.VaultType = (prefabInstance.vaultType != baseIt->vaultType);
+        variantInstances.push_back(std::move(variant));
+    }
+
+    if (variantInstances.empty())
+        return false;
+
+    std::filesystem::path outPath(path);
+    if (outPath.has_parent_path())
+        std::filesystem::create_directories(outPath.parent_path());
 
     std::ofstream file(outPath, std::ios::trunc);
     if (!file.is_open())
         return false;
 
+    std::string category = InferPrefabCategoryFromPath(path);
+    Scene::GetPrefabAssetCategory(path, category);
+    std::vector<std::string> tags;
+    Scene::GetPrefabAssetTags(path, tags);
+
+    std::string relativeBasePrefab = std::filesystem::relative(std::filesystem::path(resolvedBasePrefabPath), outPath.parent_path()).generic_string();
+    if (relativeBasePrefab.empty())
+        relativeBasePrefab = resolvedBasePrefabPath;
+
     file << "{\n";
-    file << "  \"prefabVersion\": 1,\n";
-    file << "  \"name\": \"" << EscapeJsonString(prefab.name) << "\",\n";
-    file << "  \"position\": [" << prefab.position.x << ", " << prefab.position.y << ", " << prefab.position.z << "],\n";
-    file << "  \"rotation\": [" << prefab.rotation.x << ", " << prefab.rotation.y << ", " << prefab.rotation.z << "],\n";
-    file << "  \"scale\": [" << prefab.scale.x << ", " << prefab.scale.y << ", " << prefab.scale.z << "],\n";
-    file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
-    file << "  \"material\": " << prefab.materialIndex << ",\n";
-    file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << ",\n";
-    file << "  \"vaultType\": " << static_cast<int>(prefab.vaultType) << "\n";
+    file << "  \"prefabVersion\": 3,\n";
+    file << "  \"category\": \"" << EscapeJsonString(category) << "\",\n";
+    file << "  \"tags\": " << BuildPrefabTagsJsonArray(tags) << ",\n";
+    file << "  \"basePrefab\": \"" << EscapeJsonString(relativeBasePrefab) << "\",\n";
+    file << "  \"instances\": [\n";
+    for (size_t i = 0; i < variantInstances.size(); ++i)
+    {
+        WritePrefabVariantInstanceJson(file, variantInstances[i], 4);
+        if (i + 1 < variantInstances.size())
+            file << ",";
+        file << "\n";
+    }
+    file << "  ]\n";
     file << "}\n";
     return file.good();
 }
 
 bool Scene::InstantiatePrefab(const std::string& path, const DirectX::XMFLOAT3& position)
 {
-    std::ifstream file(path);
-    if (!file.is_open())
+    std::vector<SceneInstance> prefabInstances;
+    if (!TryLoadPrefabAssetInstances(path, prefabInstances) || prefabInstances.empty())
         return false;
 
-    const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    SceneInstance prefab{};
-    if (!ParseSceneInstanceFromJson(content, prefab, false))
-        return false;
+    std::unordered_map<uint32_t, uint32_t> instantiatedIdByPrefabId;
+    std::vector<uint32_t> newSelection;
+    newSelection.reserve(prefabInstances.size());
+    const size_t newInstancesBegin = s_SceneInstances.size();
 
-    prefab.instanceId = s_NextInstanceId++;
-    prefab.parentInstanceId = 0;
-    prefab.prefabSourcePath = path;
-    prefab.position = position;
-    if (prefab.name.empty())
-        prefab.name = MakeSceneInstanceName(prefab.instanceId);
+    for (size_t i = 0; i < prefabInstances.size(); ++i)
+    {
+        SceneInstance instance = prefabInstances[i];
+        const uint32_t prefabId = instance.instanceId != 0 ? instance.instanceId : static_cast<uint32_t>(i + 1u);
+        instance.instanceId = s_NextInstanceId++;
+        instance.prefabLocalInstanceId = prefabId;
+        instantiatedIdByPrefabId[prefabId] = instance.instanceId;
+        newSelection.push_back(instance.instanceId);
+        instance.prefabSourcePath = path;
+        if (instance.parentInstanceId == 0)
+        {
+            instance.position.x += position.x;
+            instance.position.y += position.y;
+            instance.position.z += position.z;
+        }
+        if (instance.name.empty())
+            instance.name = MakeSceneInstanceName(instance.instanceId);
+        s_SceneInstances.push_back(instance);
+    }
 
-    s_SceneInstances.push_back(prefab);
-    s_SelectedInstanceId = prefab.instanceId;
-    s_SelectedInstanceIds = { prefab.instanceId };
+    for (size_t i = newInstancesBegin; i < s_SceneInstances.size(); ++i)
+    {
+        SceneInstance& instance = s_SceneInstances[i];
+        if (instance.prefabSourcePath != path)
+            continue;
+        auto it = instantiatedIdByPrefabId.find(instance.parentInstanceId);
+        if (it != instantiatedIdByPrefabId.end())
+            instance.parentInstanceId = it->second;
+    }
+
+    s_SelectedInstanceId = newSelection.empty() ? 0 : newSelection.front();
+    s_SelectedInstanceIds = std::move(newSelection);
     s_TargetInstanceCount = static_cast<uint32_t>(s_SceneInstances.size());
     RebuildRenderInstancesFromSceneData();
     MarkInstancesDirty();
@@ -2361,6 +3489,10 @@ bool Scene::ApplySelectedToPrefab()
     if (!selected || selected->prefabSourcePath.empty())
         return false;
 
+    std::string basePrefabPath;
+    if (GetPrefabAssetBasePrefab(selected->prefabSourcePath, basePrefabPath) && !basePrefabPath.empty())
+        return SaveSelectedAsPrefabVariant(selected->prefabSourcePath, basePrefabPath);
+
     return SaveSelectedAsPrefab(selected->prefabSourcePath);
 }
 
@@ -2373,6 +3505,9 @@ bool Scene::ApplySelectedPrefabProperty(PrefabProperty property)
     SceneInstance prefab{};
     if (!TryLoadPrefabForInstance(*selected, prefab))
         return false;
+
+    std::string basePrefabPath;
+    const bool isVariant = GetPrefabAssetBasePrefab(selected->prefabSourcePath, basePrefabPath) && !basePrefabPath.empty();
 
     switch (property)
     {
@@ -2396,6 +3531,15 @@ bool Scene::ApplySelectedPrefabProperty(PrefabProperty property)
         break;
     default:
         return false;
+    }
+
+    if (isVariant)
+    {
+        if (!SaveSelectedAsPrefabVariant(selected->prefabSourcePath, basePrefabPath))
+            return false;
+
+        Logger::Log(LogLevel::Info, std::format("Applied prefab property to variant: {}", selected->prefabSourcePath), "[Scene]");
+        return true;
     }
 
     if (!SavePrefabAsset(selected->prefabSourcePath, prefab))
@@ -2470,6 +3614,44 @@ bool Scene::RevertSelectedPrefabProperty(PrefabProperty property)
     return true;
 }
 
+bool Scene::UnpackSelectedPrefabs()
+{
+    if (s_SelectedInstanceIds.empty() && s_SelectedInstanceId == 0)
+        return false;
+
+    std::unordered_set<uint32_t> unpackIds(s_SelectedInstanceIds.begin(), s_SelectedInstanceIds.end());
+    if (s_SelectedInstanceId != 0)
+        unpackIds.insert(s_SelectedInstanceId);
+
+    for (const SceneInstance& instance : s_SceneInstances)
+    {
+        for (uint32_t selectedId : s_SelectedInstanceIds)
+        {
+            if (selectedId != 0 && IsDescendantOf(instance.instanceId, selectedId))
+            {
+                unpackIds.insert(instance.instanceId);
+                break;
+            }
+        }
+    }
+
+    bool changed = false;
+    for (SceneInstance& instance : s_SceneInstances)
+    {
+        if (!unpackIds.contains(instance.instanceId) || instance.prefabSourcePath.empty())
+            continue;
+        instance.prefabSourcePath.clear();
+        changed = true;
+    }
+
+    if (!changed)
+        return false;
+
+    RebuildRenderInstancesFromSceneData();
+    MarkInstancesDirty();
+    return true;
+}
+
 bool Scene::TryGetPrefabOverrideState(uint32_t instanceId, PrefabOverrideState& outState)
 {
     outState = {};
@@ -2501,6 +3683,7 @@ std::string Scene::SerializeToString()
         out << "    {\n";
         out << "      \"id\": " << inst.instanceId << ",\n";
         out << "      \"parent\": " << inst.parentInstanceId << ",\n";
+        out << "      \"prefabLocalId\": " << inst.prefabLocalInstanceId << ",\n";
         out << "      \"name\": \"" << EscapeJsonString(inst.name) << "\",\n";
         out << "      \"prefabSource\": \"" << EscapeJsonString(inst.prefabSourcePath) << "\",\n";
         out << "      \"position\": [" << inst.position.x << ", " << inst.position.y << ", " << inst.position.z << "],\n";

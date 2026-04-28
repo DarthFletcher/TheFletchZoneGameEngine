@@ -60,6 +60,7 @@ struct SceneInstance
 {
     uint32_t instanceId = 0;
     uint32_t parentInstanceId = 0;
+    uint32_t prefabLocalInstanceId = 0;
     std::string name;
     std::string prefabSourcePath;
     DirectX::XMFLOAT3 position{ 0.0f, 0.0f, 0.0f };
@@ -77,6 +78,16 @@ struct SceneStats
     uint32_t totalObjects = 0;
     uint32_t visibleObjects = 0;
     uint32_t drawCalls = 0;
+};
+
+struct ParentTransformState
+{
+    uint32_t instanceId = 0;
+    uint32_t parentInstanceId = 0;
+    DirectX::XMFLOAT3 localPosition{ 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT3 localRotation{ 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT3 localScale{ 1.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT4X4 worldMatrix{};
 };
 
 struct SceneRenderContext
@@ -160,6 +171,9 @@ public:
     static bool TryGetSelectionCenter(DirectX::XMFLOAT3& outCenter);
     static bool TryGetSelectionBounds(DirectX::XMFLOAT3& outCenter, float& outRadius);
     static DirectX::XMFLOAT3 GetSelectionCenterOrActivePosition();
+    static void FilterRootInstanceIds(const std::vector<uint32_t>& instanceIds, std::vector<uint32_t>& outRootIds);
+    static void CaptureParentTransformState(const std::vector<uint32_t>& instanceIds, std::vector<ParentTransformState>& outStates);
+    static bool RestoreParentTransformState(const std::vector<ParentTransformState>& states);
     static bool CanParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId);
     static bool CanPreserveWorldTransformOnReparent(uint32_t childInstanceId, uint32_t parentInstanceId, std::string* outReason = nullptr);
     static bool SetParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId, bool keepWorldTransform = true);
@@ -177,8 +191,11 @@ public:
     static bool TryGetLastRenderCameraData(CameraData& outCamera);
     static void RebuildRenderInstancesFromSceneData();
     static void DeleteSelectedInstance();
+    static bool DeleteInstances(const std::vector<uint32_t>& instanceIds);
     static bool DeleteInstanceById(uint32_t instanceId);
+    static bool DuplicateInstances(const std::vector<uint32_t>& sourceInstanceIds, std::vector<uint32_t>& outCreatedInstanceIds);
     static void DuplicateSelectedInstance();
+    static bool RenameInstance(uint32_t instanceId, const std::string& newName);
     static void CreateEmpty(const DirectX::XMFLOAT3& position = { 0.0f, 0.0f, 0.0f });
     static void CreateCamera(const DirectX::XMFLOAT3& position = { 0.0f, 2.0f, -5.0f });
     static void CreateCube(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
@@ -190,13 +207,24 @@ public:
     static void CreateCone(const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
     static void CreatePrimitive(ScenePrimitive primitive, const DirectX::XMFLOAT3& position = { 0.0f, 0.5f, 0.0f });
     static void NewScene();
+    static bool LoadPrefabAssetInstances(const std::string& path, std::vector<SceneInstance>& outInstances);
+    static bool GetPrefabAssetCategory(const std::string& path, std::string& outCategory);
+    static bool SetPrefabAssetCategory(const std::string& path, const std::string& category);
+    static bool GetPrefabAssetTags(const std::string& path, std::vector<std::string>& outTags);
+    static bool SetPrefabAssetTags(const std::string& path, const std::vector<std::string>& tags);
+    static bool GetPrefabAssetBasePrefab(const std::string& path, std::string& outBasePrefabPath);
+    static bool HasCircularPrefabInheritance(const std::string& path, std::string* outCyclePath = nullptr);
     static bool SaveSelectedAsPrefab(const std::string& path);
+    static bool SaveSelectedAsPrefabVariant(const std::string& path, const std::string& basePrefabPath);
     static bool InstantiatePrefab(const std::string& path, const DirectX::XMFLOAT3& position);
     static bool ApplySelectedToPrefab();
     static bool ApplySelectedPrefabProperty(PrefabProperty property);
     static bool RevertSelectedToPrefab();
     static bool RevertSelectedPrefabProperty(PrefabProperty property);
+    static bool UnpackSelectedPrefabs();
     static bool TryGetPrefabOverrideState(uint32_t instanceId, PrefabOverrideState& outState);
+    static bool SerializeInstances(const std::vector<uint32_t>& instanceIds, std::string& outData);
+    static bool DeserializeInstances(const std::string& data, std::vector<uint32_t>& outRestoredIds);
     static bool SaveToFile(const std::string& path);
     static bool LoadFromFile(const std::string& path);
     static std::string SerializeToString();

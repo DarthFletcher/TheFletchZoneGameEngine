@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 
 struct EditorPanel
 {
@@ -28,4 +29,17 @@ namespace EditorPanels
 
     void DrawAll();
     void DrawPrefabOptionsMenu();
+    void RevealAssetInBrowser(const std::string& assetId);
+    bool ExecuteUndoCommand();
+    bool ExecuteRedoCommand();
+    bool CanUndoCommand();
+    bool CanRedoCommand();
+    bool ExecuteFocusSelectionCommand();
+    bool ExecuteRenameSelectionCommand();
+    bool ExecuteCreateEmptyParentCommand();
+    bool ExecuteSaveSelectionAsPrefabCommand();
+    bool ExecuteUnpackPrefabCommand();
+    bool CanUnpackPrefabSelection();
+    bool ExecuteDuplicateSelectionCommand();
+    bool ExecuteDeleteSelectionCommand();
 }

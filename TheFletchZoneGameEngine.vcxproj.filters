@@ -198,6 +198,9 @@
     <ClInclude Include="Include\MaterialContracts.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Include\EditorCommands.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui_demo.cpp">
@@ -318,6 +321,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Src\EditorPanels_BlackFlame.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Src\EditorCommands.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

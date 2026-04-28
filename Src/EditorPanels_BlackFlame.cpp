@@ -30,6 +30,41 @@ namespace EditorPanels
         static float g_MaterialPreviewSize = 210.0f;
         static int g_MaterialPreviewQuality = 56;
         static float g_MaterialPreviewRotation = 0.0f;
+        static char g_PrefabLibrarySearchBuffer[128] = {};
+        static char g_PrefabLibraryRenameBuffer[128] = {};
+        static char g_PrefabLibraryCategoryBuffer[128] = {};
+        static char g_PrefabLibraryTagsBuffer[256] = {};
+        static char g_PrefabRebaseSearchBuffer[128] = {};
+        static std::filesystem::path g_PendingPrefabRenamePath;
+        static std::filesystem::path g_PendingPrefabDeletePath;
+        static std::filesystem::path g_PendingPrefabCategoryPath;
+        static std::filesystem::path g_PendingPrefabTagsPath;
+        static std::filesystem::path g_PendingPrefabRebaseTargetPath;
+        static bool g_RequestOpenPrefabRenamePopup = false;
+        static bool g_RequestOpenPrefabDeletePopup = false;
+        static bool g_RequestOpenPrefabCategoryPopup = false;
+        static bool g_RequestOpenPrefabTagsPopup = false;
+        static bool g_RequestOpenPrefabRebasePopup = false;
+        static std::string g_PrefabLibraryCategoryFilter = "All Categories";
+        static std::string g_PrefabLibraryTagFilter = "All Tags";
+
+        enum class PrefabLibrarySortMode : uint8_t
+        {
+            NameAsc = 0,
+            NameDesc,
+            InstancesDesc,
+            NewestFirst,
+        };
+
+        enum class PrefabLibraryTypeFilter : uint8_t
+        {
+            All = 0,
+            BaseOnly,
+            VariantsOnly,
+        };
+
+        static PrefabLibrarySortMode g_PrefabLibrarySortMode = PrefabLibrarySortMode::NameAsc;
+        static PrefabLibraryTypeFilter g_PrefabLibraryTypeFilter = PrefabLibraryTypeFilter::All;
 
         static ImTextureID GetTexturePreviewID(const std::string& texturePath)
         {
@@ -119,6 +154,17 @@ namespace EditorPanels
             }
 
             return 0;
+        }
+
+        static const char* PrefabTypeFilterLabel(PrefabLibraryTypeFilter filter)
+        {
+            switch (filter)
+            {
+            case PrefabLibraryTypeFilter::BaseOnly: return "Base Prefabs";
+            case PrefabLibraryTypeFilter::VariantsOnly: return "Variants";
+            case PrefabLibraryTypeFilter::All:
+            default: return "All Prefabs";
+            }
         }
 
         static void PushUndoSnapshot(EditorState& editor)
@@ -375,6 +421,16 @@ namespace EditorPanels
             g_BlackFlameConfirmApply = false;
         }
 
+        static void InvokeBlackFlamePrompt(BlackFlameAI& ai, const std::string& prompt)
+        {
+            if (prompt.empty())
+                return;
+
+            SetBlackFlamePromptText(prompt);
+            ai.SubmitPrompt(prompt);
+            BlackFlame().open = true;
+        }
+
         static const char* BlackFlamePrimitiveLabel(ScenePrimitive primitive)
         {
             switch (primitive)
@@ -458,6 +514,549 @@ namespace EditorPanels
 
             std::sort(result.begin(), result.end());
             return result;
+        }
+
+        static std::vector<std::filesystem::path> EnumeratePrefabAssets();
+
+        struct PrefabLibraryEntry
+        {
+            std::filesystem::path Path;
+            std::string Label;
+            std::string Category;
+            std::vector<std::string> Tags;
+            std::string BasePrefabPath;
+            std::string BasePrefabLabel;
+            bool MissingBasePrefab = false;
+            bool HasCircularInheritance = false;
+            std::string SearchText;
+            std::filesystem::file_time_type LastWriteTime{};
+            uintmax_t FileSize = 0;
+            size_t InstanceCount = 0;
+            size_t RootCount = 0;
+            size_t CameraCount = 0;
+            std::string PrimitiveSummary;
+        };
+
+        static std::string SanitizePrefabAssetName(std::string name)
+        {
+            for (char& c : name)
+            {
+                if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-'))
+                    c = '_';
+            }
+            if (name.empty())
+                name = "Prefab";
+            return name;
+        }
+
+        static const char* PrefabSortModeLabel(PrefabLibrarySortMode mode)
+        {
+            switch (mode)
+            {
+            case PrefabLibrarySortMode::NameDesc: return "Name (Z-A)";
+            case PrefabLibrarySortMode::InstancesDesc: return "Most Instances";
+            case PrefabLibrarySortMode::NewestFirst: return "Newest";
+            case PrefabLibrarySortMode::NameAsc:
+            default: return "Name (A-Z)";
+            }
+        }
+
+        static const char* PrefabPrimitiveLabel(ScenePrimitive primitive)
+        {
+            switch (primitive)
+            {
+            case ScenePrimitive::Sphere: return "Sphere";
+            case ScenePrimitive::Plane: return "Plane";
+            case ScenePrimitive::Cylinder: return "Cylinder";
+            case ScenePrimitive::Empty: return "Empty";
+            case ScenePrimitive::Capsule: return "Capsule";
+            case ScenePrimitive::Torus: return "Torus";
+            case ScenePrimitive::Cone: return "Cone";
+            case ScenePrimitive::Cube:
+            default: return "Cube";
+            }
+        }
+
+        static std::string FormatPrefabFileSize(uintmax_t fileSize)
+        {
+            if (fileSize >= 1024ull * 1024ull)
+                return std::format("{:.1f} MB", static_cast<double>(fileSize) / (1024.0 * 1024.0));
+            if (fileSize >= 1024ull)
+                return std::format("{:.1f} KB", static_cast<double>(fileSize) / 1024.0);
+            return std::format("{} B", fileSize);
+        }
+
+        static std::string BuildPrefabPrimitiveSummary(const std::vector<SceneInstance>& instances)
+        {
+            struct PrimitiveCount
+            {
+                ScenePrimitive Primitive = ScenePrimitive::Cube;
+                size_t Count = 0;
+            };
+
+            std::vector<PrimitiveCount> counts;
+            for (const SceneInstance& instance : instances)
+            {
+                auto it = std::find_if(counts.begin(), counts.end(), [&](const PrimitiveCount& count)
+                {
+                    return count.Primitive == instance.primitive;
+                });
+                if (it == counts.end())
+                    counts.push_back({ instance.primitive, 1u });
+                else
+                    ++it->Count;
+            }
+
+            std::sort(counts.begin(), counts.end(), [](const PrimitiveCount& a, const PrimitiveCount& b)
+            {
+                if (a.Count != b.Count)
+                    return a.Count > b.Count;
+                return static_cast<int>(a.Primitive) < static_cast<int>(b.Primitive);
+            });
+
+            std::string summary;
+            const size_t limit = (std::min)(counts.size(), size_t(3));
+            for (size_t i = 0; i < limit; ++i)
+            {
+                if (!summary.empty())
+                    summary += ", ";
+                summary += std::format("{} {}", counts[i].Count, PrefabPrimitiveLabel(counts[i].Primitive));
+            }
+            if (counts.size() > limit)
+                summary += std::format(" +{} more", counts.size() - limit);
+            return summary.empty() ? std::string("No primitives") : summary;
+        }
+
+        static std::vector<std::string> BuildPrefabLibraryCategories(const std::vector<PrefabLibraryEntry>& entries)
+        {
+            std::vector<std::string> categories;
+            categories.push_back("All Categories");
+            for (const PrefabLibraryEntry& entry : entries)
+            {
+                if (std::find(categories.begin(), categories.end(), entry.Category) == categories.end())
+                    categories.push_back(entry.Category);
+            }
+            std::sort(categories.begin() + 1, categories.end());
+            return categories;
+        }
+
+        static std::vector<std::string> BuildPrefabLibraryTags(const std::vector<PrefabLibraryEntry>& entries)
+        {
+            std::vector<std::string> tags;
+            tags.push_back("All Tags");
+            for (const PrefabLibraryEntry& entry : entries)
+            {
+                for (const std::string& tag : entry.Tags)
+                {
+                    if (std::find(tags.begin(), tags.end(), tag) == tags.end())
+                        tags.push_back(tag);
+                }
+            }
+            std::sort(tags.begin() + 1, tags.end());
+            return tags;
+        }
+
+        static std::string JoinPrefabTags(const std::vector<std::string>& tags)
+        {
+            std::string result;
+            for (size_t i = 0; i < tags.size(); ++i)
+            {
+                if (i > 0)
+                    result += ", ";
+                result += tags[i];
+            }
+            return result;
+        }
+
+        static std::string ToLowerAsciiCopy(std::string value)
+        {
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c)
+            {
+                return static_cast<char>(std::tolower(c));
+            });
+            return value;
+        }
+
+        static std::string FormatFloat3(const DirectX::XMFLOAT3& value)
+        {
+            return std::format("({:.2f}, {:.2f}, {:.2f})", value.x, value.y, value.z);
+        }
+
+        struct PrefabVariantDiffItem
+        {
+            std::string Label;
+            std::string BaseValue;
+            std::string VariantValue;
+        };
+
+        static std::vector<std::string> BuildPrefabInheritanceChain(const std::string& prefabPath, bool& outMissingBase, bool& outCircular, std::string* outIssuePath = nullptr)
+        {
+            outMissingBase = false;
+            outCircular = false;
+            if (outIssuePath)
+                outIssuePath->clear();
+
+            std::vector<std::string> chain;
+            if (prefabPath.empty())
+                return chain;
+
+            std::unordered_set<std::string> visited;
+            std::string currentPath = std::filesystem::path(prefabPath).lexically_normal().string();
+            while (!currentPath.empty())
+            {
+                chain.push_back(currentPath);
+                if (!visited.insert(currentPath).second)
+                {
+                    outCircular = true;
+                    if (outIssuePath)
+                        *outIssuePath = currentPath;
+                    break;
+                }
+
+                std::string nextPath;
+                if (!Scene::GetPrefabAssetBasePrefab(currentPath, nextPath) || nextPath.empty())
+                    break;
+                nextPath = std::filesystem::path(nextPath).lexically_normal().string();
+                if (!std::filesystem::exists(nextPath))
+                {
+                    chain.push_back(nextPath);
+                    outMissingBase = true;
+                    if (outIssuePath)
+                        *outIssuePath = nextPath;
+                    break;
+                }
+                currentPath = nextPath;
+            }
+
+            return chain;
+        }
+
+        static std::vector<std::string> ParsePrefabTagsBuffer(const char* buffer)
+        {
+            std::vector<std::string> tags;
+            if (!buffer || buffer[0] == '\0')
+                return tags;
+
+            std::string text = buffer;
+            size_t start = 0;
+            while (start < text.size())
+            {
+                const size_t comma = text.find(',', start);
+                const size_t length = (comma == std::string::npos) ? (text.size() - start) : (comma - start);
+                tags.push_back(text.substr(start, length));
+                if (comma == std::string::npos)
+                    break;
+                start = comma + 1;
+            }
+
+            std::vector<std::string> normalized;
+            std::unordered_set<std::string> seen;
+            for (std::string& tag : tags)
+            {
+                const auto first = std::find_if(tag.begin(), tag.end(), [](unsigned char c) { return !std::isspace(c); });
+                const auto last = std::find_if(tag.rbegin(), tag.rend(), [](unsigned char c) { return !std::isspace(c); }).base();
+                if (first >= last)
+                    continue;
+                std::string cleaned(first, last);
+                std::string lowered = cleaned;
+                std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (!seen.insert(lowered).second)
+                    continue;
+                normalized.push_back(std::move(cleaned));
+            }
+            return normalized;
+        }
+
+        static const SceneInstance* FindMatchingPrefabInstanceForDiff(const std::vector<SceneInstance>& instances, const SceneInstance& target)
+        {
+            if (target.prefabLocalInstanceId != 0)
+            {
+                auto it = std::find_if(instances.begin(), instances.end(), [&](const SceneInstance& instance)
+                {
+                    return instance.instanceId == target.prefabLocalInstanceId;
+                });
+                if (it != instances.end())
+                    return &(*it);
+            }
+
+            auto it = std::find_if(instances.begin(), instances.end(), [&](const SceneInstance& instance)
+            {
+                return instance.name == target.name &&
+                    instance.primitive == target.primitive &&
+                    instance.vaultType == target.vaultType;
+            });
+            if (it != instances.end())
+                return &(*it);
+
+            if (instances.size() == 1)
+                return &instances.front();
+            return nullptr;
+        }
+
+        static std::vector<PrefabVariantDiffItem> BuildVariantDiffItems(const SceneInstance& variantInstance, const std::string& basePrefabPath)
+        {
+            std::vector<PrefabVariantDiffItem> diffs;
+            if (basePrefabPath.empty())
+                return diffs;
+
+            std::vector<SceneInstance> baseInstances;
+            if (!Scene::LoadPrefabAssetInstances(basePrefabPath, baseInstances) || baseInstances.empty())
+                return diffs;
+
+            const SceneInstance* baseInstance = FindMatchingPrefabInstanceForDiff(baseInstances, variantInstance);
+            if (!baseInstance)
+                return diffs;
+
+            auto addDiff = [&](const char* label, const std::string& baseValue, const std::string& variantValue)
+            {
+                if (baseValue == variantValue)
+                    return;
+                diffs.push_back({ label, baseValue, variantValue });
+            };
+
+            addDiff("Name", baseInstance->name, variantInstance.name);
+            addDiff("Position", FormatFloat3(baseInstance->position), FormatFloat3(variantInstance.position));
+            addDiff("Rotation", FormatFloat3(baseInstance->rotation), FormatFloat3(variantInstance.rotation));
+            addDiff("Scale", FormatFloat3(baseInstance->scale), FormatFloat3(variantInstance.scale));
+            addDiff("Visible", baseInstance->visible ? "true" : "false", variantInstance.visible ? "true" : "false");
+            addDiff("Material", std::to_string(baseInstance->materialIndex), std::to_string(variantInstance.materialIndex));
+            addDiff("Vault Type", std::to_string(static_cast<int>(baseInstance->vaultType)), std::to_string(static_cast<int>(variantInstance.vaultType)));
+            return diffs;
+        }
+
+        static std::vector<const PrefabLibraryEntry*> BuildPrefabRepairSuggestions(const std::string& missingBasePath, const std::vector<PrefabLibraryEntry>& entries)
+        {
+            std::vector<std::pair<int, const PrefabLibraryEntry*>> scored;
+            const std::string missingLabel = ToLowerAsciiCopy(std::filesystem::path(missingBasePath).stem().stem().string());
+            for (const PrefabLibraryEntry& entry : entries)
+            {
+                if (entry.MissingBasePrefab || entry.HasCircularInheritance)
+                    continue;
+
+                int score = 0;
+                const std::string label = ToLowerAsciiCopy(entry.Label);
+                if (!missingLabel.empty() && label == missingLabel)
+                    score += 100;
+                else if (!missingLabel.empty() && label.find(missingLabel) != std::string::npos)
+                    score += 60;
+                else if (!missingLabel.empty() && missingLabel.find(label) != std::string::npos)
+                    score += 40;
+
+                if (score > 0)
+                    scored.push_back({ score, &entry });
+            }
+
+            std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b)
+            {
+                if (a.first != b.first)
+                    return a.first > b.first;
+                return a.second->Label < b.second->Label;
+            });
+
+            std::vector<const PrefabLibraryEntry*> result;
+            const size_t limit = (std::min)(scored.size(), size_t(3));
+            for (size_t i = 0; i < limit; ++i)
+                result.push_back(scored[i].second);
+            return result;
+        }
+
+        static std::vector<PrefabLibraryEntry> BuildPrefabLibraryEntries(bool applyFilters = true)
+        {
+            std::vector<PrefabLibraryEntry> entries;
+            for (const auto& prefabPath : EnumeratePrefabAssets())
+            {
+                PrefabLibraryEntry entry{};
+                entry.Path = prefabPath;
+                entry.Label = prefabPath.stem().stem().string();
+                Scene::GetPrefabAssetCategory(prefabPath.string(), entry.Category);
+                Scene::GetPrefabAssetTags(prefabPath.string(), entry.Tags);
+                Scene::GetPrefabAssetBasePrefab(prefabPath.string(), entry.BasePrefabPath);
+                if (!entry.BasePrefabPath.empty())
+                {
+                    entry.BasePrefabLabel = std::filesystem::path(entry.BasePrefabPath).stem().stem().string();
+                    entry.MissingBasePrefab = !std::filesystem::exists(entry.BasePrefabPath);
+                }
+                entry.HasCircularInheritance = !Scene::HasCircularPrefabInheritance(prefabPath.string());
+                entry.SearchText = entry.Label + " " + prefabPath.string() + " " + entry.Category + " " + JoinPrefabTags(entry.Tags) + " " + entry.BasePrefabLabel;
+
+                try
+                {
+                    entry.LastWriteTime = std::filesystem::last_write_time(prefabPath);
+                    entry.FileSize = std::filesystem::file_size(prefabPath);
+                }
+                catch (...)
+                {
+                    entry.LastWriteTime = {};
+                    entry.FileSize = 0;
+                }
+
+                std::vector<SceneInstance> instances;
+                if (Scene::LoadPrefabAssetInstances(prefabPath.string(), instances))
+                {
+                    entry.InstanceCount = instances.size();
+                    entry.RootCount = std::count_if(instances.begin(), instances.end(), [](const SceneInstance& instance)
+                    {
+                        return instance.parentInstanceId == 0;
+                    });
+                    entry.CameraCount = std::count_if(instances.begin(), instances.end(), [](const SceneInstance& instance)
+                    {
+                        return instance.camera.enabled;
+                    });
+                    entry.PrimitiveSummary = BuildPrefabPrimitiveSummary(instances);
+                }
+                else
+                {
+                    entry.PrimitiveSummary = "Unreadable prefab";
+                }
+
+                entries.push_back(std::move(entry));
+            }
+
+            if (!applyFilters)
+                return entries;
+
+            std::string filter = g_PrefabLibrarySearchBuffer;
+            std::transform(filter.begin(), filter.end(), filter.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (!filter.empty())
+            {
+                entries.erase(std::remove_if(entries.begin(), entries.end(), [&](PrefabLibraryEntry& entry)
+                {
+                    std::string haystack = entry.SearchText;
+                    std::transform(haystack.begin(), haystack.end(), haystack.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    return haystack.find(filter) == std::string::npos;
+                }), entries.end());
+            }
+
+            if (!g_PrefabLibraryCategoryFilter.empty() && g_PrefabLibraryCategoryFilter != "All Categories")
+            {
+                entries.erase(std::remove_if(entries.begin(), entries.end(), [](const PrefabLibraryEntry& entry)
+                {
+                    return entry.Category != g_PrefabLibraryCategoryFilter;
+                }), entries.end());
+            }
+
+            if (g_PrefabLibraryTypeFilter != PrefabLibraryTypeFilter::All)
+            {
+                entries.erase(std::remove_if(entries.begin(), entries.end(), [](const PrefabLibraryEntry& entry)
+                {
+                    const bool isVariant = !entry.BasePrefabPath.empty();
+                    return g_PrefabLibraryTypeFilter == PrefabLibraryTypeFilter::BaseOnly ? isVariant : !isVariant;
+                }), entries.end());
+            }
+
+            if (!g_PrefabLibraryTagFilter.empty() && g_PrefabLibraryTagFilter != "All Tags")
+            {
+                entries.erase(std::remove_if(entries.begin(), entries.end(), [](const PrefabLibraryEntry& entry)
+                {
+                    return std::find(entry.Tags.begin(), entry.Tags.end(), g_PrefabLibraryTagFilter) == entry.Tags.end();
+                }), entries.end());
+            }
+
+            std::sort(entries.begin(), entries.end(), [](const PrefabLibraryEntry& a, const PrefabLibraryEntry& b)
+            {
+                switch (g_PrefabLibrarySortMode)
+                {
+                case PrefabLibrarySortMode::NameDesc:
+                    return a.Label > b.Label;
+                case PrefabLibrarySortMode::InstancesDesc:
+                    if (a.InstanceCount != b.InstanceCount)
+                        return a.InstanceCount > b.InstanceCount;
+                    return a.Label < b.Label;
+                case PrefabLibrarySortMode::NewestFirst:
+                    if (a.LastWriteTime != b.LastWriteTime)
+                        return a.LastWriteTime > b.LastWriteTime;
+                    return a.Label < b.Label;
+                case PrefabLibrarySortMode::NameAsc:
+                default:
+                    return a.Label < b.Label;
+                }
+            });
+
+            return entries;
+        }
+
+        static void TryCopyPrefabThumbnailCompanion(const std::filesystem::path& sourcePath, const std::filesystem::path& targetPath)
+        {
+            const std::filesystem::path sourceStem = sourcePath.stem().stem();
+            const std::filesystem::path targetStem = targetPath.stem().stem();
+            const char* exts[] = { ".png", ".jpg", ".jpeg" };
+            for (const char* ext : exts)
+            {
+                const std::filesystem::path sourceThumb = sourcePath.parent_path() / (sourceStem.string() + ext);
+                if (!std::filesystem::exists(sourceThumb))
+                    continue;
+                const std::filesystem::path targetThumb = targetPath.parent_path() / (targetStem.string() + ext);
+                std::error_code ec;
+                std::filesystem::copy_file(sourceThumb, targetThumb, std::filesystem::copy_options::overwrite_existing, ec);
+                break;
+            }
+        }
+
+        static void TryRenamePrefabThumbnailCompanion(const std::filesystem::path& sourcePath, const std::filesystem::path& targetPath)
+        {
+            const std::filesystem::path sourceStem = sourcePath.stem().stem();
+            const std::filesystem::path targetStem = targetPath.stem().stem();
+            const char* exts[] = { ".png", ".jpg", ".jpeg" };
+            for (const char* ext : exts)
+            {
+                const std::filesystem::path sourceThumb = sourcePath.parent_path() / (sourceStem.string() + ext);
+                if (!std::filesystem::exists(sourceThumb))
+                    continue;
+                const std::filesystem::path targetThumb = targetPath.parent_path() / (targetStem.string() + ext);
+                std::error_code ec;
+                std::filesystem::rename(sourceThumb, targetThumb, ec);
+                break;
+            }
+        }
+
+        static bool DuplicatePrefabAsset(const std::filesystem::path& sourcePath, std::filesystem::path& outPath)
+        {
+            if (!std::filesystem::exists(sourcePath))
+                return false;
+
+            const std::string baseName = sourcePath.stem().stem().string();
+            for (int suffix = 1; suffix <= 128; ++suffix)
+            {
+                const std::string candidateName = suffix == 1
+                    ? std::format("{}_Copy", baseName)
+                    : std::format("{}_Copy{}", baseName, suffix);
+                const std::filesystem::path candidatePath = sourcePath.parent_path() / (candidateName + ".prefab.json");
+                if (std::filesystem::exists(candidatePath))
+                    continue;
+
+                std::error_code ec;
+                std::filesystem::copy_file(sourcePath, candidatePath, std::filesystem::copy_options::none, ec);
+                if (ec)
+                    return false;
+                TryCopyPrefabThumbnailCompanion(sourcePath, candidatePath);
+                outPath = candidatePath;
+                return true;
+            }
+
+            return false;
+        }
+
+        static bool RenamePrefabAsset(const std::filesystem::path& sourcePath, const std::string& requestedName, std::filesystem::path& outPath)
+        {
+            const std::string sanitizedName = SanitizePrefabAssetName(requestedName);
+            const std::filesystem::path targetPath = sourcePath.parent_path() / (sanitizedName + ".prefab.json");
+            if (targetPath == sourcePath || std::filesystem::exists(targetPath))
+                return false;
+
+            std::error_code ec;
+            std::filesystem::rename(sourcePath, targetPath, ec);
+            if (ec)
+                return false;
+
+            TryRenamePrefabThumbnailCompanion(sourcePath, targetPath);
+            outPath = targetPath;
+            return true;
+        }
+
+        static bool DeletePrefabAsset(const std::filesystem::path& path)
+        {
+            std::error_code ec;
+            return std::filesystem::remove(path, ec) && !ec;
         }
 
         static std::vector<std::filesystem::path> EnumeratePrefabAssets()
@@ -1089,7 +1688,7 @@ namespace EditorPanels
                     const auto& suggestions = ai.GetActiveSuggestions();
                     const std::vector<BlackFlamePromptEntry> dynamicPrompts = BuildDynamicPrompts(ctx, selectedMaterial, mode, suggestions);
                     if (!dynamicPrompts.empty())
-                        ai.NotifySuggestionConfidence(dynamicPrompts.front().Score);
+                        ai.NotifySuggestionConfidence(!dynamicPrompts.front().Prompt.empty() ? dynamicPrompts.front().Prompt : dynamicPrompts.front().Label, dynamicPrompts.front().Score);
 
                     DrawBlackFlameSectionTitle("Recommended", ImVec4(1.0f, 0.76f, 0.30f, 1.0f));
                     bool drewRecommended = false;
@@ -1116,7 +1715,7 @@ namespace EditorPanels
                             }
                             else
                             {
-                                SetBlackFlamePromptText(entry.Prompt);
+                                InvokeBlackFlamePrompt(ai, entry.Prompt);
                             }
                         }
                     }
@@ -1131,7 +1730,7 @@ namespace EditorPanels
                             continue;
                         drewQuickAction = true;
                         if (DrawDynamicPromptButton(entry))
-                            SetBlackFlamePromptText(entry.Prompt);
+                            InvokeBlackFlamePrompt(ai, entry.Prompt);
                     }
                     if (!drewQuickAction)
                         ImGui::TextDisabled("No quick actions available.");
@@ -1156,8 +1755,7 @@ namespace EditorPanels
                     ImGui::TextWrapped("Draft: %s", g_BlackFlamePromptBuffer[0] != '\0' ? g_BlackFlamePromptBuffer : "<empty>");
                     if (ImGui::Button("Invoke Draft") && g_BlackFlamePromptBuffer[0] != '\0')
                     {
-                        ai.SubmitPrompt(g_BlackFlamePromptBuffer);
-                        BlackFlame().open = true;
+                        InvokeBlackFlamePrompt(ai, g_BlackFlamePromptBuffer);
                     }
                 }
                 ImGui::End();
@@ -1177,20 +1775,13 @@ namespace EditorPanels
                 SceneInstance* selected = Scene::GetSelectedInstance();
                 const bool hasSelection = selected != nullptr;
                 const bool isPrefabInstance = hasSelection && !selected->prefabSourcePath.empty();
+                std::string selectedBasePrefabPath;
+                const bool isVariantInstance = isPrefabInstance && Scene::GetPrefabAssetBasePrefab(selected->prefabSourcePath, selectedBasePrefabPath) && !selectedBasePrefabPath.empty();
+                const bool selectedVariantBaseMissing = isVariantInstance && !std::filesystem::exists(selectedBasePrefabPath);
+                std::string selectedVariantCyclePath;
+                const bool selectedVariantHasCircularInheritance = isVariantInstance && !Scene::HasCircularPrefabInheritance(selected->prefabSourcePath, &selectedVariantCyclePath);
                 PrefabOverrideState overrides{};
                 const bool hasOverrideState = isPrefabInstance && Scene::TryGetPrefabOverrideState(selected->instanceId, overrides);
-
-                auto sanitizePrefabName = [](std::string name)
-                {
-                    for (char& c : name)
-                    {
-                        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-'))
-                            c = '_';
-                    }
-                    if (name.empty())
-                        name = "Prefab";
-                    return name;
-                };
 
                 auto drawActionButtonPair = [](const char* leftLabel, const char* rightLabel, const std::function<void()>& leftAction, const std::function<void()>& rightAction, bool enabled)
                 {
@@ -1211,6 +1802,222 @@ namespace EditorPanels
                     ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.20f, 1.0f), "Prefab Foundry");
                     ImGui::TextWrapped("Forge reusable scene pieces, inspect override state, and spawn prefab content with the same visual language as the flame.");
 
+                    if (g_RequestOpenPrefabRenamePopup)
+                    {
+                        ImGui::OpenPopup("Rename Prefab##PrefabLibrary");
+                        g_RequestOpenPrefabRenamePopup = false;
+                    }
+                    if (g_RequestOpenPrefabDeletePopup)
+                    {
+                        ImGui::OpenPopup("Delete Prefab##PrefabLibrary");
+                        g_RequestOpenPrefabDeletePopup = false;
+                    }
+                    if (g_RequestOpenPrefabCategoryPopup)
+                    {
+                        ImGui::OpenPopup("Edit Prefab Category##PrefabLibrary");
+                        g_RequestOpenPrefabCategoryPopup = false;
+                    }
+                    if (g_RequestOpenPrefabTagsPopup)
+                    {
+                        ImGui::OpenPopup("Edit Prefab Tags##PrefabLibrary");
+                        g_RequestOpenPrefabTagsPopup = false;
+                    }
+                    if (g_RequestOpenPrefabRebasePopup)
+                    {
+                        ImGui::OpenPopup("Rebase Prefab Variant##PrefabLibrary");
+                        g_RequestOpenPrefabRebasePopup = false;
+                    }
+
+                    if (ImGui::BeginPopupModal("Rename Prefab##PrefabLibrary", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                    {
+                        ImGui::TextUnformatted("Rename prefab asset");
+                        ImGui::Separator();
+                        ImGui::InputText("Name", g_PrefabLibraryRenameBuffer, IM_ARRAYSIZE(g_PrefabLibraryRenameBuffer));
+                        if (ImGui::Button("Rename##PrefabLibrary") && g_PendingPrefabRenamePath != std::filesystem::path{})
+                        {
+                            std::filesystem::path renamedPath;
+                            if (RenamePrefabAsset(g_PendingPrefabRenamePath, g_PrefabLibraryRenameBuffer, renamedPath))
+                                Logger::Log(LogLevel::Info, std::format("Renamed prefab to {}", renamedPath.string()), "[Prefab]");
+                            else
+                                Logger::Log(LogLevel::Warning, "Failed to rename prefab asset.", "[Prefab]");
+                            g_PendingPrefabRenamePath.clear();
+                            g_PrefabLibraryRenameBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Cancel##PrefabLibraryRename"))
+                        {
+                            g_PendingPrefabRenamePath.clear();
+                            g_PrefabLibraryRenameBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndPopup();
+                    }
+
+                    if (ImGui::BeginPopupModal("Rebase Prefab Variant##PrefabLibrary", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                    {
+                        ImGui::TextUnformatted("Choose a new base or variant prefab");
+                        ImGui::Separator();
+                        ImGui::InputTextWithHint("Search", "Filter prefabs...", g_PrefabRebaseSearchBuffer, IM_ARRAYSIZE(g_PrefabRebaseSearchBuffer));
+
+                        const std::vector<PrefabLibraryEntry> rebaseEntries = BuildPrefabLibraryEntries(false);
+                        std::string rebaseFilter = g_PrefabRebaseSearchBuffer;
+                        std::transform(rebaseFilter.begin(), rebaseFilter.end(), rebaseFilter.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+                        ImGui::BeginChild("##PrefabRebaseCandidates", ImVec2(620.0f, 280.0f), ImGuiChildFlags_Border);
+                        bool foundCandidate = false;
+                        for (const PrefabLibraryEntry& entry : rebaseEntries)
+                        {
+                            if (entry.Path == g_PendingPrefabRebaseTargetPath)
+                                continue;
+
+                            std::string haystack = entry.SearchText;
+                            std::transform(haystack.begin(), haystack.end(), haystack.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                            if (!rebaseFilter.empty() && haystack.find(rebaseFilter) == std::string::npos)
+                                continue;
+
+                            const bool candidateInvalid = entry.MissingBasePrefab || entry.HasCircularInheritance;
+                            ImGui::PushID(entry.Path.string().c_str());
+                            const ImVec2 cardMin = ImGui::GetCursorScreenPos();
+                            const ImVec2 cardSize(ImGui::GetContentRegionAvail().x, 86.0f);
+                            ImGui::InvisibleButton("##RebaseCard", cardSize);
+                            const bool hovered = ImGui::IsItemHovered();
+                            const ImVec2 cardMax = ImGui::GetItemRectMax();
+                            ImDrawList* draw = ImGui::GetWindowDrawList();
+                            draw->AddRectFilled(cardMin, cardMax, hovered ? IM_COL32(36, 28, 30, 236) : IM_COL32(22, 18, 20, 220), 10.0f);
+                            draw->AddRect(cardMin, cardMax, candidateInvalid ? IM_COL32(255, 96, 78, 96) : hovered ? IM_COL32(255, 190, 120, 64) : IM_COL32(255, 255, 255, 18), 10.0f, 0, hovered ? 1.5f : 1.0f);
+
+                            ImGui::SetCursorScreenPos(ImVec2(cardMin.x + 10.0f, cardMin.y + 10.0f));
+                            if (ImTextureID thumb = GetPrefabThumbnailID(entry.Path))
+                                ImGui::Image(thumb, ImVec2(56.0f, 56.0f), ImVec2(0, 0), ImVec2(1, 1));
+                            else
+                                ImGui::Dummy(ImVec2(56.0f, 56.0f));
+
+                            ImGui::SetCursorScreenPos(ImVec2(cardMin.x + 78.0f, cardMin.y + 10.0f));
+                            ImGui::BeginGroup();
+                            ImGui::TextUnformatted(entry.Label.c_str());
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.34f, 1.0f), "[%s]", entry.Category.c_str());
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("%s", entry.BasePrefabPath.empty() ? "Base Prefab" : std::format("Variant of {}", entry.BasePrefabLabel).c_str());
+                            ImGui::TextDisabled("%zu instances • %zu roots • %s", entry.InstanceCount, entry.RootCount, FormatPrefabFileSize(entry.FileSize).c_str());
+                            ImGui::TextWrapped("%s", entry.Tags.empty() ? "Tags: <none>" : std::format("Tags: {}", JoinPrefabTags(entry.Tags)).c_str());
+                            if (candidateInvalid)
+                            {
+                                ImGui::TextColored(ImVec4(1.0f, 0.36f, 0.32f, 1.0f), "%s", entry.MissingBasePrefab ? "Cannot use: missing base." : "Cannot use: circular inheritance.");
+                            }
+                            else
+                            {
+                                if (ImGui::SmallButton("Use As Base"))
+                                {
+                                    PushUndoSnapshot(editor);
+                                    if (!Scene::SaveSelectedAsPrefabVariant(g_PendingPrefabRebaseTargetPath.string(), entry.Path.string()))
+                                        Logger::Log(LogLevel::Warning, "Failed to rebase selected variant.", "[Prefab]");
+                                    else
+                                        Logger::Log(LogLevel::Info, std::format("Rebased variant {} to {}", g_PendingPrefabRebaseTargetPath.string(), entry.Path.string()), "[Prefab]");
+                                    g_PendingPrefabRebaseTargetPath.clear();
+                                    g_PrefabRebaseSearchBuffer[0] = '\0';
+                                    ImGui::CloseCurrentPopup();
+                                }
+                            }
+                            ImGui::EndGroup();
+                            ImGui::PopID();
+                            ImGui::Spacing();
+                            foundCandidate = true;
+                        }
+                        if (!foundCandidate)
+                            ImGui::TextDisabled("No valid prefab candidates match the current filter.");
+                        ImGui::EndChild();
+
+                        if (ImGui::Button("Cancel##PrefabRebase"))
+                        {
+                            g_PendingPrefabRebaseTargetPath.clear();
+                            g_PrefabRebaseSearchBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndPopup();
+                    }
+
+                    if (ImGui::BeginPopupModal("Edit Prefab Tags##PrefabLibrary", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                    {
+                        ImGui::TextUnformatted("Edit prefab tags");
+                        ImGui::Separator();
+                        ImGui::InputTextWithHint("Tags", "comma, separated, tags", g_PrefabLibraryTagsBuffer, IM_ARRAYSIZE(g_PrefabLibraryTagsBuffer));
+                        if (ImGui::Button("Save##PrefabTags") && g_PendingPrefabTagsPath != std::filesystem::path{})
+                        {
+                            const std::vector<std::string> tags = ParsePrefabTagsBuffer(g_PrefabLibraryTagsBuffer);
+                            if (Scene::SetPrefabAssetTags(g_PendingPrefabTagsPath.string(), tags))
+                                Logger::Log(LogLevel::Info, std::format("Updated prefab tags for {}", g_PendingPrefabTagsPath.string()), "[Prefab]");
+                            else
+                                Logger::Log(LogLevel::Warning, "Failed to update prefab tags.", "[Prefab]");
+                            g_PendingPrefabTagsPath.clear();
+                            g_PrefabLibraryTagsBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Cancel##PrefabTags"))
+                        {
+                            g_PendingPrefabTagsPath.clear();
+                            g_PrefabLibraryTagsBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::TextDisabled("Tags are optional. Use commas to separate them.");
+                        ImGui::EndPopup();
+                    }
+
+                    if (ImGui::BeginPopupModal("Edit Prefab Category##PrefabLibrary", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+                    {
+                        ImGui::TextUnformatted("Edit prefab category");
+                        ImGui::Separator();
+                        ImGui::InputText("Category", g_PrefabLibraryCategoryBuffer, IM_ARRAYSIZE(g_PrefabLibraryCategoryBuffer));
+                        if (ImGui::Button("Save##PrefabCategory") && g_PendingPrefabCategoryPath != std::filesystem::path{})
+                        {
+                            if (Scene::SetPrefabAssetCategory(g_PendingPrefabCategoryPath.string(), g_PrefabLibraryCategoryBuffer))
+                                Logger::Log(LogLevel::Info, std::format("Updated prefab category for {}", g_PendingPrefabCategoryPath.string()), "[Prefab]");
+                            else
+                                Logger::Log(LogLevel::Warning, "Failed to update prefab category.", "[Prefab]");
+                            g_PendingPrefabCategoryPath.clear();
+                            g_PrefabLibraryCategoryBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Cancel##PrefabCategory"))
+                        {
+                            g_PendingPrefabCategoryPath.clear();
+                            g_PrefabLibraryCategoryBuffer[0] = '\0';
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndPopup();
+                    }
+
+                    ImGui::SetNextWindowSize(ImVec2(480.0f, 0.0f), ImGuiCond_Appearing);
+                    if (ImGui::BeginPopupModal("Delete Prefab##PrefabLibrary", nullptr, ImGuiWindowFlags_NoResize))
+                    {
+                        const std::string pendingPrefabName = g_PendingPrefabDeletePath.empty() ? std::string("(unknown)") : g_PendingPrefabDeletePath.filename().string();
+                        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 430.0f);
+                        ImGui::Text("Delete prefab asset '%s'?", pendingPrefabName.c_str());
+                        ImGui::Spacing();
+                        ImGui::TextWrapped("Existing scene instances will keep their current scene data, but the prefab source file will be removed from the library.");
+                        ImGui::PopTextWrapPos();
+                        ImGui::Separator();
+                        if (ImGui::Button("Delete##PrefabLibraryConfirm") && g_PendingPrefabDeletePath != std::filesystem::path{})
+                        {
+                            if (DeletePrefabAsset(g_PendingPrefabDeletePath))
+                                Logger::Log(LogLevel::Info, std::format("Deleted prefab {}", g_PendingPrefabDeletePath.string()), "[Prefab]");
+                            else
+                                Logger::Log(LogLevel::Warning, "Failed to delete prefab asset.", "[Prefab]");
+                            g_PendingPrefabDeletePath.clear();
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Cancel##PrefabLibraryDelete"))
+                        {
+                            g_PendingPrefabDeletePath.clear();
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndPopup();
+                    }
+
                     DrawBlackFlameSectionTitle("Selected Object", ImVec4(0.95f, 0.72f, 0.34f, 1.0f));
                     if (!hasSelection)
                     {
@@ -1221,6 +2028,74 @@ namespace EditorPanels
                         ImGui::Text("Name: %s", selected->name.empty() ? "(unnamed)" : selected->name.c_str());
                         ImGui::Text("Instance ID: %u", selected->instanceId);
                         ImGui::Text("Prefab Source: %s", isPrefabInstance ? selected->prefabSourcePath.c_str() : "None");
+                        if (isVariantInstance)
+                        {
+                            ImGui::Text("Variant Of: %s", selectedBasePrefabPath.c_str());
+                            if (ImGui::SmallButton("Open Base Prefab"))
+                                RevealAssetInBrowser(selectedBasePrefabPath);
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton(selectedVariantBaseMissing ? "Repair Broken Base..." : "Rebase Variant..."))
+                            {
+                                g_PendingPrefabRebaseTargetPath = selected->prefabSourcePath;
+                                g_PrefabRebaseSearchBuffer[0] = '\0';
+                                g_RequestOpenPrefabRebasePopup = true;
+                            }
+                            if (selectedVariantBaseMissing)
+                            {
+                                ImGui::TextColored(ImVec4(1.0f, 0.36f, 0.32f, 1.0f), "Warning: base prefab is missing.");
+                                const std::vector<PrefabLibraryEntry> repairEntries = BuildPrefabLibraryEntries(false);
+                                const std::vector<const PrefabLibraryEntry*> repairSuggestions = BuildPrefabRepairSuggestions(selectedBasePrefabPath, repairEntries);
+                                if (!repairSuggestions.empty())
+                                {
+                                    ImGui::TextDisabled("Repair suggestions:");
+                                    for (size_t suggestionIndex = 0; suggestionIndex < repairSuggestions.size(); ++suggestionIndex)
+                                    {
+                                        const PrefabLibraryEntry* suggestion = repairSuggestions[suggestionIndex];
+                                        if (!suggestion)
+                                            continue;
+                                        if (suggestionIndex > 0)
+                                            ImGui::SameLine();
+                                        const std::string repairLabel = std::format("Repair -> {}##RepairSuggestion{}", suggestion->Label, suggestionIndex);
+                                        if (ImGui::SmallButton(repairLabel.c_str()))
+                                        {
+                                            PushUndoSnapshot(editor);
+                                            if (!Scene::SaveSelectedAsPrefabVariant(selected->prefabSourcePath, suggestion->Path.string()))
+                                                Logger::Log(LogLevel::Warning, "Failed to repair broken base prefab reference.", "[Prefab]");
+                                        }
+                                    }
+                                }
+                            }
+                            else if (selectedVariantHasCircularInheritance)
+                                ImGui::TextColored(ImVec4(1.0f, 0.36f, 0.32f, 1.0f), "Warning: circular inheritance detected at %s", selectedVariantCyclePath.c_str());
+                        }
+
+                        if (isPrefabInstance)
+                        {
+                            bool chainMissingBase = false;
+                            bool chainCircular = false;
+                            std::string chainIssuePath;
+                            const std::vector<std::string> inheritanceChain = BuildPrefabInheritanceChain(selected->prefabSourcePath, chainMissingBase, chainCircular, &chainIssuePath);
+                            if (!inheritanceChain.empty())
+                            {
+                                DrawBlackFlameSectionTitle("Inheritance Chain", ImVec4(0.84f, 0.76f, 1.0f, 1.0f));
+                                for (size_t chainIndex = 0; chainIndex < inheritanceChain.size(); ++chainIndex)
+                                {
+                                    const std::filesystem::path chainPath = std::filesystem::path(inheritanceChain[chainIndex]);
+                                    const std::string chainLabel = chainPath.stem().stem().string();
+                                    const char* role = chainIndex == 0 ? "Current" : "Base";
+                                    ImGui::BulletText("%s %zu: %s", role, chainIndex, chainLabel.empty() ? chainPath.filename().string().c_str() : chainLabel.c_str());
+                                    ImGui::SameLine();
+                                    const std::string revealLabel = std::format("Show##Chain{}", chainIndex);
+                                    if (ImGui::SmallButton(revealLabel.c_str()))
+                                        RevealAssetInBrowser(inheritanceChain[chainIndex]);
+                                }
+                                if (chainMissingBase)
+                                    ImGui::TextColored(ImVec4(1.0f, 0.36f, 0.32f, 1.0f), "Broken link: %s", chainIssuePath.c_str());
+                                else if (chainCircular)
+                                    ImGui::TextColored(ImVec4(1.0f, 0.36f, 0.32f, 1.0f), "Cycle detected at: %s", chainIssuePath.c_str());
+                            }
+                        }
+
                         if (hasOverrideState)
                         {
                             std::string overrideList;
@@ -1238,14 +2113,52 @@ namespace EditorPanels
                             ImGui::Text("Overrides: %s", overrideList.empty() ? "None" : overrideList.c_str());
                         }
 
+                        if (hasOverrideState && overrides.Any())
+                        {
+                            DrawBlackFlameSectionTitle("Active Overrides", ImVec4(1.0f, 0.54f, 0.20f, 1.0f));
+                            auto drawOverrideChip = [&](const char* label, PrefabProperty property, bool enabled)
+                            {
+                                if (!enabled)
+                                    return;
+                                ImGui::BulletText("%s", label);
+                                ImGui::SameLine();
+                                const std::string revertLabel = std::format("Revert {}##ActiveOverride", label);
+                                if (ImGui::SmallButton(revertLabel.c_str()))
+                                {
+                                    PushUndoSnapshot(editor);
+                                    Scene::RevertSelectedPrefabProperty(property);
+                                }
+                            };
+
+                            drawOverrideChip("Name", PrefabProperty::Name, overrides.name);
+                            drawOverrideChip("Rotation", PrefabProperty::Rotation, overrides.rotation);
+                            drawOverrideChip("Scale", PrefabProperty::Scale, overrides.scale);
+                            drawOverrideChip("Visible", PrefabProperty::Visible, overrides.visible);
+                            drawOverrideChip("Material", PrefabProperty::Material, overrides.material);
+                            drawOverrideChip("Vault Type", PrefabProperty::VaultType, overrides.vaultType);
+                        }
+
                         if (ImGui::Button("Save Selected As Prefab"))
                         {
                             PushUndoSnapshot(editor);
                             const std::filesystem::path prefabPath = std::filesystem::path("Assets") / "Prefabs" /
-                                (sanitizePrefabName(selected->name) + ".prefab.json");
+                                (SanitizePrefabAssetName(selected->name) + ".prefab.json");
                             if (!Scene::SaveSelectedAsPrefab(prefabPath.string()))
                                 Logger::Log(LogLevel::Error, std::format("Failed to save prefab: {}", prefabPath.string()), "[Editor]");
                         }
+                        if (!isPrefabInstance || isVariantInstance)
+                            ImGui::BeginDisabled();
+                        ImGui::SameLine();
+                        if (ImGui::Button("Create Variant"))
+                        {
+                            PushUndoSnapshot(editor);
+                            const std::filesystem::path variantPath = std::filesystem::path("Assets") / "Prefabs" /
+                                (SanitizePrefabAssetName(selected->name) + "_Variant.prefab.json");
+                            if (!Scene::SaveSelectedAsPrefabVariant(variantPath.string(), selected->prefabSourcePath))
+                                Logger::Log(LogLevel::Error, std::format("Failed to create prefab variant: {}", variantPath.string()), "[Editor]");
+                        }
+                        if (!isPrefabInstance || isVariantInstance)
+                            ImGui::EndDisabled();
 
                         drawActionButtonPair(
                             "Apply All Overrides",
@@ -1303,29 +2216,131 @@ namespace EditorPanels
                     }
 
                     DrawBlackFlameSectionTitle("Prefab Library", ImVec4(1.0f, 0.48f, 0.22f, 1.0f));
-                    const auto prefabAssets = EnumeratePrefabAssets();
-                    if (prefabAssets.empty())
+                    const std::vector<PrefabLibraryEntry> allPrefabEntries = BuildPrefabLibraryEntries(false);
+                    const std::vector<std::string> prefabCategories = BuildPrefabLibraryCategories(allPrefabEntries);
+                    const std::vector<std::string> prefabTags = BuildPrefabLibraryTags(allPrefabEntries);
+                    if (std::find(prefabCategories.begin(), prefabCategories.end(), g_PrefabLibraryCategoryFilter) == prefabCategories.end())
+                        g_PrefabLibraryCategoryFilter = prefabCategories.empty() ? std::string("All Categories") : prefabCategories.front();
+                    if (std::find(prefabTags.begin(), prefabTags.end(), g_PrefabLibraryTagFilter) == prefabTags.end())
+                        g_PrefabLibraryTagFilter = prefabTags.empty() ? std::string("All Tags") : prefabTags.front();
+
+                    ImGui::InputTextWithHint("##PrefabLibrarySearch", "Search prefabs...", g_PrefabLibrarySearchBuffer, IM_ARRAYSIZE(g_PrefabLibrarySearchBuffer));
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(160.0f);
+                    if (ImGui::BeginCombo("##PrefabLibraryCategoryFilter", g_PrefabLibraryCategoryFilter.c_str()))
                     {
-                        ImGui::TextDisabled("No prefabs saved yet.");
+                        for (const std::string& category : prefabCategories)
+                        {
+                            const bool isSelected = (g_PrefabLibraryCategoryFilter == category);
+                            if (ImGui::Selectable(category.c_str(), isSelected))
+                                g_PrefabLibraryCategoryFilter = category;
+                            if (isSelected)
+                                ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(150.0f);
+                    if (ImGui::BeginCombo("##PrefabLibraryTagFilter", g_PrefabLibraryTagFilter.c_str()))
+                    {
+                        for (const std::string& tag : prefabTags)
+                        {
+                            const bool isSelected = (g_PrefabLibraryTagFilter == tag);
+                            if (ImGui::Selectable(tag.c_str(), isSelected))
+                                g_PrefabLibraryTagFilter = tag;
+                            if (isSelected)
+                                ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(130.0f);
+                    if (ImGui::BeginCombo("##PrefabLibraryTypeFilter", PrefabTypeFilterLabel(g_PrefabLibraryTypeFilter)))
+                    {
+                        const PrefabLibraryTypeFilter filters[] =
+                        {
+                            PrefabLibraryTypeFilter::All,
+                            PrefabLibraryTypeFilter::BaseOnly,
+                            PrefabLibraryTypeFilter::VariantsOnly,
+                        };
+                        for (PrefabLibraryTypeFilter filter : filters)
+                        {
+                            const bool isSelected = (g_PrefabLibraryTypeFilter == filter);
+                            if (ImGui::Selectable(PrefabTypeFilterLabel(filter), isSelected))
+                                g_PrefabLibraryTypeFilter = filter;
+                            if (isSelected)
+                                ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(170.0f);
+                    if (ImGui::BeginCombo("##PrefabLibrarySort", PrefabSortModeLabel(g_PrefabLibrarySortMode)))
+                    {
+                        const PrefabLibrarySortMode modes[] =
+                        {
+                            PrefabLibrarySortMode::NameAsc,
+                            PrefabLibrarySortMode::NameDesc,
+                            PrefabLibrarySortMode::InstancesDesc,
+                            PrefabLibrarySortMode::NewestFirst,
+                        };
+                        for (PrefabLibrarySortMode mode : modes)
+                        {
+                            const bool isSelected = (g_PrefabLibrarySortMode == mode);
+                            if (ImGui::Selectable(PrefabSortModeLabel(mode), isSelected))
+                                g_PrefabLibrarySortMode = mode;
+                            if (isSelected)
+                                ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+
+                    const std::vector<PrefabLibraryEntry> prefabEntries = BuildPrefabLibraryEntries();
+                    ImGui::TextDisabled("%zu prefab%s • Type: %s • Category: %s • Tag: %s", prefabEntries.size(), prefabEntries.size() == 1 ? "" : "s", PrefabTypeFilterLabel(g_PrefabLibraryTypeFilter), g_PrefabLibraryCategoryFilter.c_str(), g_PrefabLibraryTagFilter.c_str());
+                    if (prefabEntries.empty())
+                    {
+                        ImGui::TextDisabled((g_PrefabLibrarySearchBuffer[0] != '\0' || g_PrefabLibraryCategoryFilter != "All Categories" || g_PrefabLibraryTagFilter != "All Tags" || g_PrefabLibraryTypeFilter != PrefabLibraryTypeFilter::All) ? "No prefabs match the current filters." : "No prefabs saved yet.");
                     }
                     else
                     {
                         ImGui::BeginChild("##PrefabLibraryList", ImVec2(0.0f, 260.0f), ImGuiChildFlags_Border);
-                        for (const auto& prefabPath : prefabAssets)
+                        for (const PrefabLibraryEntry& entry : prefabEntries)
                         {
-                            const std::string prefabPathString = prefabPath.string();
-                            const std::string prefabLabel = prefabPath.stem().stem().string();
-                            const ImTextureID prefabThumb = GetPrefabThumbnailID(prefabPath);
+                            const std::string prefabPathString = entry.Path.string();
+                            const std::string prefabLabel = entry.Label;
+                            const ImTextureID prefabThumb = GetPrefabThumbnailID(entry.Path);
+                            const DirectX::XMFLOAT3 spawnPosition = hasSelection ? Scene::GetSelectionCenterOrActivePosition() : DirectX::XMFLOAT3{ 0.0f, 0.5f, 0.0f };
 
                             ImGui::PushID(prefabPathString.c_str());
                             ImGui::BeginGroup();
-                            ImGui::InvisibleButton("##PrefabCard", ImVec2(ImGui::GetContentRegionAvail().x, 76.0f));
+                            ImGui::InvisibleButton("##PrefabCard", ImVec2(ImGui::GetContentRegionAvail().x, 104.0f));
                             const bool cardHovered = ImGui::IsItemHovered();
                             const ImVec2 cardMin = ImGui::GetItemRectMin();
                             const ImVec2 cardMax = ImGui::GetItemRectMax();
                             ImDrawList* draw = ImGui::GetWindowDrawList();
                             draw->AddRectFilled(cardMin, cardMax, cardHovered ? IM_COL32(34, 24, 26, 232) : IM_COL32(24, 18, 20, 220), 10.0f);
                             draw->AddRect(cardMin, cardMax, cardHovered ? IM_COL32(255, 190, 120, 52) : IM_COL32(255, 255, 255, 20), 10.0f, 0, cardHovered ? 1.5f : 1.0f);
+
+                            if (cardHovered && !entry.BasePrefabPath.empty())
+                            {
+                                bool chainMissingBase = false;
+                                bool chainCircular = false;
+                                std::string chainIssuePath;
+                                const std::vector<std::string> chain = BuildPrefabInheritanceChain(prefabPathString, chainMissingBase, chainCircular, &chainIssuePath);
+                                if (!chain.empty())
+                                {
+                                    ImGui::BeginTooltip();
+                                    ImGui::TextUnformatted("Inheritance Chain");
+                                    ImGui::Separator();
+                                    for (size_t chainIndex = 0; chainIndex < chain.size(); ++chainIndex)
+                                        ImGui::BulletText("%s", chain[chainIndex].c_str());
+                                    if (chainMissingBase)
+                                        ImGui::TextColored(ImVec4(1.0f, 0.36f, 0.32f, 1.0f), "Broken link: %s", chainIssuePath.c_str());
+                                    else if (chainCircular)
+                                        ImGui::TextColored(ImVec4(1.0f, 0.36f, 0.32f, 1.0f), "Cycle detected at: %s", chainIssuePath.c_str());
+                                    ImGui::EndTooltip();
+                                }
+                            }
 
                             if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
                             {
@@ -1348,12 +2363,92 @@ namespace EditorPanels
                             ImGui::SetCursorScreenPos(ImVec2(cardMin.x + 76.0f, cardMin.y + 10.0f));
                             ImGui::BeginGroup();
                             ImGui::TextUnformatted(prefabLabel.c_str());
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.34f, 1.0f), "[%s]", entry.Category.c_str());
+                            if (!entry.BasePrefabLabel.empty())
+                            {
+                                ImGui::SameLine();
+                                ImGui::TextColored(ImVec4(0.72f, 0.82f, 1.0f, 1.0f), "Variant of %s", entry.BasePrefabLabel.c_str());
+                            }
                             ImGui::TextDisabled("%s", prefabPathString.c_str());
+                            ImGui::TextDisabled("%zu instances • %zu roots • %s", entry.InstanceCount, entry.RootCount, FormatPrefabFileSize(entry.FileSize).c_str());
+                            const std::string cameraSuffix = entry.CameraCount > 0 ? std::format(" • {} camera{}", entry.CameraCount, entry.CameraCount == 1 ? "" : "s") : std::string{};
+                            ImGui::TextWrapped("%s%s", entry.PrimitiveSummary.c_str(), cameraSuffix.c_str());
+                            ImGui::TextWrapped("Tags: %s", entry.Tags.empty() ? "<none>" : JoinPrefabTags(entry.Tags).c_str());
+                            if (entry.MissingBasePrefab)
+                                ImGui::TextColored(ImVec4(1.0f, 0.36f, 0.32f, 1.0f), "Missing base prefab");
+                            else if (entry.HasCircularInheritance)
+                                ImGui::TextColored(ImVec4(1.0f, 0.36f, 0.32f, 1.0f), "Circular inheritance detected");
                             if (ImGui::Button("Instantiate"))
                             {
                                 PushUndoSnapshot(editor);
-                                Scene::InstantiatePrefab(prefabPathString, { 0.0f, 0.5f, 0.0f });
+                                Scene::InstantiatePrefab(prefabPathString, spawnPosition);
                                 editor.selection.position = Scene::GetSelectionCenterOrActivePosition();
+                            }
+                            ImGui::SameLine();
+                            if (!entry.BasePrefabPath.empty())
+                            {
+                                if (ImGui::SmallButton("Open Base"))
+                                    RevealAssetInBrowser(entry.BasePrefabPath);
+                            }
+                            else
+                            {
+                                ImGui::BeginDisabled();
+                                ImGui::SmallButton("Open Base");
+                                ImGui::EndDisabled();
+                            }
+                            ImGui::SameLine();
+                            if (isVariantInstance && entry.BasePrefabPath.empty() && entry.Path != selected->prefabSourcePath)
+                            {
+                                if (ImGui::SmallButton("Rebase Here"))
+                                {
+                                    PushUndoSnapshot(editor);
+                                    if (!Scene::SaveSelectedAsPrefabVariant(selected->prefabSourcePath, entry.Path.string()))
+                                        Logger::Log(LogLevel::Warning, "Failed to rebase selected variant.", "[Prefab]");
+                                }
+                            }
+                            else
+                            {
+                                ImGui::BeginDisabled();
+                                ImGui::SmallButton("Rebase Here");
+                                ImGui::EndDisabled();
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Category"))
+                            {
+                                g_PendingPrefabCategoryPath = entry.Path;
+                                strncpy_s(g_PrefabLibraryCategoryBuffer, entry.Category.c_str(), _TRUNCATE);
+                                g_RequestOpenPrefabCategoryPopup = true;
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Tags"))
+                            {
+                                g_PendingPrefabTagsPath = entry.Path;
+                                const std::string tagText = JoinPrefabTags(entry.Tags);
+                                strncpy_s(g_PrefabLibraryTagsBuffer, tagText.c_str(), _TRUNCATE);
+                                g_RequestOpenPrefabTagsPopup = true;
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Duplicate"))
+                            {
+                                std::filesystem::path duplicatedPath;
+                                if (DuplicatePrefabAsset(entry.Path, duplicatedPath))
+                                    Logger::Log(LogLevel::Info, std::format("Duplicated prefab to {}", duplicatedPath.string()), "[Prefab]");
+                                else
+                                    Logger::Log(LogLevel::Warning, "Failed to duplicate prefab asset.", "[Prefab]");
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Rename"))
+                            {
+                                g_PendingPrefabRenamePath = entry.Path;
+                                strncpy_s(g_PrefabLibraryRenameBuffer, prefabLabel.c_str(), _TRUNCATE);
+                                g_RequestOpenPrefabRenamePopup = true;
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Delete"))
+                            {
+                                g_PendingPrefabDeletePath = entry.Path;
+                                g_RequestOpenPrefabDeletePopup = true;
                             }
                             ImGui::EndGroup();
                             ImGui::EndGroup();
@@ -1376,6 +2471,8 @@ namespace EditorPanels
         SceneInstance* selected = Scene::GetSelectedInstance();
         const bool hasSelection = selected != nullptr;
         const bool isPrefabInstance = hasSelection && !selected->prefabSourcePath.empty();
+        std::string selectedBasePrefabPath;
+        const bool isVariantInstance = isPrefabInstance && Scene::GetPrefabAssetBasePrefab(selected->prefabSourcePath, selectedBasePrefabPath) && !selectedBasePrefabPath.empty();
         PrefabOverrideState overrides{};
         const bool hasOverrideState = isPrefabInstance && Scene::TryGetPrefabOverrideState(selected->instanceId, overrides);
 
@@ -1400,6 +2497,22 @@ namespace EditorPanels
             if (!Scene::SaveSelectedAsPrefab(prefabPath.string()))
                 Logger::Log(LogLevel::Error, std::format("Failed to save prefab: {}", prefabPath.string()), "[Editor]");
         }
+        if (ImGui::MenuItem("Create Variant From Selected", nullptr, false, isPrefabInstance && !isVariantInstance))
+        {
+            const std::filesystem::path variantPath = std::filesystem::path("Assets") / "Prefabs" /
+                (sanitizePrefabName(selected->name) + "_Variant.prefab.json");
+            if (!Scene::SaveSelectedAsPrefabVariant(variantPath.string(), selected->prefabSourcePath))
+                Logger::Log(LogLevel::Error, std::format("Failed to create prefab variant: {}", variantPath.string()), "[Editor]");
+        }
+        if (ImGui::MenuItem(isVariantInstance ? "Rebase Variant..." : "Rebase Variant...", nullptr, false, isVariantInstance))
+        {
+            g_PendingPrefabRebaseTargetPath = selected->prefabSourcePath;
+            g_PrefabRebaseSearchBuffer[0] = '\0';
+            g_RequestOpenPrefabRebasePopup = true;
+            PrefabWorkflow().open = true;
+        }
+        if (ImGui::MenuItem("Open Base Prefab", nullptr, false, isVariantInstance))
+            RevealAssetInBrowser(selectedBasePrefabPath);
         if (!hasSelection)
             ImGui::EndDisabled();
 

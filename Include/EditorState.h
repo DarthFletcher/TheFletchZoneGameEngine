@@ -7,6 +7,7 @@
 
 #include "EditorCommon.h"
 #include "BlackFlameAI.h"
+#include "EditorCommands.h"
 
 // Forward declare to avoid heavy includes.
 // Your Entity class exists already in your project.
@@ -130,6 +131,12 @@ struct SceneHistoryEntry
     std::vector<uint32_t> selectedInstanceIds;
 };
 
+enum class EditorUndoEntryKind : uint8_t
+{
+    Snapshot = 0,
+    Command,
+};
+
 // =====================================================
 // Editor interaction timing
 // =====================================================
@@ -189,6 +196,9 @@ struct EditorState
 
     std::vector<SceneHistoryEntry> undoSceneSnapshots;
     std::vector<SceneHistoryEntry> redoSceneSnapshots;
+    std::vector<EditorUndoEntryKind> undoEntryKinds;
+    std::vector<EditorUndoEntryKind> redoEntryKinds;
+    EditorCommandManager commandManager;
     std::string currentProjectName;
     std::string currentProjectPath;
     std::string currentProjectRoot;
@@ -199,5 +209,14 @@ struct EditorState
     {
         gizmo.Reset();
         grab = TFZGrabState{};
+    }
+
+    void ClearHistory()
+    {
+        undoSceneSnapshots.clear();
+        redoSceneSnapshots.clear();
+        undoEntryKinds.clear();
+        redoEntryKinds.clear();
+        commandManager.Clear();
     }
 };
