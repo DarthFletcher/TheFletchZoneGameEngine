@@ -46,3 +46,53 @@ Debug/
 Release/
 x64/
 x86/
+
+# Intermediate / linker outputs
+*.idb
+*.ipdb
+*.iobj
+*.ilk
+*.pdb
+*.tlog
+*.lastbuildstate
+ipch/
+*.aps
+
+# Runtime/editor local files
+imgui.ini
+engine.log*
+TFZ_Engine.log*
+*.tfzproj
+
+# Crash, logs, and diagnostics
+CrashDumps/*
+!CrashDumps/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# GPU / profiling / capture artifacts
+*.wpix
+*.pix3
+*.rdc
+*.nv-gpudmp
+*.etl
+*.jsonl
+
+# Local scratch workspace
+Local/**
+!Local/
+!Local/README.md
+!Local/Captures/
+!Local/Captures/.gitkeep
+!Local/GpuTiming/
+!Local/GpuTiming/.gitkeep
+!Local/Profiling/
+!Local/Profiling/.gitkeep
+!Local/Scratch/
+!Local/Scratch/.gitkeep
+
+# Temporary / backup files
+*.copilot_edit
+*.bak
+*.backup_*
+*.pre_dxheaders_removal
