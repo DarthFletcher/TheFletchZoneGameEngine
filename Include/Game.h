@@ -28,7 +28,16 @@ public:
     const char* GetVaultWarningText() const;
     int GetVaultActiveNodeCount() const;
     int GetVaultTotalNodeCount() const;
+    bool CanRestartVaultRun() const;
     bool IsVaultCoreUnlocked() const;
     bool IsVaultMissionCompleted() const;
     bool IsVaultMissionEscaped() const;
+    bool IsVaultMissionFailed() const;
+    const char* GetVaultEndOverlayTitle() const;
+    const char* GetVaultEndOverlaySubtitle() const;
+    bool HasVaultPresentationBanner() const;
+    const char* GetVaultPresentationBannerText() const;
+    float GetVaultPresentationBannerAlpha() const;
+    bool HasVaultFailPulse() const;
+    float GetVaultFailPulseAlpha() const;
 };

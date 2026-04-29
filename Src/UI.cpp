@@ -3608,7 +3608,8 @@ namespace UI {
                 ImGuiWindowFlags_AlwaysAutoResize |
                 ImGuiWindowFlags_NoSavedSettings |
                 ImGuiWindowFlags_NoFocusOnAppearing |
-                ImGuiWindowFlags_NoNav;
+                ImGuiWindowFlags_NoNav |
+                ImGuiWindowFlags_NoInputs;
 
             if (ImGui::Begin("Vault Mission Overlay##Runtime", nullptr, overlayFlags))
             {
@@ -3637,7 +3638,42 @@ namespace UI {
             }
             ImGui::End();
 
-            if (missionState == VaultMissionState::Escaped)
+            if (game.HasVaultPresentationBanner())
+            {
+                const char* bannerText = game.GetVaultPresentationBannerText();
+                const float bannerAlpha = game.GetVaultPresentationBannerAlpha();
+                if (bannerText && bannerAlpha > 0.0f)
+                {
+                    ImDrawList* foreground = ImGui::GetForegroundDrawList(viewport);
+                    const ImVec2 bannerSize = ImGui::CalcTextSize(bannerText);
+                    const ImVec2 textPos(
+                        viewport->WorkPos.x + (viewport->WorkSize.x - bannerSize.x) * 0.5f,
+                        viewport->WorkPos.y + viewport->WorkSize.y * 0.14f);
+                    const ImVec2 pad(18.0f, 10.0f);
+                    const int bgAlpha = static_cast<int>(160.0f * bannerAlpha);
+                    foreground->AddRectFilled(
+                        ImVec2(textPos.x - pad.x, textPos.y - pad.y),
+                        ImVec2(textPos.x + bannerSize.x + pad.x, textPos.y + bannerSize.y + pad.y),
+                        IM_COL32(5, 8, 14, bgAlpha),
+                        6.0f);
+                    foreground->AddText(
+                        textPos,
+                        IM_COL32(235, 245, 255, static_cast<int>(255.0f * bannerAlpha)),
+                        bannerText);
+                }
+            }
+
+            if (game.HasVaultFailPulse())
+            {
+                const float pulseAlpha = game.GetVaultFailPulseAlpha();
+                ImDrawList* foreground = ImGui::GetForegroundDrawList(viewport);
+                foreground->AddRectFilled(
+                    viewport->WorkPos,
+                    ImVec2(viewport->WorkPos.x + viewport->WorkSize.x, viewport->WorkPos.y + viewport->WorkSize.y),
+                    IM_COL32(130, 18, 18, static_cast<int>(85.0f * pulseAlpha)));
+            }
+
+            if (missionState == VaultMissionState::Escaped || missionState == VaultMissionState::Failed)
             {
                 ImDrawList* foreground = ImGui::GetForegroundDrawList(viewport);
                 foreground->AddRectFilled(viewport->WorkPos, ImVec2(viewport->WorkPos.x + viewport->WorkSize.x, viewport->WorkPos.y + viewport->WorkSize.y), IM_COL32(0, 0, 0, 170));
@@ -3651,12 +3687,13 @@ namespace UI {
                     ImGuiWindowFlags_NoSavedSettings |
                     ImGuiWindowFlags_NoFocusOnAppearing |
                     ImGuiWindowFlags_NoNav |
+                    ImGuiWindowFlags_NoInputs |
                     ImGuiWindowFlags_NoBackground;
 
-                if (ImGui::Begin("Vault Escaped Overlay##Runtime", nullptr, endOverlayFlags))
+                if (ImGui::Begin("Vault End Overlay##Runtime", nullptr, endOverlayFlags))
                 {
-                    const char* title = "VAULT ESCAPED";
-                    const char* subtitle = "The core is stabilized and the exit is open.";
+                    const char* title = game.GetVaultEndOverlayTitle();
+                    const char* subtitle = game.GetVaultEndOverlaySubtitle();
                     const char* restartText = "Press R to Restart";
                     const char* returnText = "Press Enter to Return to Editor";
 

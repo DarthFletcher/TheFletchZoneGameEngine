@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
@@ -75,6 +76,10 @@ namespace
     static bool g_loggedTestMaterialApplied = false;
     static CameraData g_LastRenderCameraData{};
     static bool g_HasLastRenderCameraData = false;
+    static SceneSkyboxSettings g_SceneSkyboxSettings{};
+    static VaultGameplaySettings g_VaultGameplaySettings{};
+    static Texture* g_SceneSkyboxTexture = nullptr;
+    static Texture* g_SceneSkyboxCubemapTexture = nullptr;
 
     struct Ray
     {
@@ -543,6 +548,8 @@ namespace
         ComPtr<ID3D12RootSignature> rootSig;
 
         ComPtr<ID3D12PipelineState> pso;
+        ComPtr<ID3D12PipelineState> skyboxPso;
+        ComPtr<ID3D12PipelineState> skyboxCubemapPso;
 
         // Grid pass (separate PSO + VB)
         ComPtr<ID3D12PipelineState> gridPso;
@@ -557,6 +564,31 @@ namespace
         bool initFailed = false;
         bool initLogged = false;
     };
+
+    static void RefreshSceneSkyboxTexture()
+    {
+        g_SceneSkyboxTexture = nullptr;
+        g_SceneSkyboxCubemapTexture = nullptr;
+        if (!g_SceneSkyboxSettings.enabled)
+            return;
+
+        if (g_SceneSkyboxSettings.useCubemap)
+        {
+            g_SceneSkyboxCubemapTexture = TextureManager::GetInstance().LoadCubemap(g_SceneSkyboxSettings.cubemapFacePaths);
+            if (g_SceneSkyboxCubemapTexture)
+                return;
+        }
+
+        if (g_SceneSkyboxSettings.texturePath.empty())
+        {
+            g_SceneSkyboxTexture = TextureManager::GetInstance().GetBuiltInSkyTexture(g_SceneSkyboxSettings.builtInPreset);
+            return;
+        }
+
+        g_SceneSkyboxTexture = TextureManager::GetInstance().LoadTexture(g_SceneSkyboxSettings.texturePath);
+        if (!g_SceneSkyboxTexture)
+            g_SceneSkyboxTexture = TextureManager::GetInstance().GetDefaultSkyTexture();
+    }
 
     static SceneDrawResources g_scene;
     static bool g_loggedInvalidCtx = false;
@@ -817,13 +849,208 @@ namespace
             return;
 
         // Core resources for this pass.
-        if (g_scene.rootSig && g_scene.pso && g_scene.gridPso && g_scene.gridVb)
+        if (g_scene.rootSig && g_scene.pso && g_scene.skyboxPso && g_scene.skyboxCubemapPso && g_scene.gridPso && g_scene.gridVb)
             return;
 
         if (!g_scene.initLogged)
         {
             Logger::Log(LogLevel::Info, "Phase 4A: creating minimal scene draw resources (consume engine mesh)", "[Scene]");
             g_scene.initLogged = true;
+        }
+
+        // ---------------------------
+        // Root Signature (b0 + SRV t0 + b1 + SRV t1/t2/t3/t4)
+        // ---------------------------
+        if (!g_scene.rootSig)
+        {
+            CD3DX12_DESCRIPTOR_RANGE srvRanges[5]{};
+            srvRanges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0); // t0
+            srvRanges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1); // t1
+            srvRanges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2); // t2
+            srvRanges[3].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3); // t3
+            srvRanges[4].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4); // t4
+
+            CD3DX12_ROOT_PARAMETER params[7]{};
+            params[Graphics::SceneRootParamSceneCB].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0
+            params[Graphics::SceneRootParamInstanceSRV].InitAsDescriptorTable(1, &srvRanges[0], D3D12_SHADER_VISIBILITY_VERTEX); // t0
+            params[Graphics::SceneRootParamMaterialCB].InitAsConstantBufferView(1, 0, D3D12_SHADER_VISIBILITY_PIXEL); // b1
+            params[Graphics::SceneRootParamMaterialAlbedoSRV].InitAsDescriptorTable(1, &srvRanges[1], D3D12_SHADER_VISIBILITY_PIXEL); // t1
+            params[Graphics::SceneRootParamMaterialNormalSRV].InitAsDescriptorTable(1, &srvRanges[2], D3D12_SHADER_VISIBILITY_PIXEL); // t2
+            params[Graphics::SceneRootParamMaterialMetallicSRV].InitAsDescriptorTable(1, &srvRanges[3], D3D12_SHADER_VISIBILITY_PIXEL); // t3
+            params[Graphics::SceneRootParamMaterialRoughnessSRV].InitAsDescriptorTable(1, &srvRanges[4], D3D12_SHADER_VISIBILITY_PIXEL); // t4
+
+            CD3DX12_STATIC_SAMPLER_DESC samplerDesc(
+                0,
+                D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+                D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+                D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+                D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+                0.0f,
+                16,
+                D3D12_COMPARISON_FUNC_ALWAYS,
+                D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+                0.0f,
+                D3D12_FLOAT32_MAX,
+                D3D12_SHADER_VISIBILITY_PIXEL);
+
+            CD3DX12_ROOT_SIGNATURE_DESC rsDesc{};
+            rsDesc.Init(
+                _countof(params), params,
+                1, &samplerDesc,
+                D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+                D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
+                D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS);
+
+            ComPtr<ID3DBlob> sigBlob;
+            ComPtr<ID3DBlob> errBlob;
+            const HRESULT hrSer = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &sigBlob, &errBlob);
+            if (FAILED(hrSer) || !sigBlob)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, "D3D12SerializeRootSignature failed", "[Scene]");
+                return;
+            }
+
+            const HRESULT hrRS = device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&g_scene.rootSig));
+            if (FAILED(hrRS) || !g_scene.rootSig)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, "CreateRootSignature failed", "[Scene]");
+                return;
+            }
+        }
+
+        if (!g_scene.skyboxPso)
+        {
+            ComPtr<ID3DBlob> skyboxVs;
+            ComPtr<ID3DBlob> skyboxPs;
+            try
+            {
+                skyboxVs = CompileShaderFromRelativeFile(L"shaders\\skybox_vs.hlsl", "main", "vs_5_1");
+                skyboxPs = CompileShaderFromRelativeFile(L"shaders\\skybox_ps.hlsl", "main", "ps_5_1");
+            }
+            catch (const std::exception& e)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, std::string("skybox shader compile failed: ") + e.what(), "[Scene]");
+                return;
+            }
+
+            D3D12_BLEND_DESC blend{};
+            blend.AlphaToCoverageEnable = FALSE;
+            blend.IndependentBlendEnable = FALSE;
+            auto& rt = blend.RenderTarget[0];
+            rt.BlendEnable = FALSE;
+            rt.LogicOpEnable = FALSE;
+            rt.SrcBlend = D3D12_BLEND_ONE;
+            rt.DestBlend = D3D12_BLEND_ZERO;
+            rt.BlendOp = D3D12_BLEND_OP_ADD;
+            rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+            rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+            rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+            rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+            D3D12_RASTERIZER_DESC rast{};
+            rast.FillMode = D3D12_FILL_MODE_SOLID;
+            rast.CullMode = D3D12_CULL_MODE_NONE;
+            rast.DepthClipEnable = TRUE;
+
+            D3D12_DEPTH_STENCIL_DESC ds{};
+            ds.DepthEnable = FALSE;
+            ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+            ds.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+            ds.StencilEnable = FALSE;
+
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+            psoDesc.pRootSignature = g_scene.rootSig.Get();
+            psoDesc.VS = { skyboxVs->GetBufferPointer(), skyboxVs->GetBufferSize() };
+            psoDesc.PS = { skyboxPs->GetBufferPointer(), skyboxPs->GetBufferSize() };
+            psoDesc.BlendState = blend;
+            psoDesc.SampleMask = UINT_MAX;
+            psoDesc.RasterizerState = rast;
+            psoDesc.DepthStencilState = ds;
+            psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            psoDesc.NumRenderTargets = 1;
+            psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            psoDesc.SampleDesc.Count = 1;
+            psoDesc.SampleDesc.Quality = 0;
+            psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+            const HRESULT hrPSO = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&g_scene.skyboxPso));
+            if (FAILED(hrPSO) || !g_scene.skyboxPso)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, "CreateGraphicsPipelineState(skybox) failed", "[Scene]");
+                return;
+            }
+        }
+
+        if (!g_scene.skyboxCubemapPso)
+        {
+            ComPtr<ID3DBlob> skyboxVs;
+            ComPtr<ID3DBlob> skyboxPs;
+            try
+            {
+                skyboxVs = CompileShaderFromRelativeFile(L"shaders\\skybox_vs.hlsl", "main", "vs_5_1");
+                skyboxPs = CompileShaderFromRelativeFile(L"shaders\\skybox_cube_ps.hlsl", "main", "ps_5_1");
+            }
+            catch (const std::exception& e)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, std::string("skybox cubemap shader compile failed: ") + e.what(), "[Scene]");
+                return;
+            }
+
+            D3D12_BLEND_DESC blend{};
+            blend.AlphaToCoverageEnable = FALSE;
+            blend.IndependentBlendEnable = FALSE;
+            auto& rt = blend.RenderTarget[0];
+            rt.BlendEnable = FALSE;
+            rt.LogicOpEnable = FALSE;
+            rt.SrcBlend = D3D12_BLEND_ONE;
+            rt.DestBlend = D3D12_BLEND_ZERO;
+            rt.BlendOp = D3D12_BLEND_OP_ADD;
+            rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+            rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+            rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            rt.LogicOp = D3D12_LOGIC_OP_NOOP;
+            rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+            D3D12_RASTERIZER_DESC rast{};
+            rast.FillMode = D3D12_FILL_MODE_SOLID;
+            rast.CullMode = D3D12_CULL_MODE_NONE;
+            rast.DepthClipEnable = TRUE;
+
+            D3D12_DEPTH_STENCIL_DESC ds{};
+            ds.DepthEnable = FALSE;
+            ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+            ds.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+            ds.StencilEnable = FALSE;
+
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+            psoDesc.pRootSignature = g_scene.rootSig.Get();
+            psoDesc.VS = { skyboxVs->GetBufferPointer(), skyboxVs->GetBufferSize() };
+            psoDesc.PS = { skyboxPs->GetBufferPointer(), skyboxPs->GetBufferSize() };
+            psoDesc.BlendState = blend;
+            psoDesc.SampleMask = UINT_MAX;
+            psoDesc.RasterizerState = rast;
+            psoDesc.DepthStencilState = ds;
+            psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            psoDesc.NumRenderTargets = 1;
+            psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            psoDesc.SampleDesc.Count = 1;
+            psoDesc.SampleDesc.Quality = 0;
+            psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+            const HRESULT hrPSO = device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&g_scene.skyboxCubemapPso));
+            if (FAILED(hrPSO) || !g_scene.skyboxCubemapPso)
+            {
+                g_scene.initFailed = true;
+                Logger::Log(LogLevel::Error, "CreateGraphicsPipelineState(skybox cubemap) failed", "[Scene]");
+                return;
+            }
         }
 
         // ---------------------------
@@ -1008,7 +1235,17 @@ namespace
             g_scene.cbData.sceneLightColor[0] = light.color.x;
             g_scene.cbData.sceneLightColor[1] = light.color.y;
             g_scene.cbData.sceneLightColor[2] = light.color.z;
-            g_scene.cbData.sceneAmbientIntensity = light.ambient;
+        const float skyTintAverage = (g_SceneSkyboxSettings.tint.x + g_SceneSkyboxSettings.tint.y + g_SceneSkyboxSettings.tint.z) / 3.0f;
+        const float skyAmbientBoost = (g_SceneSkyboxSettings.enabled ? g_SceneSkyboxSettings.intensity * 0.08f * skyTintAverage : 0.0f);
+        g_scene.cbData.sceneAmbientIntensity = light.ambient + skyAmbientBoost;
+        g_scene.cbData.sceneShadowParams[0] = DirectX::XMConvertToRadians(g_SceneSkyboxSettings.rotationDegrees);
+        g_scene.cbData.sceneShadowParams[1] = DirectX::XMConvertToRadians(g_SceneSkyboxSettings.verticalRotationDegrees);
+        g_scene.cbData.sceneShadowParams[2] = g_SceneSkyboxSettings.horizonOffset;
+        g_scene.cbData.sceneShadowParams[3] = g_SceneSkyboxSettings.exposure;
+        g_scene.cbData.sceneReserved[0] = g_SceneSkyboxSettings.tint.x;
+        g_scene.cbData.sceneReserved[1] = g_SceneSkyboxSettings.tint.y;
+        g_scene.cbData.sceneReserved[2] = g_SceneSkyboxSettings.tint.z;
+        g_scene.cbData.sceneReserved[3] = g_SceneSkyboxSettings.intensity;
         }
 
         // ---------------------------
@@ -1089,6 +1326,7 @@ namespace
         }
 
         UpdateGridGeometry(device);
+        RefreshSceneSkyboxTexture();
     }
 
     static bool ParseSceneInstanceFromJson(const std::string& content, SceneInstance& outInstance, bool readIdAndParent)
@@ -1358,6 +1596,62 @@ namespace
         }
 
         return true;
+    }
+
+    static bool TryReadJsonFloatField(const std::string& content, const std::string& key, float& outValue)
+    {
+        const size_t keyPos = content.find(key);
+        if (keyPos == std::string::npos)
+            return false;
+        const size_t colon = content.find(':', keyPos);
+        if (colon == std::string::npos)
+            return false;
+        const size_t begin = content.find_first_of("-0123456789", colon + 1);
+        if (begin == std::string::npos)
+            return false;
+        const size_t end = content.find_first_not_of("-+.0123456789eE", begin);
+        outValue = std::stof(content.substr(begin, end - begin));
+        return true;
+    }
+
+    static bool TryReadJsonBoolField(const std::string& content, const std::string& key, bool& outValue)
+    {
+        const size_t keyPos = content.find(key);
+        if (keyPos == std::string::npos)
+            return false;
+        const size_t colon = content.find(':', keyPos);
+        if (colon == std::string::npos)
+            return false;
+        const size_t begin = content.find_first_not_of(" \t\r\n", colon + 1);
+        if (begin == std::string::npos)
+            return false;
+        if (content.compare(begin, 4, "true") == 0)
+        {
+            outValue = true;
+            return true;
+        }
+        if (content.compare(begin, 5, "false") == 0)
+        {
+            outValue = false;
+            return true;
+        }
+        return false;
+    }
+
+    static bool TryReadJsonFloat3ArrayField(const std::string& content, const std::string& key, DirectX::XMFLOAT3& outValue)
+    {
+        const size_t keyPos = content.find(key);
+        if (keyPos == std::string::npos)
+            return false;
+        const size_t open = content.find('[', keyPos);
+        const size_t close = content.find(']', open + 1);
+        if (open == std::string::npos || close == std::string::npos)
+            return false;
+
+        std::string values = content.substr(open + 1, close - open - 1);
+        std::replace(values.begin(), values.end(), ',', ' ');
+        std::stringstream stream(values);
+        return (stream >> outValue.x >> outValue.y >> outValue.z) ? true : false;
     }
 
     static bool WouldPrefabReferenceCreateCycle(const std::string& prefabPath, const std::string& candidateBasePath, std::string* outCyclePath)
@@ -2264,7 +2558,7 @@ void Scene::EnsureInstancesInitialized()
 
 bool Scene::IsReady()
 {
-    return !g_scene.initFailed && g_scene.rootSig && g_scene.pso && g_scene.gridPso && g_scene.gridVb;
+    return !g_scene.initFailed && g_scene.rootSig && g_scene.pso && g_scene.skyboxPso && g_scene.skyboxCubemapPso && g_scene.gridPso && g_scene.gridVb;
 }
 
 SceneStats Scene::GetLastStats()
@@ -2292,6 +2586,41 @@ void Scene::SetGridSettings(const SceneGridSettings& settings)
 SceneGridSettings Scene::GetGridSettings()
 {
     return g_SceneGridSettings;
+}
+
+void Scene::SetSkyboxSettings(const SceneSkyboxSettings& settings)
+{
+    g_SceneSkyboxSettings = settings;
+    if (g_SceneSkyboxSettings.builtInPreset.empty())
+        g_SceneSkyboxSettings.builtInPreset = "Sunset";
+    g_SceneSkyboxSettings.intensity = (std::max)(0.0f, settings.intensity);
+    g_SceneSkyboxSettings.tint.x = (std::clamp)(g_SceneSkyboxSettings.tint.x, 0.0f, 4.0f);
+    g_SceneSkyboxSettings.tint.y = (std::clamp)(g_SceneSkyboxSettings.tint.y, 0.0f, 4.0f);
+    g_SceneSkyboxSettings.tint.z = (std::clamp)(g_SceneSkyboxSettings.tint.z, 0.0f, 4.0f);
+    g_SceneSkyboxSettings.rotationDegrees = std::fmod(g_SceneSkyboxSettings.rotationDegrees, 360.0f);
+    if (g_SceneSkyboxSettings.rotationDegrees < 0.0f)
+        g_SceneSkyboxSettings.rotationDegrees += 360.0f;
+    g_SceneSkyboxSettings.verticalRotationDegrees = (std::clamp)(g_SceneSkyboxSettings.verticalRotationDegrees, -89.0f, 89.0f);
+    g_SceneSkyboxSettings.horizonOffset = (std::clamp)(g_SceneSkyboxSettings.horizonOffset, -0.5f, 0.5f);
+    g_SceneSkyboxSettings.exposure = (std::clamp)(g_SceneSkyboxSettings.exposure, -8.0f, 8.0f);
+    RefreshSceneSkyboxTexture();
+}
+
+SceneSkyboxSettings Scene::GetSkyboxSettings()
+{
+    return g_SceneSkyboxSettings;
+}
+
+void Scene::SetVaultGameplaySettings(const VaultGameplaySettings& settings)
+{
+    g_VaultGameplaySettings.nodeDecayDuration = (std::max)(settings.nodeDecayDuration, 0.5f);
+    g_VaultGameplaySettings.nodeDecayWarningSeconds = (std::clamp)(settings.nodeDecayWarningSeconds, 0.1f, g_VaultGameplaySettings.nodeDecayDuration - 0.1f);
+    g_VaultGameplaySettings.maxDecayedNodes = (std::max)(1, settings.maxDecayedNodes);
+}
+
+VaultGameplaySettings Scene::GetVaultGameplaySettings()
+{
+    return g_VaultGameplaySettings;
 }
 
 void Scene::SetTargetInstanceCount(uint32_t count)
@@ -3118,6 +3447,8 @@ void Scene::CreatePrimitive(ScenePrimitive primitive, const DirectX::XMFLOAT3& p
 
 void Scene::NewScene()
 {
+    SetSkyboxSettings({});
+    SetVaultGameplaySettings({});
     s_SceneInstances.clear();
     s_Instances.clear();
     s_InstanceBounds.clear();
@@ -3676,7 +4007,27 @@ bool Scene::TryGetPrefabOverrideState(uint32_t instanceId, PrefabOverrideState& 
 std::string Scene::SerializeToString()
 {
     std::ostringstream out;
-    out << "{\n  \"sceneVersion\": 1,\n  \"instances\": [\n";
+    out << "{\n  \"sceneVersion\": 1,\n";
+    out << "  \"skyboxEnabled\": " << (g_SceneSkyboxSettings.enabled ? "true" : "false") << ",\n";
+    out << "  \"skyboxUseCubemap\": " << (g_SceneSkyboxSettings.useCubemap ? "true" : "false") << ",\n";
+    out << "  \"skyboxBuiltInPreset\": \"" << EscapeJsonString(g_SceneSkyboxSettings.builtInPreset) << "\",\n";
+    out << "  \"skyboxTexture\": \"" << EscapeJsonString(g_SceneSkyboxSettings.texturePath) << "\",\n";
+    out << "  \"skyboxCubemapPosX\": \"" << EscapeJsonString(g_SceneSkyboxSettings.cubemapFacePaths[0]) << "\",\n";
+    out << "  \"skyboxCubemapNegX\": \"" << EscapeJsonString(g_SceneSkyboxSettings.cubemapFacePaths[1]) << "\",\n";
+    out << "  \"skyboxCubemapPosY\": \"" << EscapeJsonString(g_SceneSkyboxSettings.cubemapFacePaths[2]) << "\",\n";
+    out << "  \"skyboxCubemapNegY\": \"" << EscapeJsonString(g_SceneSkyboxSettings.cubemapFacePaths[3]) << "\",\n";
+    out << "  \"skyboxCubemapPosZ\": \"" << EscapeJsonString(g_SceneSkyboxSettings.cubemapFacePaths[4]) << "\",\n";
+    out << "  \"skyboxCubemapNegZ\": \"" << EscapeJsonString(g_SceneSkyboxSettings.cubemapFacePaths[5]) << "\",\n";
+    out << "  \"skyboxTint\": [" << g_SceneSkyboxSettings.tint.x << ", " << g_SceneSkyboxSettings.tint.y << ", " << g_SceneSkyboxSettings.tint.z << "],\n";
+    out << "  \"skyboxIntensity\": " << g_SceneSkyboxSettings.intensity << ",\n";
+    out << "  \"skyboxExposure\": " << g_SceneSkyboxSettings.exposure << ",\n";
+    out << "  \"skyboxRotationDegrees\": " << g_SceneSkyboxSettings.rotationDegrees << ",\n";
+    out << "  \"skyboxVerticalRotationDegrees\": " << g_SceneSkyboxSettings.verticalRotationDegrees << ",\n";
+    out << "  \"skyboxHorizonOffset\": " << g_SceneSkyboxSettings.horizonOffset << ",\n";
+    out << "  \"vaultNodeDecayDuration\": " << g_VaultGameplaySettings.nodeDecayDuration << ",\n";
+    out << "  \"vaultNodeDecayWarningSeconds\": " << g_VaultGameplaySettings.nodeDecayWarningSeconds << ",\n";
+    out << "  \"vaultMaxDecayedNodes\": " << g_VaultGameplaySettings.maxDecayedNodes << ",\n";
+    out << "  \"instances\": [\n";
     for (size_t i = 0; i < s_SceneInstances.size(); ++i)
     {
         const SceneInstance& inst = s_SceneInstances[i];
@@ -3709,6 +4060,33 @@ std::string Scene::SerializeToString()
 
 bool Scene::LoadFromString(const std::string& content)
 {
+    SceneSkyboxSettings loadedSkyboxSettings{};
+    TryReadJsonStringField(content, "\"skyboxBuiltInPreset\"", loadedSkyboxSettings.builtInPreset);
+    TryReadJsonStringField(content, "\"skyboxTexture\"", loadedSkyboxSettings.texturePath);
+    TryReadJsonBoolField(content, "\"skyboxEnabled\"", loadedSkyboxSettings.enabled);
+    TryReadJsonBoolField(content, "\"skyboxUseCubemap\"", loadedSkyboxSettings.useCubemap);
+    TryReadJsonStringField(content, "\"skyboxCubemapPosX\"", loadedSkyboxSettings.cubemapFacePaths[0]);
+    TryReadJsonStringField(content, "\"skyboxCubemapNegX\"", loadedSkyboxSettings.cubemapFacePaths[1]);
+    TryReadJsonStringField(content, "\"skyboxCubemapPosY\"", loadedSkyboxSettings.cubemapFacePaths[2]);
+    TryReadJsonStringField(content, "\"skyboxCubemapNegY\"", loadedSkyboxSettings.cubemapFacePaths[3]);
+    TryReadJsonStringField(content, "\"skyboxCubemapPosZ\"", loadedSkyboxSettings.cubemapFacePaths[4]);
+    TryReadJsonStringField(content, "\"skyboxCubemapNegZ\"", loadedSkyboxSettings.cubemapFacePaths[5]);
+    TryReadJsonFloatField(content, "\"skyboxIntensity\"", loadedSkyboxSettings.intensity);
+    TryReadJsonFloatField(content, "\"skyboxExposure\"", loadedSkyboxSettings.exposure);
+    TryReadJsonFloatField(content, "\"skyboxRotationDegrees\"", loadedSkyboxSettings.rotationDegrees);
+    TryReadJsonFloatField(content, "\"skyboxVerticalRotationDegrees\"", loadedSkyboxSettings.verticalRotationDegrees);
+    TryReadJsonFloatField(content, "\"skyboxHorizonOffset\"", loadedSkyboxSettings.horizonOffset);
+    TryReadJsonFloat3ArrayField(content, "\"skyboxTint\"", loadedSkyboxSettings.tint);
+    SetSkyboxSettings(loadedSkyboxSettings);
+
+    VaultGameplaySettings loadedVaultGameplaySettings{};
+    TryReadJsonFloatField(content, "\"vaultNodeDecayDuration\"", loadedVaultGameplaySettings.nodeDecayDuration);
+    TryReadJsonFloatField(content, "\"vaultNodeDecayWarningSeconds\"", loadedVaultGameplaySettings.nodeDecayWarningSeconds);
+    float maxDecayedNodesAsFloat = static_cast<float>(loadedVaultGameplaySettings.maxDecayedNodes);
+    if (TryReadJsonFloatField(content, "\"vaultMaxDecayedNodes\"", maxDecayedNodesAsFloat))
+        loadedVaultGameplaySettings.maxDecayedNodes = static_cast<int>(std::round(maxDecayedNodesAsFloat));
+    SetVaultGameplaySettings(loadedVaultGameplaySettings);
+
     s_SceneInstances.clear();
     s_SelectedInstanceId = 0;
     s_HoveredInstanceId = 0;
@@ -3946,7 +4324,14 @@ void Scene::Render(const SceneRenderContext& ctx)
         g_scene.cbData.sceneLightColor[0] = light.color.x;
         g_scene.cbData.sceneLightColor[1] = light.color.y;
         g_scene.cbData.sceneLightColor[2] = light.color.z;
-        g_scene.cbData.sceneAmbientIntensity = light.ambient;
+        const float skyTintAverage = (g_SceneSkyboxSettings.tint.x + g_SceneSkyboxSettings.tint.y + g_SceneSkyboxSettings.tint.z) / 3.0f;
+        const float skyAmbientBoost = (g_SceneSkyboxSettings.enabled ? g_SceneSkyboxSettings.intensity * 0.08f * skyTintAverage : 0.0f);
+        g_scene.cbData.sceneAmbientIntensity = light.ambient + skyAmbientBoost;
+        g_scene.cbData.sceneShadowParams[0] = DirectX::XMConvertToRadians(g_SceneSkyboxSettings.rotationDegrees);
+        g_scene.cbData.sceneReserved[0] = g_SceneSkyboxSettings.tint.x;
+        g_scene.cbData.sceneReserved[1] = g_SceneSkyboxSettings.tint.y;
+        g_scene.cbData.sceneReserved[2] = g_SceneSkyboxSettings.tint.z;
+        g_scene.cbData.sceneReserved[3] = g_SceneSkyboxSettings.intensity;
     }
 
     (void)viewProjF;
@@ -4085,6 +4470,43 @@ void Scene::Render(const SceneRenderContext& ctx)
 
     // Materials are bound per-object in the draw loop so each scene instance can use
     // its own assigned material.
+
+    if (g_SceneSkyboxSettings.enabled)
+    {
+        Graphics& gfx = Graphics::GetInstance();
+        g_scene.cbData.sceneInstanceOffset = 0;
+        const auto alloc = gfx.AllocateFrameCB(sizeof(SceneCB));
+        std::memcpy(alloc.CpuPtr, &g_scene.cbData, sizeof(SceneCB));
+        ctx.commandList->SetGraphicsRootConstantBufferView(Graphics::SceneRootParamSceneCB, alloc.GpuAddress);
+
+        Texture* skyTexture = nullptr;
+        ID3D12PipelineState* skyPso = nullptr;
+        if (g_SceneSkyboxSettings.useCubemap && g_SceneSkyboxCubemapTexture && g_SceneSkyboxCubemapTexture->srvGPU.ptr != 0)
+        {
+            skyTexture = g_SceneSkyboxCubemapTexture;
+            skyPso = g_scene.skyboxCubemapPso.Get();
+        }
+        else if (g_SceneSkyboxTexture && g_SceneSkyboxTexture->srvGPU.ptr != 0)
+        {
+            skyTexture = g_SceneSkyboxTexture;
+            skyPso = g_scene.skyboxPso.Get();
+        }
+
+        if (skyTexture && skyPso)
+        {
+            ctx.commandList->SetGraphicsRootDescriptorTable(Graphics::SceneRootParamMaterialAlbedoSRV, skyTexture->srvGPU);
+            ctx.commandList->SetPipelineState(skyPso);
+            ctx.commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx.commandList->DrawInstanced(3, 1, 0, 0);
+
+            ID3D12DescriptorHeap* heaps[] = { g_SRVHeap };
+            if (g_SRVHeap)
+                ctx.commandList->SetDescriptorHeaps(1, heaps);
+            ctx.commandList->SetGraphicsRootSignature(g_scene.rootSig.Get());
+            if (s_InstanceSRVGpu.ptr != 0)
+                ctx.commandList->SetGraphicsRootDescriptorTable(Graphics::SceneRootParamInstanceSRV, s_InstanceSRVGpu);
+        }
+    }
 
 #ifndef NDEBUG
     static auto s_lastInstancingCountsLog = std::chrono::steady_clock::now() - std::chrono::seconds(10);

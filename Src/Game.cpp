@@ -97,19 +97,43 @@ namespace
         VaultMissionState state = VaultMissionState::Inactive;
         int totalNodes = 0;
         int activatedNodes = 0;
+        int decayedNodes = 0;
+        int maxDecayedNodes = 3;
+        float nodeDecayDuration = 9.0f;
+        float nodeDecayWarningSeconds = 3.0f;
         bool coreUnlocked = false;
+    };
+
+    struct VaultPresentationState
+    {
+        float bannerTimer = 0.0f;
+        float failPulseTimer = 0.0f;
+        enum class BannerType : uint8_t
+        {
+            None = 0,
+            Start,
+            Escape
+        };
+        BannerType bannerType = BannerType::None;
     };
 
     static PlayerController g_PlayerController{};
     static uint32_t g_InteractionTargetId = 0;
     static VaultGameplayState g_VaultState{};
     static VaultMission g_VaultMission{};
+    static VaultPresentationState g_VaultPresentation{};
     static bool g_RuntimeWasPlaying = false;
     static bool g_PlayerFrozen = false;
     static std::string g_RuntimeLevelStartSnapshot;
-    static constexpr float kVaultNodeDecayDurationSeconds = 10.0f;
+    static constexpr float kVaultNodeDecayDurationSeconds = 9.0f;
     static constexpr float kVaultNodeDecayWarningSeconds = 3.0f;
     static constexpr float kVaultExitTriggerRadius = 2.5f;
+    static constexpr int kVaultMaxDecayedNodes = 3;
+    static constexpr float kVaultPlayerSprintMultiplier = 1.5f;
+    static constexpr float kVaultInteractionRange = 2.0f;
+    static constexpr float kVaultStartBannerSeconds = 1.35f;
+    static constexpr float kVaultEscapeBannerSeconds = 1.35f;
+    static constexpr float kVaultFailPulseSeconds = 0.55f;
 
     static const char* GetMissionObjectiveText(VaultMissionState state)
     {
@@ -150,6 +174,8 @@ namespace
         return nullptr;
     }
 
+    static void ResetVaultRuntimeState(bool restoreSceneInstances);
+
     static const VaultGameplayState::NodeBinding* FindMostUrgentDecayingNode()
     {
         const VaultGameplayState::NodeBinding* bestNode = nullptr;
@@ -181,8 +207,43 @@ namespace
         g_VaultMission.state = VaultMissionState::Escaped;
         g_PlayerFrozen = true;
         g_InteractionTargetId = 0;
+        g_VaultPresentation.bannerType = VaultPresentationState::BannerType::Escape;
+        g_VaultPresentation.bannerTimer = kVaultEscapeBannerSeconds;
         GA_Play(GameplayAudioEvent::EscapeTriggered);
         Logger::Log(LogLevel::Info, "Vault escaped.", "[Game]");
+    }
+
+    static void TriggerVaultFailure()
+    {
+        if (g_VaultMission.state == VaultMissionState::Failed ||
+            g_VaultMission.state == VaultMissionState::Escaped)
+            return;
+
+        g_VaultMission.state = VaultMissionState::Failed;
+        g_PlayerFrozen = true;
+        g_InteractionTargetId = 0;
+        g_VaultPresentation.failPulseTimer = kVaultFailPulseSeconds;
+        Logger::Log(LogLevel::Info, "Vault failed. Press R to retry.", "[Game]");
+        GA_Play(GameplayAudioEvent::FailureTriggered);
+    }
+
+    static bool ResetRun()
+    {
+        if (g_RuntimeLevelStartSnapshot.empty())
+            return false;
+
+        const std::string startSnapshot = g_RuntimeLevelStartSnapshot;
+        if (!Scene::LoadFromString(startSnapshot))
+            return false;
+
+        ResetVaultRuntimeState(false);
+        g_PlayerController = {};
+        g_RuntimeWasPlaying = true;
+        g_PlayerFrozen = false;
+        g_RuntimeLevelStartSnapshot = startSnapshot;
+        g_VaultPresentation.bannerType = VaultPresentationState::BannerType::Start;
+        g_VaultPresentation.bannerTimer = kVaultStartBannerSeconds;
+        return true;
     }
 
     static SceneInstance* FindInstanceById(uint32_t instanceId)
@@ -367,6 +428,7 @@ namespace
         g_InteractionTargetId = 0;
         g_VaultState = {};
         g_VaultMission = {};
+        g_VaultPresentation = {};
         g_PlayerFrozen = false;
         g_RuntimeLevelStartSnapshot.clear();
         GA_Reset();
@@ -411,6 +473,7 @@ namespace
     static void DiscoverVaultObjects(uint32_t playerInstanceId)
     {
         EnsureVaultMaterials();
+        const VaultGameplaySettings gameplaySettings = Scene::GetVaultGameplaySettings();
 
         VaultGameplayState newState{};
         newState.nodeInactiveMaterial = g_VaultState.nodeInactiveMaterial;
@@ -452,14 +515,14 @@ namespace
                 }
                 else
                 {
-                    newState.nodes.push_back({ instance.instanceId, VaultGameplayState::NodeState::Inactive, 0.0f, kVaultNodeDecayDurationSeconds, false, instance.materialIndex });
+                    newState.nodes.push_back({ instance.instanceId, VaultGameplayState::NodeState::Inactive, 0.0f, gameplaySettings.nodeDecayDuration, false, instance.materialIndex });
                 }
                 break;
             case VaultType::Ring:
                 newState.rings.push_back({ instance.instanceId, instance.materialIndex, instance.rotation });
                 break;
             case VaultType::Node:
-                newState.nodes.push_back({ instance.instanceId, VaultGameplayState::NodeState::Inactive, 0.0f, kVaultNodeDecayDurationSeconds, false, instance.materialIndex });
+                newState.nodes.push_back({ instance.instanceId, VaultGameplayState::NodeState::Inactive, 0.0f, gameplaySettings.nodeDecayDuration, false, instance.materialIndex });
                 break;
             case VaultType::None:
             default:
@@ -475,6 +538,10 @@ namespace
         g_VaultMission.state = VaultMissionState::ActivatingNodes;
         g_VaultMission.totalNodes = static_cast<int>(g_VaultState.nodes.size());
         g_VaultMission.activatedNodes = 0;
+        g_VaultMission.decayedNodes = 0;
+        g_VaultMission.maxDecayedNodes = gameplaySettings.maxDecayedNodes;
+        g_VaultMission.nodeDecayDuration = gameplaySettings.nodeDecayDuration;
+        g_VaultMission.nodeDecayWarningSeconds = gameplaySettings.nodeDecayWarningSeconds;
         g_VaultMission.coreUnlocked = false;
     }
 
@@ -496,9 +563,10 @@ namespace
                     nodeBinding.decayTimer = 0.0f;
                     nodeBinding.state = VaultGameplayState::NodeState::Inactive;
                     nodeBinding.warningPlayed = false;
+                    ++g_VaultMission.decayedNodes;
                     GA_Play(GameplayAudioEvent::NodeDecayed);
                 }
-                else if (nodeBinding.decayTimer <= kVaultNodeDecayWarningSeconds)
+                else if (nodeBinding.decayTimer <= g_VaultMission.nodeDecayWarningSeconds)
                 {
                     nodeBinding.state = VaultGameplayState::NodeState::Decaying;
                     if (!nodeBinding.warningPlayed)
@@ -562,7 +630,9 @@ namespace
         const bool coreUnlocked = totalNodes > 0 && activeNodeCount >= totalNodes;
         g_VaultState.coreUnlocked = coreUnlocked;
         g_VaultMission.coreUnlocked = coreUnlocked;
-        if (g_VaultMission.state != VaultMissionState::Completed)
+        if (g_VaultMission.state != VaultMissionState::Completed &&
+            g_VaultMission.state != VaultMissionState::Escaped &&
+            g_VaultMission.state != VaultMissionState::Failed)
             g_VaultMission.state = coreUnlocked ? VaultMissionState::CoreUnlocked : VaultMissionState::ActivatingNodes;
         if (SceneInstance* core = FindInstanceById(g_VaultState.core.instanceId))
             core->materialIndex = (g_VaultMission.state == VaultMissionState::Completed)
@@ -626,9 +696,18 @@ void Game::Update(float deltaTime) {
     }
 
     if (!g_RuntimeWasPlaying)
+    {
         g_RuntimeLevelStartSnapshot = Scene::SerializeToString();
+        g_VaultPresentation.bannerType = VaultPresentationState::BannerType::Start;
+        g_VaultPresentation.bannerTimer = kVaultStartBannerSeconds;
+    }
 
     g_RuntimeWasPlaying = true;
+
+    if (g_VaultPresentation.bannerTimer > 0.0f)
+        g_VaultPresentation.bannerTimer = (std::max)(0.0f, g_VaultPresentation.bannerTimer - deltaTime);
+    if (g_VaultPresentation.failPulseTimer > 0.0f)
+        g_VaultPresentation.failPulseTimer = (std::max)(0.0f, g_VaultPresentation.failPulseTimer - deltaTime);
 
     if (engineState == Engine::State::Paused)
         return;
@@ -654,17 +733,11 @@ void Game::Update(float deltaTime) {
 
     const bool restartRequested = ImGui::IsKeyPressed(ImGuiKey_R, false) || g_engineInstance->GetInput().IsKeyJustPressed('R');
     const bool exitRequested = ImGui::IsKeyPressed(ImGuiKey_Enter, false) || g_engineInstance->GetInput().IsKeyJustPressed(VK_RETURN);
-    if (g_VaultMission.state == VaultMissionState::Escaped)
+    if (g_VaultMission.state == VaultMissionState::Escaped || g_VaultMission.state == VaultMissionState::Failed)
     {
-        if (restartRequested && !g_RuntimeLevelStartSnapshot.empty())
+        if (restartRequested)
         {
-            if (Scene::LoadFromString(g_RuntimeLevelStartSnapshot))
-            {
-                ResetVaultRuntimeState(false);
-                g_PlayerController = {};
-                g_RuntimeWasPlaying = true;
-                g_RuntimeLevelStartSnapshot = Scene::SerializeToString();
-            }
+            (void)ResetRun();
         }
         else if (exitRequested)
         {
@@ -674,6 +747,14 @@ void Game::Update(float deltaTime) {
     }
 
     UpdateVaultVisualState(deltaTime);
+
+    if (g_VaultMission.state != VaultMissionState::Failed &&
+        g_VaultMission.state != VaultMissionState::Escaped &&
+        g_VaultMission.decayedNodes >= g_VaultMission.maxDecayedNodes)
+    {
+        TriggerVaultFailure();
+        return;
+    }
 
     ImGuiIO& io = ImGui::GetIO();
     const bool lookActive = ImGui::IsMouseDown(ImGuiMouseButton_Right);
@@ -692,7 +773,7 @@ void Game::Update(float deltaTime) {
 
     float moveSpeed = g_PlayerController.moveSpeed;
     if (speedBoost)
-        moveSpeed *= 3.0f;
+        moveSpeed *= kVaultPlayerSprintMultiplier;
 
     const float yaw = g_PlayerController.yaw;
     const DirectX::XMFLOAT3 forward = {
@@ -754,8 +835,7 @@ void Game::Update(float deltaTime) {
     mainCamera->rotation.y = g_PlayerController.yaw;
     mainCamera->rotation.z = 0.0f;
 
-    constexpr float kInteractRange = 2.5f;
-    const float interactRangeSq = kInteractRange * kInteractRange;
+    const float interactRangeSq = kVaultInteractionRange * kVaultInteractionRange;
     uint32_t bestTargetId = 0;
     float bestDistSq = interactRangeSq;
     if (g_VaultMission.state == VaultMissionState::CoreUnlocked)
@@ -895,6 +975,8 @@ const char* Game::GetInteractionActionLabel() const
 
 bool Game::HasVaultWarning() const
 {
+    if (g_VaultMission.state == VaultMissionState::Failed || g_VaultMission.state == VaultMissionState::Escaped)
+        return false;
     return FindMostUrgentDecayingNode() != nullptr;
 }
 
@@ -918,6 +1000,12 @@ int Game::GetVaultTotalNodeCount() const
     return static_cast<int>(g_VaultState.nodes.size());
 }
 
+bool Game::CanRestartVaultRun() const
+{
+    return !g_RuntimeLevelStartSnapshot.empty() &&
+        (g_VaultMission.state == VaultMissionState::Escaped || g_VaultMission.state == VaultMissionState::Failed);
+}
+
 bool Game::IsVaultCoreUnlocked() const
 {
     return g_VaultMission.coreUnlocked;
@@ -931,4 +1019,68 @@ bool Game::IsVaultMissionCompleted() const
 bool Game::IsVaultMissionEscaped() const
 {
     return g_VaultMission.state == VaultMissionState::Escaped;
+}
+
+bool Game::IsVaultMissionFailed() const
+{
+    return g_VaultMission.state == VaultMissionState::Failed;
+}
+
+const char* Game::GetVaultEndOverlayTitle() const
+{
+    switch (g_VaultMission.state)
+    {
+    case VaultMissionState::Escaped: return "ESCAPE SUCCESSFUL";
+    case VaultMissionState::Failed: return "SYSTEM FAILURE";
+    default: return nullptr;
+    }
+}
+
+const char* Game::GetVaultEndOverlaySubtitle() const
+{
+    switch (g_VaultMission.state)
+    {
+    case VaultMissionState::Escaped: return "The core is stabilized and the vault has been cleared.";
+    case VaultMissionState::Failed: return "Too many vault nodes decayed. Press R to retry.";
+    default: return nullptr;
+    }
+}
+
+bool Game::HasVaultPresentationBanner() const
+{
+    return g_VaultPresentation.bannerTimer > 0.0f && g_VaultPresentation.bannerType != VaultPresentationState::BannerType::None;
+}
+
+const char* Game::GetVaultPresentationBannerText() const
+{
+    switch (g_VaultPresentation.bannerType)
+    {
+    case VaultPresentationState::BannerType::Start: return "Vault Initialized";
+    case VaultPresentationState::BannerType::Escape: return "Escape Successful";
+    default: return nullptr;
+    }
+}
+
+float Game::GetVaultPresentationBannerAlpha() const
+{
+    if (!HasVaultPresentationBanner())
+        return 0.0f;
+
+    const float duration = (g_VaultPresentation.bannerType == VaultPresentationState::BannerType::Escape)
+        ? kVaultEscapeBannerSeconds
+        : kVaultStartBannerSeconds;
+    const float normalized = std::clamp(g_VaultPresentation.bannerTimer / duration, 0.0f, 1.0f);
+    return normalized;
+}
+
+bool Game::HasVaultFailPulse() const
+{
+    return g_VaultPresentation.failPulseTimer > 0.0f;
+}
+
+float Game::GetVaultFailPulseAlpha() const
+{
+    if (!HasVaultFailPulse())
+        return 0.0f;
+    return std::clamp(g_VaultPresentation.failPulseTimer / kVaultFailPulseSeconds, 0.0f, 1.0f);
 }

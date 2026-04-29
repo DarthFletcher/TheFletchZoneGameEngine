@@ -11,7 +11,8 @@ enum class GameplayAudioEvent : uint8_t
     CoreUnlocked,
     CoreStabilized,
     ExitOpened,
-    EscapeTriggered
+    EscapeTriggered,
+    FailureTriggered
 };
 
 void GA_Play(GameplayAudioEvent eventType);

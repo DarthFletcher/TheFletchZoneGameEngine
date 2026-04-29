@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -25,6 +26,28 @@ struct SceneGridSettings
     float axisEmphasis = 1.25f;
     float extent = 10.0f;
     int divisions = 20;
+};
+
+struct SceneSkyboxSettings
+{
+    bool enabled = false;
+    bool useCubemap = false;
+    std::string builtInPreset = "Sunset";
+    std::string texturePath;
+    std::array<std::string, 6> cubemapFacePaths{};
+    DirectX::XMFLOAT3 tint{ 1.0f, 1.0f, 1.0f };
+    float intensity = 1.0f;
+    float rotationDegrees = 0.0f;
+    float verticalRotationDegrees = 0.0f;
+    float horizonOffset = 0.0f;
+    float exposure = 0.0f;
+};
+
+struct VaultGameplaySettings
+{
+    float nodeDecayDuration = 9.0f;
+    float nodeDecayWarningSeconds = 3.0f;
+    int maxDecayedNodes = 3;
 };
 
 enum class ScenePrimitive : uint8_t
@@ -145,6 +168,10 @@ public:
     static SceneStats GetLastStats();
     static void SetGridSettings(const SceneGridSettings& settings);
     static SceneGridSettings GetGridSettings();
+    static void SetSkyboxSettings(const SceneSkyboxSettings& settings);
+    static SceneSkyboxSettings GetSkyboxSettings();
+    static void SetVaultGameplaySettings(const VaultGameplaySettings& settings);
+    static VaultGameplaySettings GetVaultGameplaySettings();
     static void SetTargetInstanceCount(uint32_t count);
     static uint32_t GetTargetInstanceCount();
     static void UpdateLastRenderCameraData(const CameraData& camera);

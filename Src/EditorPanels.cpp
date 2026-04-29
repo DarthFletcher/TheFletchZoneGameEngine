@@ -17,6 +17,7 @@
 #include "ImGuiUtils.h"
 
 #include <format>
+#include <array>
 #include <string>
 #include <chrono>
 #include <cstring>
@@ -88,6 +89,7 @@ namespace EditorPanels
     static uint32_t g_PendingSceneInstanceRenameId = 0;
     static bool g_RequestOpenSceneInstanceRenamePopup = false;
     static std::unordered_map<std::string, ImTextureID> g_AssetThumbnailCache;
+    static bool IsTextureAssetPath(const std::string& path);
     static int GetAssetTileColumnCount(float availableWidth, float tileWidth, float spacing);
     static ImTextureID GetAssetThumbnailTexture(const std::string& assetId, const std::string& fallbackTexturePath);
     static bool DrawAssetTile(const char* id, const char* title, const char* icon, const char* payloadType, const void* payloadData, size_t payloadSize, bool selected, ImTextureID thumbnailTexture);
@@ -971,6 +973,291 @@ namespace EditorPanels
                     sceneCamera.ResetToDefaultView();
                 }
 
+                static char skyboxTextureBuffer[260] = {};
+                static std::string skyboxTextureSource;
+                static std::array<std::array<char, 260>, 6> skyboxCubemapBuffers{};
+                static std::array<std::string, 6> skyboxCubemapSources;
+                SceneSkyboxSettings skyboxSettings = Scene::GetSkyboxSettings();
+                if (skyboxTextureSource != skyboxSettings.texturePath)
+                {
+                    skyboxTextureSource = skyboxSettings.texturePath;
+                    strncpy_s(skyboxTextureBuffer, skyboxTextureSource.c_str(), _TRUNCATE);
+                }
+                for (size_t faceIndex = 0; faceIndex < skyboxCubemapSources.size(); ++faceIndex)
+                {
+                    if (skyboxCubemapSources[faceIndex] != skyboxSettings.cubemapFacePaths[faceIndex])
+                    {
+                        skyboxCubemapSources[faceIndex] = skyboxSettings.cubemapFacePaths[faceIndex];
+                        strncpy_s(skyboxCubemapBuffers[faceIndex].data(), skyboxCubemapBuffers[faceIndex].size(), skyboxCubemapSources[faceIndex].c_str(), _TRUNCATE);
+                    }
+                }
+
+                if (ImGui::CollapsingHeader("Skybox", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    static constexpr const char* kCubemapFaceLabels[6] = { "+X", "-X", "+Y", "-Y", "+Z", "-Z" };
+                    bool skyboxChanged = false;
+                    static constexpr const char* kSkyboxBuiltInPresets[] = { "Day", "Sunset", "Night", "Void" };
+                    skyboxChanged |= ImGui::Checkbox("Enabled##Skybox", &skyboxSettings.enabled);
+                    const char* skyboxModeLabel = skyboxSettings.useCubemap ? "Cubemap" : "Equirect";
+                    if (ImGui::BeginCombo("Mode##Skybox", skyboxModeLabel))
+                    {
+                        const bool usingEquirect = !skyboxSettings.useCubemap;
+                        if (ImGui::Selectable("Equirect", usingEquirect))
+                        {
+                            skyboxSettings.useCubemap = false;
+                            skyboxChanged = true;
+                        }
+                        if (usingEquirect)
+                            ImGui::SetItemDefaultFocus();
+
+                        const bool usingCubemap = skyboxSettings.useCubemap;
+                        if (ImGui::Selectable("Cubemap", usingCubemap))
+                        {
+                            skyboxSettings.useCubemap = true;
+                            skyboxChanged = true;
+                        }
+                        if (usingCubemap)
+                            ImGui::SetItemDefaultFocus();
+                        ImGui::EndCombo();
+                    }
+                    ImGui::Separator();
+
+                    if (!skyboxSettings.useCubemap)
+                    {
+                        const char* builtInPresetLabel = skyboxSettings.builtInPreset.empty() ? "Sunset" : skyboxSettings.builtInPreset.c_str();
+                        if (ImGui::BeginCombo("Built-In Preset##Skybox", builtInPresetLabel))
+                        {
+                            for (const char* presetLabel : kSkyboxBuiltInPresets)
+                            {
+                                const bool isCurrent = (_stricmp(builtInPresetLabel, presetLabel) == 0);
+                                if (ImGui::Selectable(presetLabel, isCurrent))
+                                {
+                                    skyboxSettings.builtInPreset = presetLabel;
+                                    skyboxChanged = true;
+                                }
+                                if (isCurrent)
+                                    ImGui::SetItemDefaultFocus();
+                            }
+                            ImGui::EndCombo();
+                        }
+
+                        static bool s_SkyboxPresetExpanded = false;
+                        ImGui::TextUnformatted("Built-In Presets");
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton(s_SkyboxPresetExpanded ? "Compact View##SkyboxPresets" : "Expanded View##SkyboxPresets"))
+                            s_SkyboxPresetExpanded = !s_SkyboxPresetExpanded;
+
+                        const ImVec2 presetThumbSize = s_SkyboxPresetExpanded ? ImVec2(144.0f, 72.0f) : ImVec2(96.0f, 48.0f);
+                        const float presetSpacing = ImGui::GetStyle().ItemSpacing.x;
+                        const float availableWidth = ImGui::GetContentRegionAvail().x;
+                        const int presetColumns = (std::max)(1, static_cast<int>((availableWidth + presetSpacing) / (presetThumbSize.x + presetSpacing)));
+                        ImDrawList* presetDrawList = ImGui::GetWindowDrawList();
+                        if (ImGui::BeginTable("##SkyboxPresetTable", presetColumns, ImGuiTableFlags_SizingFixedFit))
+                        {
+                            for (size_t presetIndex = 0; presetIndex < _countof(kSkyboxBuiltInPresets); ++presetIndex)
+                            {
+                                ImGui::TableNextColumn();
+
+                                const char* presetLabel = kSkyboxBuiltInPresets[presetIndex];
+                                Texture* presetTexture = TextureManager::GetInstance().GetBuiltInSkyTexture(presetLabel);
+                                const ImTextureID presetTextureId = (presetTexture && presetTexture->srvGPU.ptr != 0) ? (ImTextureID)presetTexture->srvGPU.ptr : 0;
+                                const bool isCurrentPreset = (_stricmp(builtInPresetLabel, presetLabel) == 0) && skyboxSettings.texturePath.empty();
+
+                                ImGui::PushID(presetLabel);
+                                ImGui::BeginGroup();
+                                const float groupStartX = ImGui::GetCursorPosX();
+                                if (presetTextureId)
+                                    ImGui::Image(presetTextureId, presetThumbSize, ImVec2(0, 0), ImVec2(1, 1));
+                                else
+                                    ImGui::Button("No Preview", presetThumbSize);
+
+                                const ImVec2 thumbMin = ImGui::GetItemRectMin();
+                                const ImVec2 thumbMax = ImGui::GetItemRectMax();
+                                const bool presetClicked = ImGui::IsItemClicked();
+                                presetDrawList->AddRect(
+                                    thumbMin,
+                                    thumbMax,
+                                    isCurrentPreset ? IM_COL32(110, 190, 255, 255) : IM_COL32(90, 90, 90, 255),
+                                    4.0f,
+                                    0,
+                                    isCurrentPreset ? 2.0f : 1.0f);
+                                if (ImGui::IsItemHovered())
+                                {
+                                    const char* presetDescription = "Stylized built-in sky preset.";
+                                    if (_stricmp(presetLabel, "Day") == 0)
+                                        presetDescription = "Bright daytime gradient with a cool horizon.";
+                                    else if (_stricmp(presetLabel, "Sunset") == 0)
+                                        presetDescription = "Warm sunset gradient with a strong glow band.";
+                                    else if (_stricmp(presetLabel, "Night") == 0)
+                                        presetDescription = "Dark night sky with a subtle moonlit horizon.";
+                                    else if (_stricmp(presetLabel, "Void") == 0)
+                                        presetDescription = "Moody void sky with arcane purple-red tones.";
+
+                                    ImGui::SetNextWindowSizeConstraints(ImVec2(240.0f, 0.0f), ImVec2(320.0f, FLT_MAX));
+                                    ImGui::BeginTooltip();
+                                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 220.0f);
+                                    ImGui::TextUnformatted(presetLabel);
+                                    ImGui::Separator();
+                                    ImGui::TextWrapped("%s", presetDescription);
+                                    if (isCurrentPreset)
+                                        ImGui::TextColored(ImVec4(0.45f, 0.80f, 1.0f, 1.0f), "Current built-in preset");
+                                    ImGui::PopTextWrapPos();
+                                    ImGui::EndTooltip();
+                                }
+
+                                const float labelWidth = ImGui::CalcTextSize(presetLabel).x;
+                                ImGui::SetCursorPosX(groupStartX + (std::max)(0.0f, (presetThumbSize.x - labelWidth) * 0.5f));
+                                ImGui::TextUnformatted(presetLabel);
+                                ImGui::Dummy(ImVec2(presetThumbSize.x, 0.0f));
+                                ImGui::EndGroup();
+                                ImGui::PopID();
+
+                                if (presetClicked)
+                                {
+                                    skyboxSettings.builtInPreset = presetLabel;
+                                    skyboxSettings.texturePath.clear();
+                                    skyboxTextureBuffer[0] = '\0';
+                                    skyboxTextureSource.clear();
+                                    skyboxChanged = true;
+                                }
+                            }
+                            ImGui::EndTable();
+                        }
+
+                        ImGui::InputText("Texture##Skybox", skyboxTextureBuffer, IM_ARRAYSIZE(skyboxTextureBuffer), ImGuiInputTextFlags_ReadOnly);
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Pick##Skybox"))
+                            ImGui::OpenPopup("Skybox Texture Picker##Scene");
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("Use Built-In##Skybox"))
+                        {
+                            skyboxTextureBuffer[0] = '\0';
+                            skyboxTextureSource.clear();
+                            skyboxSettings.texturePath.clear();
+                            skyboxChanged = true;
+                        }
+                        if (!g_SelectedAssetId.empty() && IsTextureAssetPath(g_SelectedAssetId))
+                        {
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Use Selected Asset##Skybox"))
+                            {
+                                strncpy_s(skyboxTextureBuffer, g_SelectedAssetId.c_str(), _TRUNCATE);
+                                skyboxChanged = true;
+                            }
+                        }
+
+                        if (ImGui::BeginPopup("Skybox Texture Picker##Scene"))
+                        {
+                            for (const std::filesystem::path& texturePath : EnumerateTextureAssets())
+                            {
+                                const std::string texturePathString = texturePath.string();
+                                const bool isCurrent = (skyboxTextureSource == texturePathString);
+                                if (ImGui::Selectable(texturePathString.c_str(), isCurrent))
+                                {
+                                    strncpy_s(skyboxTextureBuffer, texturePathString.c_str(), _TRUNCATE);
+                                    skyboxChanged = true;
+                                    ImGui::CloseCurrentPopup();
+                                }
+                            }
+                            ImGui::EndPopup();
+                        }
+                    }
+                    else
+                    {
+                        if (ImGui::Button("Clear All Faces##SkyboxCube"))
+                        {
+                            for (size_t faceIndex = 0; faceIndex < skyboxCubemapBuffers.size(); ++faceIndex)
+                            {
+                                std::array<char, 260>& buffer = skyboxCubemapBuffers[faceIndex];
+                                buffer[0] = '\0';
+                                skyboxCubemapSources[faceIndex].clear();
+                                skyboxSettings.cubemapFacePaths[faceIndex].clear();
+                            }
+                            skyboxChanged = true;
+                        }
+                        for (size_t faceIndex = 0; faceIndex < skyboxCubemapBuffers.size(); ++faceIndex)
+                        {
+                            const std::string fieldLabel = std::format("{} Face##SkyboxCube", kCubemapFaceLabels[faceIndex]);
+                            ImGui::InputText(fieldLabel.c_str(), skyboxCubemapBuffers[faceIndex].data(), static_cast<size_t>(skyboxCubemapBuffers[faceIndex].size()), ImGuiInputTextFlags_ReadOnly);
+                            ImGui::SameLine();
+                            const std::string pickLabel = std::format("Pick##SkyboxCube{}", faceIndex);
+                            if (ImGui::SmallButton(pickLabel.c_str()))
+                                ImGui::OpenPopup(std::format("Skybox Cubemap Picker##Scene{}", faceIndex).c_str());
+                            ImGui::SameLine();
+                            const std::string clearLabel = std::format("Clear##SkyboxCube{}", faceIndex);
+                            if (ImGui::SmallButton(clearLabel.c_str()))
+                            {
+                                skyboxCubemapBuffers[faceIndex][0] = '\0';
+                                skyboxCubemapSources[faceIndex].clear();
+                                skyboxSettings.cubemapFacePaths[faceIndex].clear();
+                                skyboxChanged = true;
+                            }
+                            if (!g_SelectedAssetId.empty() && IsTextureAssetPath(g_SelectedAssetId))
+                            {
+                                ImGui::SameLine();
+                                const std::string selectedLabel = std::format("Use Selected##SkyboxCube{}", faceIndex);
+                                if (ImGui::SmallButton(selectedLabel.c_str()))
+                                {
+                                    strncpy_s(skyboxCubemapBuffers[faceIndex].data(), skyboxCubemapBuffers[faceIndex].size(), g_SelectedAssetId.c_str(), _TRUNCATE);
+                                    skyboxChanged = true;
+                                }
+                            }
+
+                            const std::string popupId = std::format("Skybox Cubemap Picker##Scene{}", faceIndex);
+                            if (ImGui::BeginPopup(popupId.c_str()))
+                            {
+                                for (const std::filesystem::path& texturePath : EnumerateTextureAssets())
+                                {
+                                    const std::string texturePathString = texturePath.string();
+                                    const bool isCurrent = (skyboxCubemapSources[faceIndex] == texturePathString);
+                                    if (ImGui::Selectable(texturePathString.c_str(), isCurrent))
+                                    {
+                                        strncpy_s(skyboxCubemapBuffers[faceIndex].data(), skyboxCubemapBuffers[faceIndex].size(), texturePathString.c_str(), _TRUNCATE);
+                                        skyboxChanged = true;
+                                        ImGui::CloseCurrentPopup();
+                                    }
+                                }
+                                ImGui::EndPopup();
+                            }
+                        }
+                    }
+                    skyboxChanged |= ImGui::ColorEdit3("Tint Picker##Skybox", &skyboxSettings.tint.x, ImGuiColorEditFlags_Float);
+                    skyboxChanged |= DrawTickFloat3("Tint", skyboxSettings.tint, 0.05f, 0.0f, 2.0f);
+                    skyboxChanged |= DrawTickFloat("Intensity", skyboxSettings.intensity, 0.0f, 8.0f, 0.05f, "%.2f");
+                    skyboxChanged |= DrawTickFloat("Exposure", skyboxSettings.exposure, -8.0f, 8.0f, 0.10f, "%.2f EV");
+                    skyboxChanged |= DrawTickFloat("Rotation", skyboxSettings.rotationDegrees, -360.0f, 360.0f, 1.0f, "%.0f deg");
+                    skyboxChanged |= DrawTickFloat("Vertical Rotation", skyboxSettings.verticalRotationDegrees, -89.0f, 89.0f, 1.0f, "%.0f deg");
+                    if (!skyboxSettings.useCubemap)
+                        skyboxChanged |= DrawTickFloat("Horizon Offset", skyboxSettings.horizonOffset, -0.5f, 0.5f, 0.01f, "%.2f");
+                    if (ImGui::SmallButton("Reset Skybox Controls##Skybox"))
+                    {
+                        skyboxSettings.tint = { 1.0f, 1.0f, 1.0f };
+                        skyboxSettings.intensity = 1.0f;
+                        skyboxSettings.exposure = 0.0f;
+                        skyboxSettings.rotationDegrees = 0.0f;
+                        skyboxSettings.verticalRotationDegrees = 0.0f;
+                        skyboxSettings.horizonOffset = 0.0f;
+                        skyboxChanged = true;
+                    }
+
+                    if (skyboxChanged)
+                    {
+                        if (g_engineInstance)
+                            PushUndoSnapshot(g_engineInstance->GetEditorState());
+                        skyboxSettings.texturePath = skyboxTextureBuffer;
+                        for (size_t faceIndex = 0; faceIndex < skyboxCubemapBuffers.size(); ++faceIndex)
+                            skyboxSettings.cubemapFacePaths[faceIndex] = skyboxCubemapBuffers[faceIndex].data();
+                        Scene::SetSkyboxSettings(skyboxSettings);
+                        skyboxTextureSource = skyboxSettings.texturePath;
+                        for (size_t faceIndex = 0; faceIndex < skyboxCubemapSources.size(); ++faceIndex)
+                            skyboxCubemapSources[faceIndex] = skyboxSettings.cubemapFacePaths[faceIndex];
+                    }
+
+                    ImGui::TextDisabled(skyboxSettings.useCubemap
+                        ? "Cubemap order: +X, -X, +Y, -Y, +Z, -Z. Vertical Rotation applies here too."
+                        : "Uses a 2D equirect sky texture path. Empty path uses the built-in sky. Horizon Offset is equirect-only.");
+                }
+
                 ImVec2 size = ImGui::GetContentRegionAvail();
 
                 // Quantize to integer pixels and stabilize against 1px docking/padding jitter.
@@ -1020,6 +1307,9 @@ namespace EditorPanels
 
                     // Cache scene image rect for picking
                     const ImVec2 sceneMin = ImGui::GetItemRectMin();
+                    const ImVec2 sceneMax = ImGui::GetItemRectMax();
+                    ImDrawList* sceneDrawList = ImGui::GetWindowDrawList();
+                    sceneDrawList->PushClipRect(sceneMin, sceneMax, true);
 
                     extern Engine* g_engineInstance;
                     EditorState& editor = g_engineInstance->GetEditorState();
@@ -1276,7 +1566,7 @@ namespace EditorPanels
 
                     const ImVec2 hudSize = ImGui::CalcTextSize(gizmoHud, nullptr, false);
                     const ImVec2 overlayPos = { sceneMin.x + 10.0f, sceneMin.y + 10.0f };
-                    ImDrawList* overlayDraw = ImGui::GetWindowDrawList();
+                    ImDrawList* overlayDraw = sceneDrawList;
                     overlayDraw->AddRectFilled(
                         ImVec2(overlayPos.x - 6.0f, overlayPos.y - 6.0f),
                         ImVec2(overlayPos.x + hudSize.x + 6.0f, overlayPos.y + hudSize.y + 10.0f),
@@ -1357,7 +1647,7 @@ namespace EditorPanels
                         const bool allowGizmoInput = hovered && focused && !navigatingCamera && !overHudButton;
                         if (Scene::TryGetLastRenderCameraData(gizmoCamera))
                         {
-                            DrawSceneCameraIcons(gizmoCamera, ImGui::GetWindowDrawList(), sceneMin, size);
+                            DrawSceneCameraIcons(gizmoCamera, sceneDrawList, sceneMin, size);
 
                             if (SceneInstance* selected = Scene::GetSelectedInstance())
                             {
@@ -1365,7 +1655,7 @@ namespace EditorPanels
                                 g_EditorGizmo.Update(
                                     selected,
                                     gizmoCamera,
-                                    ImGui::GetWindowDrawList(),
+                                    sceneDrawList,
                                     sceneMin,
                                     size,
                                     hovered,
@@ -1407,7 +1697,7 @@ namespace EditorPanels
                         else
                             Scene::ClearHoveredInstance();
 
-                        DrawSceneMaterialDropOverlay(ImGui::GetWindowDrawList(), sceneMin, size);
+                        DrawSceneMaterialDropOverlay(sceneDrawList, sceneMin, size);
 
                         if (!navigatingCamera && !overHudButton && !clickingGizmo && viewportClicked && !rmbDown && !mmbDown)
                         {
@@ -1518,6 +1808,11 @@ namespace EditorPanels
                             ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 100.0f));
                             ImGui::TextColored(ImVec4(0.56f, 1.0f, 0.72f, 1.0f), "Exit Open - Reach the Gate");
                         }
+                        else if (missionState == VaultMissionState::Failed)
+                        {
+                            ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 100.0f));
+                            ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.32f, 1.0f), "System Failure - Press R to Retry");
+                        }
                     }
                     if (g_engineInstance && g_engineInstance->GetGame().HasInteractionTarget())
                     {
@@ -1533,6 +1828,11 @@ namespace EditorPanels
                     {
                         ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 154.0f));
                         ImGui::TextColored(ImVec4(0.56f, 1.0f, 0.72f, 1.0f), "Vault Escaped!");
+                    }
+                    else if (g_engineInstance && g_engineInstance->GetGame().IsVaultMissionFailed())
+                    {
+                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 154.0f));
+                        ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.32f, 1.0f), "Vault Failed!");
                     }
                 }
                 else
@@ -3797,6 +4097,13 @@ namespace EditorPanels
 
         std::sort(result.begin(), result.end());
         return result;
+    }
+
+    static bool IsTextureAssetPath(const std::string& path)
+    {
+        std::string ext = std::filesystem::path(path).extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga";
     }
 
     static std::string FindFirstSelectableAssetIdInFolder(const std::filesystem::path& folder)

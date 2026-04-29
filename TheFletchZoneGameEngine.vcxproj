@@ -258,8 +258,12 @@
     <ResourceCompile Include="TheFletchZoneGameEngine.rc" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Assets\Scenes\Vault_Intro.scene" />
+    <None Include="Assets\Scenes\Vault_Priority.scene" />
+    <None Include="Assets\Scenes\Vault_Traversal.scene" />
     <None Include="CHANGELOG.md" />
     <None Include="cpp.hint" />
+    <None Include="CrashDumps\.gitkeep" />
     <None Include="Directory.Build.props" />
     <None Include="Directory.Build.targets" />
     <None Include="docs\CHANGELOG_0.3.0.md" />
@@ -272,6 +276,12 @@
     <None Include="Docs\ShaderCompilationQuickRef.md" />
     <None Include="ENGINE_CONTRACT.md" />
     <None Include="include\macros.hints" />
+    <None Include="Local\Captures\.gitkeep" />
+    <None Include="Local\GpuTiming\.gitkeep" />
+    <None Include="Local\Profiling\.gitkeep" />
+    <None Include="Local\README.md" />
+    <None Include="Local\Scratch\.gitkeep" />
+    <None Include="logs\.gitkeep" />
     <None Include="packages.config" />
     <None Include="shaders\material_cb.hlsli" />
     <None Include="shaders\scene_cb.hlsli" />
@@ -293,6 +303,9 @@
     <None Include="shaders\scene_grid_ps.hlsl" />
     <None Include="shaders\scene_grid_vs.hlsl" />
     <None Include="shaders\scene_triangle_ps.hlsl" />
+    <None Include="shaders\skybox_ps.hlsl" />
+    <None Include="shaders\skybox_vs.hlsl" />
+    <None Include="shaders\skybox_cube_ps.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <Font Include="Assets\Fonts\DroidSans.ttf">
@@ -322,6 +335,8 @@
   </Target>
   <ItemGroup>
     <ShaderRuntimeFiles Include="shaders\**\*.*" />
+  </ItemGroup>
+  <ItemGroup>
   </ItemGroup>
   <Target Name="CopyRuntimeShaders" AfterTargets="Build">
     <MakeDir Directories="$(OutDir)shaders" />

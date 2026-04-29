@@ -17,7 +17,7 @@ namespace
         bool loopsStarted = false;
         float currentTension = 0.0f;
         float masterVolume = 0.60f;
-        std::array<Clock::time_point, 7> lastPlayTimes{};
+        std::array<Clock::time_point, 8> lastPlayTimes{};
     };
 
     GameplayAudioState g_GameplayAudioState{};
@@ -40,6 +40,7 @@ namespace
         case GameplayAudioEvent::CoreStabilized: return 1.00f;
         case GameplayAudioEvent::ExitOpened: return 0.90f;
         case GameplayAudioEvent::EscapeTriggered: return 1.10f;
+        case GameplayAudioEvent::FailureTriggered: return 1.15f;
         default: return 1.00f;
         }
     }
@@ -95,6 +96,10 @@ void GA_Play(GameplayAudioEvent eventType)
         break;
     case GameplayAudioEvent::EscapeTriggered:
         BlackFlameAudio::Get().Play(BlackFlameSoundEvent::Ready, BlackFlameSoundStyle::Arcane, 0.70f * volume);
+        break;
+    case GameplayAudioEvent::FailureTriggered:
+        BlackFlameAudio::Get().Play(BlackFlameSoundEvent::Denied, BlackFlameSoundStyle::Glitch, 0.82f * volume);
+        BlackFlameAudio::Get().Play(BlackFlameSoundEvent::SuggestionAppear, BlackFlameSoundStyle::Arcane, 0.36f * volume);
         break;
     default:
         break;
