@@ -225,12 +225,13 @@ namespace
         {
             const RuntimeWorldStats stats = runtimeWorld.GetStats();
             Logger::Log(LogLevel::Info,
-                std::format("RuntimeWorld refreshed after {}: {} entities, players={}, vaultNodes={}, vaultCores={}, vaultExits={}.",
+                std::format("RuntimeWorld refreshed after {}: {} entities, players={}, vaultNodes={}, vaultCores={}, vaultRings={}, vaultExits={}.",
                     reason,
                     stats.entities,
                     stats.playerControllers,
                     stats.vaultNodes,
                     stats.vaultCores,
+                    stats.vaultRings,
                     stats.vaultExits),
                 "[Game]");
         }
@@ -1003,7 +1004,98 @@ namespace
         newState.ringActiveMaterial = g_VaultState.ringActiveMaterial;
         newState.ringCompletedMaterial = g_VaultState.ringCompletedMaterial;
 
-        for (const SceneInstance& instance : Scene::GetInstances())
+        bool discoveredFromRuntimeWorld = false;
+        if (g_engineInstance)
+        {
+            const RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+            auto getSourceInstance = [&](RuntimeEntityId entityId) -> SceneInstance*
+            {
+                const RuntimeEntity* entity = runtimeWorld.GetEntity(entityId);
+                if (!entity || entity->sourceSceneInstanceId == 0 || entity->sourceSceneInstanceId == playerInstanceId)
+                    return nullptr;
+
+                SceneInstance* instance = FindInstanceById(entity->sourceSceneInstanceId);
+                if (!instance || instance->camera.enabled)
+                    return nullptr;
+
+                return instance;
+            };
+
+            auto mapNodeType = [](VaultNodeComponent::Type type)
+            {
+                switch (type)
+                {
+                case VaultNodeComponent::Type::SlowStabilize:
+                    return VaultGameplayState::NodeType::SlowStabilize;
+                case VaultNodeComponent::Type::Fragile:
+                    return VaultGameplayState::NodeType::Fragile;
+                case VaultNodeComponent::Type::Normal:
+                default:
+                    return VaultGameplayState::NodeType::Normal;
+                }
+            };
+
+            for (const auto& [entityId, exitComponent] : runtimeWorld.GetVaultExits())
+            {
+                (void)exitComponent;
+                if (newState.exit.instanceId != 0)
+                    break;
+
+                if (SceneInstance* instance = getSourceInstance(entityId))
+                {
+                    newState.exit.instanceId = instance->instanceId;
+                    newState.exit.originalMaterialIndex = instance->materialIndex;
+                    newState.exit.originalPosition = instance->position;
+                }
+            }
+
+            for (const auto& [entityId, coreComponent] : runtimeWorld.GetVaultCores())
+            {
+                (void)coreComponent;
+                if (newState.core.instanceId != 0)
+                    break;
+
+                if (SceneInstance* instance = getSourceInstance(entityId))
+                {
+                    newState.core.instanceId = instance->instanceId;
+                    newState.core.originalMaterialIndex = instance->materialIndex;
+                }
+            }
+
+            for (const auto& [entityId, ringComponent] : runtimeWorld.GetVaultRings())
+            {
+                (void)ringComponent;
+                if (SceneInstance* instance = getSourceInstance(entityId))
+                    newState.rings.push_back({ instance->instanceId, instance->materialIndex, instance->rotation });
+            }
+
+            for (const auto& [entityId, nodeComponent] : runtimeWorld.GetVaultNodes())
+            {
+                if (SceneInstance* instance = getSourceInstance(entityId))
+                {
+                    const VaultGameplayState::NodeType nodeType = mapNodeType(nodeComponent.type);
+                    const float decayDuration = (nodeType == VaultGameplayState::NodeType::Fragile) ? gameplaySettings.nodeDecayDuration * 0.65f : gameplaySettings.nodeDecayDuration;
+                    const float stabilizeDuration = (nodeType == VaultGameplayState::NodeType::SlowStabilize) ? 1.8f : 0.0f;
+                    newState.nodes.push_back({ instance->instanceId, nodeType, VaultGameplayState::NodeState::Inactive, 0.0f, decayDuration, stabilizeDuration, 0.0f, false, instance->materialIndex });
+                }
+            }
+
+            discoveredFromRuntimeWorld = newState.core.instanceId != 0 || !newState.nodes.empty() || !newState.rings.empty() || newState.exit.instanceId != 0;
+            if (discoveredFromRuntimeWorld)
+            {
+                Logger::Log(LogLevel::Info,
+                    std::format("Vault bindings discovered from RuntimeWorld: nodes={} rings={} core={} exit={}",
+                        newState.nodes.size(),
+                        newState.rings.size(),
+                        newState.core.instanceId != 0 ? 1 : 0,
+                        newState.exit.instanceId != 0 ? 1 : 0),
+                    "[Game]");
+            }
+        }
+
+        if (!discoveredFromRuntimeWorld)
+        {
+            for (const SceneInstance& instance : Scene::GetInstances())
         {
             if (instance.instanceId == playerInstanceId || instance.camera.enabled)
                 continue;
@@ -1051,6 +1143,7 @@ namespace
             default:
                 break;
             }
+        }
         }
         
         g_VaultState = std::move(newState);

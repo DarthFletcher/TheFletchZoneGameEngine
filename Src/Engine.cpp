@@ -672,13 +672,14 @@ bool Engine::StartPlayMode()
 
         const RuntimeWorldStats stats = runtimeWorld.GetStats();
         Logger::Log(LogLevel::Info,
-            std::format("RuntimeWorld cloned {} entities from editor scene. cameras={} meshRenderers={} players={} vaultNodes={} vaultCores={} vaultExits={}",
+            std::format("RuntimeWorld cloned {} entities from editor scene. cameras={} meshRenderers={} players={} vaultNodes={} vaultCores={} vaultRings={} vaultExits={}",
                 stats.entities,
                 stats.cameras,
                 stats.meshRenderers,
                 stats.playerControllers,
                 stats.vaultNodes,
                 stats.vaultCores,
+                stats.vaultRings,
                 stats.vaultExits),
             "[Engine]");
     }

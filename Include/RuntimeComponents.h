@@ -80,6 +80,12 @@ struct VaultCoreComponent
     bool stabilized = false;
 };
 
+struct VaultRingComponent
+{
+    bool active = false;
+    bool completed = false;
+};
+
 struct VaultExitComponent
 {
     bool unlocked = false;

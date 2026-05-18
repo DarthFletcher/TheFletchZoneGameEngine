@@ -19,6 +19,7 @@ void RuntimeWorld::Clear()
     triggerVolumes.clear();
     vaultNodes.clear();
     vaultCores.clear();
+    vaultRings.clear();
     vaultExits.clear();
 }
 
@@ -154,6 +155,7 @@ RuntimeWorldStats RuntimeWorld::GetStats() const
     stats.triggerVolumes = triggerVolumes.size();
     stats.vaultNodes = vaultNodes.size();
     stats.vaultCores = vaultCores.size();
+    stats.vaultRings = vaultRings.size();
     stats.vaultExits = vaultExits.size();
     return stats;
 }
@@ -233,6 +235,11 @@ VaultNodeComponent& RuntimeWorld::AddVaultNode(RuntimeEntityId entityId, const V
 VaultCoreComponent& RuntimeWorld::AddVaultCore(RuntimeEntityId entityId, const VaultCoreComponent& component)
 {
     return vaultCores[entityId] = component;
+}
+
+VaultRingComponent& RuntimeWorld::AddVaultRing(RuntimeEntityId entityId, const VaultRingComponent& component)
+{
+    return vaultRings[entityId] = component;
 }
 
 VaultExitComponent& RuntimeWorld::AddVaultExit(RuntimeEntityId entityId, const VaultExitComponent& component)
@@ -324,6 +331,18 @@ const VaultCoreComponent* RuntimeWorld::GetVaultCore(RuntimeEntityId entityId) c
     return it != vaultCores.end() ? &it->second : nullptr;
 }
 
+VaultRingComponent* RuntimeWorld::GetVaultRing(RuntimeEntityId entityId)
+{
+    const auto it = vaultRings.find(entityId);
+    return it != vaultRings.end() ? &it->second : nullptr;
+}
+
+const VaultRingComponent* RuntimeWorld::GetVaultRing(RuntimeEntityId entityId) const
+{
+    const auto it = vaultRings.find(entityId);
+    return it != vaultRings.end() ? &it->second : nullptr;
+}
+
 VaultExitComponent* RuntimeWorld::GetVaultExit(RuntimeEntityId entityId)
 {
     const auto it = vaultExits.find(entityId);
@@ -371,6 +390,11 @@ const std::unordered_map<RuntimeEntityId, VaultCoreComponent>& RuntimeWorld::Get
     return vaultCores;
 }
 
+const std::unordered_map<RuntimeEntityId, VaultRingComponent>& RuntimeWorld::GetVaultRings() const
+{
+    return vaultRings;
+}
+
 const std::unordered_map<RuntimeEntityId, VaultExitComponent>& RuntimeWorld::GetVaultExits() const
 {
     return vaultExits;
@@ -390,6 +414,7 @@ void RuntimeWorld::RemoveComponents(RuntimeEntityId entityId)
     triggerVolumes.erase(entityId);
     vaultNodes.erase(entityId);
     vaultCores.erase(entityId);
+    vaultRings.erase(entityId);
     vaultExits.erase(entityId);
 }
 
@@ -430,6 +455,8 @@ void RuntimeWorld::AddGameplayComponentsFromSceneInstance(RuntimeEntityId entity
             vaultType = VaultType::Core;
         else if (loweredName.find("vaultnode") != std::string::npos)
             vaultType = VaultType::Node;
+        else if (loweredName.find("vaultring") != std::string::npos)
+            vaultType = VaultType::Ring;
     }
 
     if (vaultType == VaultType::None && !loweredPrefabPath.empty())
@@ -438,6 +465,8 @@ void RuntimeWorld::AddGameplayComponentsFromSceneInstance(RuntimeEntityId entity
             vaultType = VaultType::Core;
         else if (loweredPrefabPath.find("vaultnode") != std::string::npos)
             vaultType = VaultType::Node;
+        else if (loweredPrefabPath.find("vaultring") != std::string::npos)
+            vaultType = VaultType::Ring;
     }
 
     if (vaultType == VaultType::None && sceneInstance.primitive == ScenePrimitive::Sphere)
@@ -469,5 +498,9 @@ void RuntimeWorld::AddGameplayComponentsFromSceneInstance(RuntimeEntityId entity
             node.stabilizeDuration = 1.8f;
         }
         AddVaultNode(entityId, node);
+    }
+    else if (vaultType == VaultType::Ring)
+    {
+        AddVaultRing(entityId);
     }
 }

@@ -2267,6 +2267,7 @@ namespace EditorPanels
                     ImGui::Text("Trigger Volumes: %llu", static_cast<unsigned long long>(runtimeStats.triggerVolumes));
                     ImGui::Text("Vault Nodes:     %llu", static_cast<unsigned long long>(runtimeStats.vaultNodes));
                     ImGui::Text("Vault Cores:     %llu", static_cast<unsigned long long>(runtimeStats.vaultCores));
+                    ImGui::Text("Vault Rings:     %llu", static_cast<unsigned long long>(runtimeStats.vaultRings));
                     ImGui::Text("Vault Exits:     %llu", static_cast<unsigned long long>(runtimeStats.vaultExits));
                     ImGui::Text("Main Camera Entity: %u", mainCameraEntity);
                     ImGui::Text("Player Entity:      %u", playerEntity);

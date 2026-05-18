@@ -28,6 +28,7 @@ struct RuntimeWorldStats
     size_t triggerVolumes = 0;
     size_t vaultNodes = 0;
     size_t vaultCores = 0;
+    size_t vaultRings = 0;
     size_t vaultExits = 0;
 };
 
@@ -61,6 +62,7 @@ public:
     TriggerVolumeComponent& AddTriggerVolume(RuntimeEntityId entityId, const TriggerVolumeComponent& component = {});
     VaultNodeComponent& AddVaultNode(RuntimeEntityId entityId, const VaultNodeComponent& component = {});
     VaultCoreComponent& AddVaultCore(RuntimeEntityId entityId, const VaultCoreComponent& component = {});
+    VaultRingComponent& AddVaultRing(RuntimeEntityId entityId, const VaultRingComponent& component = {});
     VaultExitComponent& AddVaultExit(RuntimeEntityId entityId, const VaultExitComponent& component = {});
 
     RuntimeTransformComponent* GetTransform(RuntimeEntityId entityId);
@@ -77,6 +79,8 @@ public:
     const VaultNodeComponent* GetVaultNode(RuntimeEntityId entityId) const;
     VaultCoreComponent* GetVaultCore(RuntimeEntityId entityId);
     const VaultCoreComponent* GetVaultCore(RuntimeEntityId entityId) const;
+    VaultRingComponent* GetVaultRing(RuntimeEntityId entityId);
+    const VaultRingComponent* GetVaultRing(RuntimeEntityId entityId) const;
     VaultExitComponent* GetVaultExit(RuntimeEntityId entityId);
     const VaultExitComponent* GetVaultExit(RuntimeEntityId entityId) const;
 
@@ -87,6 +91,7 @@ public:
     const std::unordered_map<RuntimeEntityId, TriggerVolumeComponent>& GetTriggerVolumes() const;
     const std::unordered_map<RuntimeEntityId, VaultNodeComponent>& GetVaultNodes() const;
     const std::unordered_map<RuntimeEntityId, VaultCoreComponent>& GetVaultCores() const;
+    const std::unordered_map<RuntimeEntityId, VaultRingComponent>& GetVaultRings() const;
     const std::unordered_map<RuntimeEntityId, VaultExitComponent>& GetVaultExits() const;
 
 private:
@@ -106,5 +111,6 @@ private:
     std::unordered_map<RuntimeEntityId, TriggerVolumeComponent> triggerVolumes;
     std::unordered_map<RuntimeEntityId, VaultNodeComponent> vaultNodes;
     std::unordered_map<RuntimeEntityId, VaultCoreComponent> vaultCores;
+    std::unordered_map<RuntimeEntityId, VaultRingComponent> vaultRings;
     std::unordered_map<RuntimeEntityId, VaultExitComponent> vaultExits;
 };
