@@ -6,6 +6,7 @@
 #include "MaterialManager.h"
 #include "Scene.h"
 #include "UI.h"
+#include "VaultDiscovery.h"
 #include "VaultRuntime.h"
 #include "logger.h"
 
@@ -367,27 +368,6 @@ namespace
     static bool IsInteractionTargetCore(uint32_t targetId)
     {
         return targetId != 0 && targetId == g_VaultState.core.instanceId;
-    }
-
-	// Returns true if the given value contains keywords that indicate it is likely a vault exit. This is used to heuristically determine which scene instance should be treated as the exit during vault initialization, in case the level designer did not explicitly mark an instance as the exit. It checks if the lowercase version of the value contains "exit", "door", "gate", or "barrier". This allows for some flexibility in naming the exit instance while still being able to identify it correctly.
-    static bool IsVaultExitName(const std::string& value)
-    {
-        std::string lowered = value;
-        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return lowered.find("exit") != std::string::npos ||
-            lowered.find("door") != std::string::npos ||
-            lowered.find("gate") != std::string::npos ||
-            lowered.find("barrier") != std::string::npos;
-    }
-
-    static VaultGameplayState::NodeType InferVaultNodeType(const std::string& value)
-    {
-        const std::string lowered = ToLower(value);
-        if (lowered.find("fragile") != std::string::npos)
-            return VaultGameplayState::NodeType::Fragile;
-        if (lowered.find("slow") != std::string::npos || lowered.find("stabilize") != std::string::npos)
-            return VaultGameplayState::NodeType::SlowStabilize;
-        return VaultGameplayState::NodeType::Normal;
     }
 
 	// Finds the node binding for the given instance ID, or returns nullptr if not found. This is used to look up the state of a node based on its instance ID, which is important for handling interactions with nodes, updating their state, and determining when to trigger warnings or failures due to decaying nodes. The function iterates through the list of node bindings in the vault gameplay state and checks if any of them match the given instance ID.
@@ -961,41 +941,6 @@ namespace
         return index >= 0 ? index : 0;
     }
 
-	// Classifies a scene instance into a vault type based on its explicit vaultType property, prefab source path, and primitive type. This classification is used to determine how the instance should behave in the context of the vault gameplay, such as whether it should function as a core, node, ring, or be ignored for vault purposes.
-    static VaultType ClassifyVaultType(const SceneInstance& instance, bool coreAlreadyAssigned)
-    {
-        if (instance.vaultType != VaultType::None)
-            return instance.vaultType;
-
-        const std::string prefabPath = ToLower(instance.prefabSourcePath);
-        if (!prefabPath.empty())
-        {
-            if (prefabPath.find("vaultcore") != std::string::npos)
-                return VaultType::Core;
-            if (prefabPath.find("vaultring") != std::string::npos)
-                return VaultType::Ring;
-            if (prefabPath.find("vaultnode") != std::string::npos)
-                return VaultType::Node;
-        }
-
-        switch (instance.primitive)
-        {
-        case ScenePrimitive::Torus:
-        case ScenePrimitive::Cylinder:
-            return VaultType::Ring;
-        case ScenePrimitive::Sphere:
-            return coreAlreadyAssigned ? VaultType::Node : VaultType::Core;
-        case ScenePrimitive::Empty:
-            return VaultType::None;
-        case ScenePrimitive::Cube:
-        case ScenePrimitive::Plane:
-        case ScenePrimitive::Capsule:
-        case ScenePrimitive::Cone:
-        default:
-            return VaultType::Node;
-        }
-    }
-
 	// Resets all runtime state related to the vault gameplay, including node states, materials, and mission progress. If restoreSceneInstances is true, it also restores the original materials, positions, and rotations of all vault-related scene instances to ensure a clean slate for the next run or scene.
     static void ResetVaultRuntimeState(bool restoreSceneInstances)
     {
@@ -1107,137 +1052,23 @@ namespace
         newState.ringActiveMaterial = g_VaultState.ringActiveMaterial;
         newState.ringCompletedMaterial = g_VaultState.ringCompletedMaterial;
 
-        bool discoveredFromRuntimeWorld = false;
-        if (g_engineInstance)
+        RuntimeWorld* runtimeWorld = g_engineInstance ? &g_engineInstance->GetRuntimeWorld() : nullptr;
+        const VaultDiscoveryResult discoveryResult = BuildVaultGameplayBindings(
+            { runtimeWorld, playerInstanceId, gameplaySettings },
+            newState);
+
+        for (VaultGameplayState::NodeBinding& nodeBinding : newState.nodes)
+            SyncNodeBindingToRuntime(nodeBinding);
+
+        if (discoveryResult.discoveredFromRuntimeWorld)
         {
-            const RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
-            auto getSourceInstance = [&](RuntimeEntityId entityId) -> SceneInstance*
-            {
-                const RuntimeEntity* entity = runtimeWorld.GetEntity(entityId);
-                if (!entity || entity->sourceSceneInstanceId == 0 || entity->sourceSceneInstanceId == playerInstanceId)
-                    return nullptr;
-
-                SceneInstance* instance = FindInstanceById(entity->sourceSceneInstanceId);
-                if (!instance || instance->camera.enabled)
-                    return nullptr;
-
-                return instance;
-            };
-
-            for (const auto& [entityId, exitComponent] : runtimeWorld.GetVaultExits())
-            {
-                (void)exitComponent;
-                if (newState.exit.instanceId != 0)
-                    break;
-
-                if (SceneInstance* instance = getSourceInstance(entityId))
-                {
-                    newState.exit.instanceId = instance->instanceId;
-                    newState.exit.originalMaterialIndex = instance->materialIndex;
-                    newState.exit.originalPosition = instance->position;
-                    newState.exit.runtimeEntity = entityId;
-                }
-            }
-
-            for (const auto& [entityId, coreComponent] : runtimeWorld.GetVaultCores())
-            {
-                (void)coreComponent;
-                if (newState.core.instanceId != 0)
-                    break;
-
-                if (SceneInstance* instance = getSourceInstance(entityId))
-                {
-                    newState.core.instanceId = instance->instanceId;
-                    newState.core.originalMaterialIndex = instance->materialIndex;
-                    newState.core.runtimeEntity = entityId;
-                }
-            }
-
-            for (const auto& [entityId, ringComponent] : runtimeWorld.GetVaultRings())
-            {
-                (void)ringComponent;
-                if (SceneInstance* instance = getSourceInstance(entityId))
-                    newState.rings.push_back({ instance->instanceId, instance->materialIndex, instance->rotation, entityId });
-            }
-
-            for (const auto& [entityId, nodeComponent] : runtimeWorld.GetVaultNodes())
-            {
-                if (SceneInstance* instance = getSourceInstance(entityId))
-                {
-                    const VaultGameplayState::NodeType nodeType = ToVaultNodeType(nodeComponent.type);
-                    const float decayDuration = (nodeType == VaultGameplayState::NodeType::Fragile) ? gameplaySettings.nodeDecayDuration * 0.65f : gameplaySettings.nodeDecayDuration;
-                    const float stabilizeDuration = (nodeType == VaultGameplayState::NodeType::SlowStabilize) ? 1.8f : 0.0f;
-                    newState.nodes.push_back({ instance->instanceId, nodeType, VaultGameplayState::NodeState::Inactive, 0.0f, decayDuration, stabilizeDuration, 0.0f, false, instance->materialIndex, entityId });
-                    SyncNodeBindingToRuntime(newState.nodes.back());
-                }
-            }
-
-            discoveredFromRuntimeWorld = newState.core.instanceId != 0 || !newState.nodes.empty() || !newState.rings.empty() || newState.exit.instanceId != 0;
-            if (discoveredFromRuntimeWorld)
-            {
-                Logger::Log(LogLevel::Info,
-                    std::format("Vault bindings discovered from RuntimeWorld: nodes={} rings={} core={} exit={}",
-                        newState.nodes.size(),
-                        newState.rings.size(),
-                        newState.core.instanceId != 0 ? 1 : 0,
-                        newState.exit.instanceId != 0 ? 1 : 0),
-                    "[Game]");
-            }
-        }
-
-        if (!discoveredFromRuntimeWorld)
-        {
-            for (const SceneInstance& instance : Scene::GetInstances())
-        {
-            if (instance.instanceId == playerInstanceId || instance.camera.enabled)
-                continue;
-
-            if (newState.exit.instanceId == 0 && IsVaultExitName(instance.name))
-            {
-                newState.exit.instanceId = instance.instanceId;
-                newState.exit.originalMaterialIndex = instance.materialIndex;
-                newState.exit.originalPosition = instance.position;
-                newState.exit.runtimeEntity = FindRuntimeEntityForSceneInstanceId(instance.instanceId);
-                continue;
-            }
-
-            const VaultType vaultType = ClassifyVaultType(instance, newState.core.instanceId != 0);
-            if (vaultType == VaultType::None)
-                continue;
-
-            switch (vaultType)
-            {
-            case VaultType::Core:
-                if (newState.core.instanceId == 0)
-                {
-                    newState.core.instanceId = instance.instanceId;
-                    newState.core.originalMaterialIndex = instance.materialIndex;
-                    newState.core.runtimeEntity = FindRuntimeEntityForSceneInstanceId(instance.instanceId);
-                }
-                else
-                {
-                    const VaultGameplayState::NodeType nodeType = InferVaultNodeType(instance.name);
-                    const float decayDuration = (nodeType == VaultGameplayState::NodeType::Fragile) ? gameplaySettings.nodeDecayDuration * 0.65f : gameplaySettings.nodeDecayDuration;
-                    const float stabilizeDuration = (nodeType == VaultGameplayState::NodeType::SlowStabilize) ? 1.8f : 0.0f;
-                    newState.nodes.push_back({ instance.instanceId, nodeType, VaultGameplayState::NodeState::Inactive, 0.0f, decayDuration, stabilizeDuration, 0.0f, false, instance.materialIndex });
-                }
-                break;
-            case VaultType::Ring:
-                newState.rings.push_back({ instance.instanceId, instance.materialIndex, instance.rotation, FindRuntimeEntityForSceneInstanceId(instance.instanceId) });
-                break;
-            case VaultType::Node:
-            {
-                const VaultGameplayState::NodeType nodeType = InferVaultNodeType(instance.name);
-                const float decayDuration = (nodeType == VaultGameplayState::NodeType::Fragile) ? gameplaySettings.nodeDecayDuration * 0.65f : gameplaySettings.nodeDecayDuration;
-                const float stabilizeDuration = (nodeType == VaultGameplayState::NodeType::SlowStabilize) ? 1.8f : 0.0f;
-                newState.nodes.push_back({ instance.instanceId, nodeType, VaultGameplayState::NodeState::Inactive, 0.0f, decayDuration, stabilizeDuration, 0.0f, false, instance.materialIndex });
-                break;
-            }
-            case VaultType::None:
-            default:
-                break;
-            }
-        }
+            Logger::Log(LogLevel::Info,
+                std::format("Vault bindings discovered from RuntimeWorld: nodes={} rings={} core={} exit={}",
+                    newState.nodes.size(),
+                    newState.rings.size(),
+                    newState.core.instanceId != 0 ? 1 : 0,
+                    newState.exit.instanceId != 0 ? 1 : 0),
+                "[Game]");
         }
         
         g_VaultState = std::move(newState);
