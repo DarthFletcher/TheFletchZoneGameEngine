@@ -2234,6 +2234,50 @@ namespace EditorPanels
 
                 ImGui::Separator();
 
+                ImGui::TextUnformatted("RuntimeWorld");
+                if (g_engineInstance)
+                {
+                    const Engine::State engineState = Engine::GetState();
+                    const char* engineStateLabel = "Editing";
+                    switch (engineState)
+                    {
+                    case Engine::State::Playing:
+                        engineStateLabel = "Playing";
+                        break;
+                    case Engine::State::Paused:
+                        engineStateLabel = "Paused";
+                        break;
+                    case Engine::State::Editing:
+                    default:
+                        engineStateLabel = "Editing";
+                        break;
+                    }
+
+                    const RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+                    const RuntimeWorldStats runtimeStats = runtimeWorld.GetStats();
+                    const RuntimeEntityId mainCameraEntity = runtimeWorld.FindMainCameraEntity();
+                    const RuntimeEntityId playerEntity = runtimeWorld.FindFirstPlayerControllerEntity();
+
+                    ImGui::Text("Engine State: %s", engineStateLabel);
+                    ImGui::Text("Entities:        %llu", static_cast<unsigned long long>(runtimeStats.entities));
+                    ImGui::Text("Transforms:      %llu", static_cast<unsigned long long>(runtimeStats.transforms));
+                    ImGui::Text("Cameras:         %llu", static_cast<unsigned long long>(runtimeStats.cameras));
+                    ImGui::Text("Mesh Renderers:  %llu", static_cast<unsigned long long>(runtimeStats.meshRenderers));
+                    ImGui::Text("Players:         %llu", static_cast<unsigned long long>(runtimeStats.playerControllers));
+                    ImGui::Text("Trigger Volumes: %llu", static_cast<unsigned long long>(runtimeStats.triggerVolumes));
+                    ImGui::Text("Vault Nodes:     %llu", static_cast<unsigned long long>(runtimeStats.vaultNodes));
+                    ImGui::Text("Vault Cores:     %llu", static_cast<unsigned long long>(runtimeStats.vaultCores));
+                    ImGui::Text("Vault Exits:     %llu", static_cast<unsigned long long>(runtimeStats.vaultExits));
+                    ImGui::Text("Main Camera Entity: %u", mainCameraEntity);
+                    ImGui::Text("Player Entity:      %u", playerEntity);
+                }
+                else
+                {
+                    ImGui::TextDisabled("Engine instance unavailable.");
+                }
+
+                ImGui::Separator();
+
                 SceneCamera& cam = gfx.GetSceneCamera();
                 DirectX::XMFLOAT3 targ{};
                 DirectX::XMStoreFloat3(&targ, cam.GetTarget());
