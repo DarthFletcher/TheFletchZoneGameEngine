@@ -7,6 +7,7 @@ Input::Input()
     ZeroMemory(keys, sizeof(keys));
     ZeroMemory(prevKeys, sizeof(prevKeys));
     ZeroMemory(mouseButtons, sizeof(mouseButtons));
+    prevGamepadStates.fill({});
     gamepadConnected.fill(false);
     gamepadStates.fill({});
     rumbleActive.fill(false);
@@ -41,6 +42,7 @@ void Input::Update() {
     mouseWheelDelta = 0;
 
     // ✅ Gamepad Update
+    prevGamepadStates = gamepadStates;
     for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
         XINPUT_STATE state;
         ZeroMemory(&state, sizeof(XINPUT_STATE));
@@ -116,6 +118,20 @@ bool Input::IsGamepadConnected(int controllerId) const {
 bool Input::IsGamepadButtonPressed(int controllerId, WORD button) const {
     if (!IsGamepadConnected(controllerId)) return false;
     return (gamepadStates[controllerId].Gamepad.wButtons & button) != 0;
+}
+
+bool Input::IsGamepadButtonJustPressed(int controllerId, WORD button) const {
+    if (!IsGamepadConnected(controllerId)) return false;
+    const WORD currentButtons = gamepadStates[controllerId].Gamepad.wButtons;
+    const WORD previousButtons = prevGamepadStates[controllerId].Gamepad.wButtons;
+    return (currentButtons & button) != 0 && (previousButtons & button) == 0;
+}
+
+bool Input::IsGamepadButtonJustReleased(int controllerId, WORD button) const {
+    if (!IsGamepadConnected(controllerId)) return false;
+    const WORD currentButtons = gamepadStates[controllerId].Gamepad.wButtons;
+    const WORD previousButtons = prevGamepadStates[controllerId].Gamepad.wButtons;
+    return (currentButtons & button) == 0 && (previousButtons & button) != 0;
 }
 
 float Input::GetGamepadLeftStickX(int controllerId) const {

@@ -16,8 +16,8 @@
   "skyboxRotationDegrees": 0,
   "skyboxVerticalRotationDegrees": 0,
   "skyboxHorizonOffset": 0,
-  "vaultNodeDecayDuration": 9,
-  "vaultNodeDecayWarningSeconds": 3,
+  "vaultNodeDecayDuration": 12,
+  "vaultNodeDecayWarningSeconds": 4,
   "vaultMaxDecayedNodes": 3,
   "instances": [
     {

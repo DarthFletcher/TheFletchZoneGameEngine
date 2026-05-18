@@ -26,6 +26,8 @@ public:
     // ✅ Gamepad Input (XInput)
     bool IsGamepadConnected(int controllerId) const;
     bool IsGamepadButtonPressed(int controllerId, WORD button) const;
+    bool IsGamepadButtonJustPressed(int controllerId, WORD button) const;
+    bool IsGamepadButtonJustReleased(int controllerId, WORD button) const;
     float GetGamepadLeftStickX(int controllerId) const;
     float GetGamepadLeftStickY(int controllerId) const;
     float GetGamepadRightStickX(int controllerId) const;
@@ -63,6 +65,7 @@ private:
 
     // Gamepad
     std::array<XINPUT_STATE, XUSER_MAX_COUNT> gamepadStates{};
+    std::array<XINPUT_STATE, XUSER_MAX_COUNT> prevGamepadStates{};
     std::array<bool, XUSER_MAX_COUNT> gamepadConnected{ false };
     int gamepadDeadzone = 7849; // Default Deadzone
 

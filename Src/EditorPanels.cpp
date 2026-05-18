@@ -1743,6 +1743,17 @@ namespace EditorPanels
             if (!panel.open)
                 return;
 
+            static bool s_GameMouseLocked = false;
+
+            auto releaseGameMouseLock = [&]()
+            {
+                if (!s_GameMouseLocked)
+                    return;
+                ClipCursor(nullptr);
+                ReleaseCapture();
+                s_GameMouseLocked = false;
+            };
+
             if (ImGui::Begin(panel.name, &panel.open))
             {
                 Graphics& gfx = Graphics::GetInstance();
@@ -1776,67 +1787,379 @@ namespace EditorPanels
                 const ImTextureID tex = gfx.GetGameImGuiTextureID();
                 bool hovered = false;
                 bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+                ImVec2 imageMin{};
+                ImVec2 imageMax{};
 
                 if (runtimeActive && tex)
                 {
                     ImGui::Image(tex, size, ImVec2(0, 0), ImVec2(1, 1));
                     hovered = ImGui::IsItemHovered();
-                    const ImVec2 imageMin = ImGui::GetItemRectMin();
+                    imageMin = ImGui::GetItemRectMin();
+                    imageMax = ImGui::GetItemRectMax();
+                    ImDrawList* gameDraw = ImGui::GetWindowDrawList();
                     DrawGameInteractionTargetHighlight(ImGui::GetWindowDrawList(), imageMin, size);
-                    ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 10.0f));
-                    ImGui::TextDisabled(state == Engine::State::Paused ? "Game View (Paused)" : "Game View (Runtime)");
-                    ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 28.0f));
-                    ImGui::TextDisabled("Controls: RMB=Look  WASD=Move  Shift=Boost");
-                    ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 46.0f));
-                    ImGui::TextDisabled("Input: hovered=%d focused=%d allow=%d", hovered ? 1 : 0, focused ? 1 : 0, (runtimeActive && hovered && focused && !Engine::IsKeyboardCapturedByUI()) ? 1 : 0);
+
+                    ImVec4 moodAccent(1.0f, 0.77f, 0.46f, 1.0f);
+                    ImVec4 moodSecondary(0.70f, 0.36f, 1.0f, 1.0f);
+                    if (g_engineInstance)
+                    {
+                        float r = 1.0f;
+                        float g = 0.77f;
+                        float b = 0.46f;
+                        g_engineInstance->GetGame().GetVaultMoodAccentColor(r, g, b);
+                        moodAccent = ImVec4(r, g, b, 1.0f);
+
+                        r = 0.70f;
+                        g = 0.36f;
+                        b = 1.0f;
+                        g_engineInstance->GetGame().GetVaultMoodSecondaryColor(r, g, b);
+                        moodSecondary = ImVec4(r, g, b, 1.0f);
+                    }
+
+                    auto colorFromMood = [](const ImVec4& color, float intensity, int alpha = 255)
+                    {
+                        return IM_COL32(
+                            static_cast<int>(std::clamp(color.x * intensity, 0.0f, 1.0f) * 255.0f),
+                            static_cast<int>(std::clamp(color.y * intensity, 0.0f, 1.0f) * 255.0f),
+                            static_cast<int>(std::clamp(color.z * intensity, 0.0f, 1.0f) * 255.0f),
+                            alpha);
+                    };
+                    struct HudLine
+                    {
+                        std::string text;
+                        ImU32 color = IM_COL32_WHITE;
+                    };
+
+                    std::vector<HudLine> hudLines;
+                    hudLines.reserve(14);
+                    hudLines.push_back({ state == Engine::State::Paused ? "Game View (Paused)" : "Game View (Runtime)", IM_COL32(210, 218, 232, 255) });
+                    hudLines.push_back({ "Controls: RMB=Look  WASD=Move  Shift=Sprint  E=Interact", IM_COL32(162, 173, 188, 255) });
+                    hudLines.push_back({ "Controller: LS=Move  RS=Look  RT=Sprint  A=Interact", IM_COL32(142, 160, 182, 255) });
+                    hudLines.push_back({ std::format("Input: hovered={} focused={} allow={}", hovered ? 1 : 0, focused ? 1 : 0, (runtimeActive && hovered && focused && !Engine::IsKeyboardCapturedByUI()) ? 1 : 0), IM_COL32(126, 141, 160, 255) });
                     if (g_engineInstance)
                     {
                         const ::Game& game = g_engineInstance->GetGame();
                         const VaultMissionState missionState = game.GetVaultMissionState();
-                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 64.0f));
-                        ImGui::TextColored(ImVec4(0.72f, 0.86f, 1.0f, 1.0f),
-                            "%s",
-                            game.GetVaultMissionObjectiveText());
-                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 82.0f));
-                        ImGui::TextColored(ImVec4(0.72f, 0.86f, 1.0f, 1.0f),
-                            "Vault: %d / %d nodes | Core: %s",
+                        if (game.IsTutorialVault())
+                        {
+                            if (const char* tutorialHeader = game.GetVaultTutorialHeader())
+                                hudLines.push_back({ tutorialHeader, IM_COL32(255, 196, 116, 255) });
+                            if (const char* tutorialPrimary = game.GetVaultTutorialHintPrimary())
+                                hudLines.push_back({ tutorialPrimary, IM_COL32(238, 245, 255, 255) });
+                            if (const char* tutorialSecondary = game.GetVaultTutorialHintSecondary())
+                                hudLines.push_back({ tutorialSecondary, IM_COL32(176, 192, 214, 255) });
+                        }
+                        hudLines.push_back({ game.GetVaultMissionObjectiveText(), IM_COL32(184, 219, 255, 255) });
+                        hudLines.push_back({ std::format("Vault: {} / {} nodes | Core: {}",
                             game.GetVaultActiveNodeCount(),
                             game.GetVaultTotalNodeCount(),
-                            game.IsVaultCoreUnlocked() ? "Unlocked" : "Locked");
+                            game.IsVaultCoreUnlocked() ? "Unlocked" : "Locked"), IM_COL32(184, 219, 255, 255) });
+                        if (game.HasVaultContextHint())
+                        {
+                            const float hintAlpha = game.GetVaultContextHintAlpha();
+                            if (const char* hintTitle = game.GetVaultContextHintTitle())
+                                hudLines.push_back({ hintTitle, IM_COL32(255, 196, 116, static_cast<int>(255.0f * hintAlpha)) });
+                            if (const char* hintText = game.GetVaultContextHintText())
+                                hudLines.push_back({ hintText, IM_COL32(224, 232, 244, static_cast<int>(255.0f * hintAlpha)) });
+                        }
                         if (missionState == VaultMissionState::Completed)
-                        {
-                            ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 100.0f));
-                            ImGui::TextColored(ImVec4(0.56f, 1.0f, 0.72f, 1.0f), "Exit Open - Reach the Gate");
-                        }
+                            hudLines.push_back({ "Exit Open - Reach the Gate", IM_COL32(143, 255, 184, 255) });
                         else if (missionState == VaultMissionState::Failed)
-                        {
-                            ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 100.0f));
-                            ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.32f, 1.0f), "System Failure - Press R to Retry");
-                        }
+                            hudLines.push_back({ "System Failure - Press R to Retry", IM_COL32(255, 107, 82, 255) });
                     }
                     if (g_engineInstance && g_engineInstance->GetGame().HasInteractionTarget())
-                    {
-                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 118.0f));
-                        ImGui::TextColored(ImVec4(1.0f, 0.92f, 0.45f, 1.0f), "%s", g_engineInstance->GetGame().GetInteractionPrompt());
-                    }
+                        hudLines.push_back({ g_engineInstance->GetGame().GetInteractionPrompt(), IM_COL32(255, 235, 115, 255) });
                     if (g_engineInstance && g_engineInstance->GetGame().HasVaultWarning())
-                    {
-                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 136.0f));
-                        ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.32f, 1.0f), "%s", g_engineInstance->GetGame().GetVaultWarningText());
-                    }
+                        hudLines.push_back({ g_engineInstance->GetGame().GetVaultWarningText(), IM_COL32(255, 107, 82, 255) });
                     if (g_engineInstance && g_engineInstance->GetGame().IsVaultMissionEscaped())
                     {
-                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 154.0f));
-                        ImGui::TextColored(ImVec4(0.56f, 1.0f, 0.72f, 1.0f), "Vault Escaped!");
+                        hudLines.push_back({ "Vault Escaped!", IM_COL32(143, 255, 184, 255) });
+                        if (const char* nextVaultText = g_engineInstance->GetGame().GetNextVaultActionText())
+                            hudLines.push_back({ nextVaultText, IM_COL32(184, 219, 255, 255) });
                     }
                     else if (g_engineInstance && g_engineInstance->GetGame().IsVaultMissionFailed())
+                        hudLines.push_back({ "Vault Failed!", IM_COL32(255, 107, 82, 255) });
+
+                    float maxHudWidth = 0.0f;
+                    for (const HudLine& line : hudLines)
+                        maxHudWidth = (std::max)(maxHudWidth, ImGui::CalcTextSize(line.text.c_str()).x);
+
+                    const float hudPaddingX = 14.0f;
+                    const float hudPaddingY = 12.0f;
+                    const float hudLineAdvance = ImGui::GetTextLineHeightWithSpacing();
+                    const float hudAccentHeight = 4.0f;
+                    const float hudWidth = maxHudWidth + hudPaddingX * 2.0f;
+                    const float hudHeight = hudPaddingY * 2.0f + hudAccentHeight + hudLineAdvance * static_cast<float>(hudLines.size());
+                    const ImVec2 hudMin(imageMin.x + 10.0f, imageMin.y + 10.0f);
+                    const ImVec2 hudMax(hudMin.x + hudWidth, hudMin.y + hudHeight);
+
+                    gameDraw->AddRectFilled(
+                        ImVec2(hudMin.x + 3.0f, hudMin.y + 4.0f),
+                        ImVec2(hudMax.x + 3.0f, hudMax.y + 4.0f),
+                        IM_COL32(0, 0, 0, 90),
+                        10.0f);
+                    gameDraw->AddRectFilledMultiColor(
+                        hudMin,
+                        ImVec2(hudMax.x, hudMin.y + hudAccentHeight),
+                        colorFromMood(moodAccent, 1.0f, 235),
+                        colorFromMood(moodSecondary, 1.0f, 220),
+                        colorFromMood(moodSecondary, 1.0f, 220),
+                        colorFromMood(moodAccent, 1.0f, 235));
+                    gameDraw->AddRectFilled(
+                        ImVec2(hudMin.x, hudMin.y + hudAccentHeight),
+                        hudMax,
+                        IM_COL32(8, 10, 18, 198),
+                        10.0f);
+                    gameDraw->AddRect(
+                        hudMin,
+                        hudMax,
+                        colorFromMood(moodSecondary, 0.78f, 210),
+                        10.0f,
+                        0,
+                        1.2f);
+
+                    float hudTextY = hudMin.y + hudPaddingY + hudAccentHeight;
+                    const float hudTextX = hudMin.x + hudPaddingX;
+                    for (const HudLine& line : hudLines)
                     {
-                        ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 154.0f));
-                        ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.32f, 1.0f), "Vault Failed!");
+                        gameDraw->AddText(ImVec2(hudTextX + 1.0f, hudTextY + 1.0f), IM_COL32(0, 0, 0, 160), line.text.c_str());
+                        gameDraw->AddText(ImVec2(hudTextX, hudTextY), line.color, line.text.c_str());
+                        hudTextY += hudLineAdvance;
+                    }
+
+                    if (g_engineInstance)
+                    {
+                        const ::Game& game = g_engineInstance->GetGame();
+                        gameDraw->PushClipRect(imageMin, imageMax, true);
+
+                        if (const char* progressionLabel = game.GetVaultProgressionLabel())
+                        {
+                            const ImVec2 labelSize = ImGui::CalcTextSize(progressionLabel);
+                            const ImVec2 labelPos(imageMax.x - labelSize.x - 22.0f, imageMin.y + 14.0f);
+                            gameDraw->AddRectFilled(
+                                ImVec2(labelPos.x - 10.0f, labelPos.y - 6.0f),
+                                ImVec2(labelPos.x + labelSize.x + 10.0f, labelPos.y + labelSize.y + 6.0f),
+                                IM_COL32(8, 12, 22, 180),
+                                6.0f);
+                            gameDraw->AddText(labelPos, colorFromMood(moodSecondary, 1.0f), progressionLabel);
+
+                            if (game.HasVaultScannerTarget())
+                            {
+                                const float scannerWidth = 236.0f;
+                                const float scannerHeight = 194.0f;
+                                const ImVec2 scannerMin(imageMax.x - scannerWidth - 18.0f, labelPos.y + 26.0f);
+                                const ImVec2 scannerMax(scannerMin.x + scannerWidth, scannerMin.y + scannerHeight);
+                                const ImVec2 scannerCenter(scannerMin.x + scannerWidth * 0.5f, scannerMin.y + 76.0f);
+                                const float relativeAngle = game.GetVaultScannerDirectionAngleRadians();
+                                const float arrowAngle = relativeAngle - DirectX::XM_PIDIV2;
+                                const float cosA = std::cos(arrowAngle);
+                                const float sinA = std::sin(arrowAngle);
+                                const float strength = game.GetVaultScannerStrength();
+                                const float scannerTime = static_cast<float>(ImGui::GetTime());
+                                const float pulse = 0.5f + 0.5f * std::sin(scannerTime * (2.8f + strength * 2.2f));
+                                const float audioPulse = 0.5f + 0.5f * std::sin(scannerTime * (3.6f + strength * 4.8f));
+                                const float pulseRadius = 12.0f + pulse * 18.0f;
+                                const float sweepAngle = scannerTime * (0.9f + strength * 1.6f) - DirectX::XM_PIDIV2;
+                                const std::string distanceText = std::format("{:.1f}m", game.GetVaultScannerDistance());
+                                const std::string strengthText = std::format("Strength {:0.0f}%%", strength * 100.0f);
+
+                                gameDraw->AddRectFilled(ImVec2(scannerMin.x + 3.0f, scannerMin.y + 4.0f), ImVec2(scannerMax.x + 3.0f, scannerMax.y + 4.0f), IM_COL32(0, 0, 0, 80), 10.0f);
+                                gameDraw->AddRectFilledMultiColor(scannerMin, ImVec2(scannerMax.x, scannerMin.y + 4.0f), colorFromMood(moodAccent, 1.0f, 225), colorFromMood(moodSecondary, 1.0f, 210), colorFromMood(moodSecondary, 1.0f, 210), colorFromMood(moodAccent, 1.0f, 225));
+                                gameDraw->AddRectFilled(ImVec2(scannerMin.x, scannerMin.y + 4.0f), scannerMax, IM_COL32(8, 10, 18, 198), 10.0f);
+                                gameDraw->AddRect(scannerMin, scannerMax, colorFromMood(moodSecondary, 0.78f, 210), 10.0f, 0, 1.2f);
+
+                                if (const char* scannerLabel = game.GetVaultScannerTargetLabel())
+                                    gameDraw->AddText(ImVec2(scannerMin.x + 14.0f, scannerMin.y + 14.0f), colorFromMood(moodSecondary, 1.0f), scannerLabel);
+
+                                for (int sweepTrail = 0; sweepTrail < 4; ++sweepTrail)
+                                {
+                                    const float trailAngle = sweepAngle - 0.22f * static_cast<float>(sweepTrail);
+                                    const float trailAlpha = (1.0f - 0.22f * static_cast<float>(sweepTrail)) * (0.16f + 0.20f * strength);
+                                    const ImVec2 sweepEnd(
+                                        scannerCenter.x + std::cos(trailAngle) * 28.0f,
+                                        scannerCenter.y + std::sin(trailAngle) * 28.0f);
+                                    gameDraw->AddLine(scannerCenter, sweepEnd, colorFromMood(moodSecondary, 1.0f, static_cast<int>(255.0f * trailAlpha)), 1.4f - 0.15f * static_cast<float>(sweepTrail));
+                                }
+
+                                gameDraw->AddCircle(scannerCenter, pulseRadius, colorFromMood(moodAccent, 1.0f, static_cast<int>(22.0f + 78.0f * strength * (1.0f - pulse * 0.35f))), 40, 1.8f);
+                                gameDraw->AddCircle(scannerCenter, 28.0f, colorFromMood(moodSecondary, 0.78f, 220), 32, 1.0f);
+                                gameDraw->AddCircle(scannerCenter, 18.0f + pulse * 4.0f, colorFromMood(moodSecondary, 1.0f, static_cast<int>(36.0f + 44.0f * strength)), 32, 1.0f);
+                                gameDraw->AddCircleFilled(scannerCenter, 3.5f + audioPulse * 1.4f, colorFromMood(moodAccent, 1.0f, static_cast<int>(185.0f + 70.0f * audioPulse)));
+
+                                const auto rotatePoint = [&](float localX, float localY)
+                                {
+                                    return ImVec2(
+                                        scannerCenter.x + localX * cosA - localY * sinA,
+                                        scannerCenter.y + localX * sinA + localY * cosA);
+                                };
+                                const ImVec2 tip = rotatePoint(0.0f, -22.0f);
+                                const ImVec2 left = rotatePoint(-10.0f, 11.0f);
+                                const ImVec2 right = rotatePoint(10.0f, 11.0f);
+                                gameDraw->AddTriangleFilled(tip, left, right, colorFromMood(moodAccent, 1.0f));
+
+                                const ImVec2 distancePos(scannerMin.x + 16.0f, scannerMin.y + 134.0f);
+                                const ImVec2 strengthPos(scannerMin.x + 16.0f, scannerMin.y + 156.0f);
+                                const ImVec2 meterMin(scannerMin.x + 16.0f, scannerMin.y + 172.0f);
+                                const ImVec2 meterMax(scannerMax.x - 16.0f, scannerMin.y + 184.0f);
+                                gameDraw->AddText(distancePos, IM_COL32(238, 245, 255, 255), distanceText.c_str());
+                                gameDraw->AddText(strengthPos, IM_COL32(176, 192, 214, static_cast<int>(168.0f + 87.0f * (0.4f + 0.6f * audioPulse) * strength)), strengthText.c_str());
+                                gameDraw->AddRectFilled(meterMin, meterMax, IM_COL32(18, 24, 38, 200), 4.0f);
+                                const float meterFill = (meterMax.x - meterMin.x - 2.0f) * strength;
+                                gameDraw->AddRectFilled(
+                                    ImVec2(meterMin.x + 1.0f, meterMin.y + 1.0f),
+                                    ImVec2(meterMin.x + 1.0f + meterFill, meterMax.y - 1.0f),
+                                    colorFromMood(moodAccent, 1.0f, static_cast<int>(120.0f + 110.0f * audioPulse)),
+                                    3.0f);
+                            }
+                        }
+
+                        if (game.HasVaultFailPulse())
+                        {
+                            const float pulseAlpha = game.GetVaultFailPulseAlpha();
+                            gameDraw->AddRectFilled(
+                                imageMin,
+                                imageMax,
+                                IM_COL32(130, 18, 18, static_cast<int>(85.0f * pulseAlpha)));
+                        }
+
+                        if (game.HasVaultPresentationBanner())
+                        {
+                            const char* bannerText = game.GetVaultPresentationBannerText();
+                            const float bannerAlpha = game.GetVaultPresentationBannerAlpha();
+                            if (bannerText && bannerAlpha > 0.0f)
+                            {
+                                const ImVec2 bannerSize = ImGui::CalcTextSize(bannerText);
+                                const ImVec2 textPos(
+                                    imageMin.x + (size.x - bannerSize.x) * 0.5f,
+                                    imageMin.y + size.y * 0.14f);
+                                const ImVec2 pad(18.0f, 10.0f);
+                                gameDraw->AddRectFilled(
+                                    ImVec2(textPos.x - pad.x, textPos.y - pad.y),
+                                    ImVec2(textPos.x + bannerSize.x + pad.x, textPos.y + bannerSize.y + pad.y),
+                                    IM_COL32(5, 8, 14, static_cast<int>(160.0f * bannerAlpha)),
+                                    6.0f);
+                                gameDraw->AddText(
+                                    textPos,
+                                    IM_COL32(235, 245, 255, static_cast<int>(255.0f * bannerAlpha)),
+                                    bannerText);
+                            }
+                        }
+
+                        const VaultMissionState missionState = game.GetVaultMissionState();
+                        if (missionState == VaultMissionState::Escaped || missionState == VaultMissionState::Failed)
+                        {
+                            gameDraw->AddRectFilled(imageMin, imageMax, IM_COL32(0, 0, 0, 170));
+
+                            const char* title = game.GetVaultEndOverlayTitle();
+                            const char* subtitle = game.GetVaultEndOverlaySubtitle();
+                            const char* restartText = "Press R / X to Restart";
+                            const char* nextVaultText = game.GetNextVaultActionText();
+                            const char* returnText = "Press Enter / B to Return to Editor";
+                            const char* nextVaultButtonLabel = game.GetNextVaultButtonLabel();
+
+                            ImFont* titleFont = g_UIFontBold ? g_UIFontBold : ImGui::GetFont();
+                            const float titleFontSize = ImGui::GetFontSize() * 1.55f;
+                            const ImU32 accentStart = (missionState == VaultMissionState::Failed)
+                                ? IM_COL32(255, 116, 92, 240)
+                                : colorFromMood(moodAccent, 1.0f, 240);
+                            const ImU32 accentEnd = (missionState == VaultMissionState::Failed)
+                                ? IM_COL32(174, 76, 255, 225)
+                                : colorFromMood(moodSecondary, 1.0f, 225);
+
+                            const ImVec2 titleSize = titleFont->CalcTextSizeA(titleFontSize, FLT_MAX, 0.0f, title ? title : "");
+                            const ImVec2 restartSize = ImGui::CalcTextSize(restartText);
+                            const ImVec2 nextVaultSize = nextVaultText ? ImGui::CalcTextSize(nextVaultText) : ImVec2(0.0f, 0.0f);
+                            const ImVec2 returnSize = ImGui::CalcTextSize(returnText);
+                            const ImVec2 nextVaultButtonSize = ImGui::CalcTextSize(nextVaultButtonLabel ? nextVaultButtonLabel : "Next Vault");
+                            const float centerY = imageMin.y + size.y * 0.38f;
+                            const float availableCardWidth = (std::max)(360.0f, size.x - 72.0f);
+                            const float textContentWidth = (std::max)(titleSize.x, (std::max)(restartSize.x, (std::max)(nextVaultSize.x, (std::max)(returnSize.x, nextVaultButtonSize.x + 36.0f))));
+                            const float cardWidth = (std::min)(availableCardWidth, (std::max)(420.0f, textContentWidth + 96.0f));
+                            const float subtitleWrapWidth = cardWidth - 56.0f;
+                            const ImVec2 subtitleSize = ImGui::CalcTextSize(subtitle ? subtitle : "", nullptr, false, subtitleWrapWidth);
+                            const float cardHeight = nextVaultText ? 236.0f : 152.0f;
+                            const ImVec2 cardMin(imageMin.x + (size.x - cardWidth) * 0.5f, centerY - 26.0f);
+                            const ImVec2 cardMax(cardMin.x + cardWidth, cardMin.y + cardHeight);
+                            const float accentHeight = 5.0f;
+
+                            gameDraw->AddRectFilled(
+                                ImVec2(cardMin.x + 6.0f, cardMin.y + 8.0f),
+                                ImVec2(cardMax.x + 6.0f, cardMax.y + 8.0f),
+                                IM_COL32(0, 0, 0, 88),
+                                14.0f);
+                            gameDraw->AddRectFilledMultiColor(
+                                cardMin,
+                                ImVec2(cardMax.x, cardMin.y + accentHeight),
+                                accentStart,
+                                accentEnd,
+                                accentEnd,
+                                accentStart);
+                            gameDraw->AddRectFilled(
+                                ImVec2(cardMin.x, cardMin.y + accentHeight),
+                                cardMax,
+                                IM_COL32(9, 11, 18, 226),
+                                14.0f);
+                            gameDraw->AddRect(
+                                cardMin,
+                                cardMax,
+                                colorFromMood(moodSecondary, 0.78f, 220),
+                                14.0f,
+                                0,
+                                1.2f);
+
+                            const ImVec2 titlePos(imageMin.x + (size.x - titleSize.x) * 0.5f, centerY);
+                            const ImVec2 subtitlePos(imageMin.x + (size.x - subtitleSize.x) * 0.5f, centerY + 34.0f);
+                            const ImVec2 restartPos(imageMin.x + (size.x - restartSize.x) * 0.5f, centerY + 84.0f);
+                            float returnTextY = centerY + 108.0f;
+
+                            gameDraw->AddText(titleFont, titleFontSize, ImVec2(titlePos.x + 1.5f, titlePos.y + 1.5f), IM_COL32(0, 0, 0, 160), title ? title : "");
+                            gameDraw->AddText(titleFont, titleFontSize, titlePos, IM_COL32(238, 245, 255, 255), title ? title : "");
+                            gameDraw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(subtitlePos.x + 1.0f, subtitlePos.y + 1.0f), IM_COL32(0, 0, 0, 140), subtitle ? subtitle : "", nullptr, subtitleWrapWidth);
+                            gameDraw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), subtitlePos, IM_COL32(178, 182, 196, 255), subtitle ? subtitle : "", nullptr, subtitleWrapWidth);
+                            gameDraw->AddText(ImVec2(restartPos.x + 1.0f, restartPos.y + 1.0f), IM_COL32(0, 0, 0, 140), restartText);
+                            gameDraw->AddText(restartPos, IM_COL32(255, 235, 115, 255), restartText);
+                            if (nextVaultText)
+                            {
+                                const ImVec2 nextVaultPos(imageMin.x + (size.x - nextVaultSize.x) * 0.5f, centerY + 108.0f);
+                                gameDraw->AddText(ImVec2(nextVaultPos.x + 1.0f, nextVaultPos.y + 1.0f), IM_COL32(0, 0, 0, 140), nextVaultText);
+                                gameDraw->AddText(nextVaultPos, IM_COL32(184, 219, 255, 255), nextVaultText);
+                                const float buttonWidth = (std::max)(132.0f, nextVaultButtonSize.x + 32.0f);
+                                const ImVec2 buttonPos(imageMin.x + (size.x - buttonWidth) * 0.5f, centerY + 134.0f);
+                                ImGui::SetCursorScreenPos(buttonPos);
+                                ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(66, 42, 28, 230));
+                                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(112, 68, 40, 240));
+                                ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(148, 84, 52, 255));
+                                ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(214, 146, 92, 220));
+                                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+                                ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+                                if (ImGui::Button((std::string(nextVaultButtonLabel ? nextVaultButtonLabel : "Next Vault") + "##GameEndOverlay").c_str(), ImVec2(buttonWidth, 0.0f)))
+                                    (void)g_engineInstance->GetGame().AdvanceToNextVaultNow();
+                                ImGui::PopStyleVar(2);
+                                ImGui::PopStyleColor(4);
+
+                                const float autoAdvanceSeconds = game.GetNextVaultAutoAdvanceSecondsRemaining();
+                                if (autoAdvanceSeconds > 0.0f)
+                                {
+                                    const std::string autoAdvanceText = std::format("Auto advancing in {:.1f}s", autoAdvanceSeconds);
+                                    const ImVec2 autoAdvanceSize = ImGui::CalcTextSize(autoAdvanceText.c_str());
+                                    const ImVec2 autoAdvancePos(imageMin.x + (size.x - autoAdvanceSize.x) * 0.5f, centerY + 164.0f);
+                                    gameDraw->AddText(ImVec2(autoAdvancePos.x + 1.0f, autoAdvancePos.y + 1.0f), IM_COL32(0, 0, 0, 140), autoAdvanceText.c_str());
+                                    gameDraw->AddText(autoAdvancePos, IM_COL32(224, 196, 132, 255), autoAdvanceText.c_str());
+                                }
+
+                                returnTextY += 86.0f;
+                            }
+                            const ImVec2 returnPos(imageMin.x + (size.x - returnSize.x) * 0.5f, returnTextY);
+                            gameDraw->AddText(ImVec2(returnPos.x + 1.0f, returnPos.y + 1.0f), IM_COL32(0, 0, 0, 140), returnText);
+                            gameDraw->AddText(returnPos, IM_COL32(184, 219, 255, 255), returnText);
+                        }
+
+                        gameDraw->PopClipRect();
                     }
                 }
                 else
                 {
+                    releaseGameMouseLock();
                     ImGui::TextUnformatted("Game View");
                     ImGui::Separator();
                     ImGui::TextDisabled("Not Playing");
@@ -1846,6 +2169,23 @@ namespace EditorPanels
 
                 const bool allowRuntimeInput = runtimeActive && hovered && focused && !Engine::IsKeyboardCapturedByUI();
                 gfx.SetGameViewportInputState(hovered, focused, allowRuntimeInput);
+
+                const bool wantsGameMouseLock = allowRuntimeInput && ImGui::IsMouseDown(ImGuiMouseButton_Right) && tex != ImTextureID{};
+                if (wantsGameMouseLock)
+                {
+                    RECT clipRect{};
+                    clipRect.left = static_cast<LONG>(std::floor(imageMin.x));
+                    clipRect.top = static_cast<LONG>(std::floor(imageMin.y));
+                    clipRect.right = static_cast<LONG>(std::ceil(imageMax.x));
+                    clipRect.bottom = static_cast<LONG>(std::ceil(imageMax.y));
+                    ClipCursor(&clipRect);
+                    SetCapture(gfx.GetHWND());
+                    s_GameMouseLocked = true;
+                }
+                else
+                {
+                    releaseGameMouseLock();
+                }
             }
             ImGui::End();
         }

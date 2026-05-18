@@ -1,7 +1,7 @@
 {
   "sceneVersion": 1,
-  "vaultNodeDecayDuration": 9.0,
-  "vaultNodeDecayWarningSeconds": 3.0,
+  "vaultNodeDecayDuration": 11.0,
+  "vaultNodeDecayWarningSeconds": 4.0,
   "vaultMaxDecayedNodes": 3,
   "instances": [
     {
@@ -141,7 +141,7 @@
       "id": 8,
       "parent": 0,
       "prefabLocalId": 0,
-      "name": "VaultNode_2",
+      "name": "VaultNode_Fragile_2",
       "prefabSource": "",
       "position": [6, 0.75, 0],
       "rotation": [0, 0, 0],
@@ -160,7 +160,7 @@
       "id": 9,
       "parent": 0,
       "prefabLocalId": 0,
-      "name": "VaultNode_3",
+      "name": "VaultNode_Slow_3",
       "prefabSource": "",
       "position": [0, 0.75, 6],
       "rotation": [0, 0, 0],
