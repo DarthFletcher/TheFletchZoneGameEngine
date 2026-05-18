@@ -71,6 +71,7 @@ namespace
             uint32_t instanceId = 0;
             int originalMaterialIndex = 0;
             DirectX::XMFLOAT3 originalRotation{ 0.0f, 0.0f, 0.0f };
+            RuntimeEntityId runtimeEntity = kInvalidRuntimeEntityId;
         };
 
         struct CoreBinding
@@ -629,6 +630,44 @@ namespace
         runtimeNode->stabilizeDuration = nodeBinding.stabilizeDuration;
         runtimeNode->stabilizeProgress = nodeBinding.stabilizeProgress;
         runtimeNode->warningPlayed = nodeBinding.warningPlayed;
+    }
+
+    static VaultRingComponent* FindRingRuntimeComponent(VaultGameplayState::RingBinding& ringBinding)
+    {
+        if (!g_engineInstance)
+            return nullptr;
+
+        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+        if (ringBinding.runtimeEntity == kInvalidRuntimeEntityId)
+            ringBinding.runtimeEntity = runtimeWorld.FindBySourceSceneInstanceId(ringBinding.instanceId);
+
+        return ringBinding.runtimeEntity != kInvalidRuntimeEntityId
+            ? runtimeWorld.GetVaultRing(ringBinding.runtimeEntity)
+            : nullptr;
+    }
+
+    static RuntimeTransformComponent* FindRingRuntimeTransform(VaultGameplayState::RingBinding& ringBinding)
+    {
+        if (!g_engineInstance)
+            return nullptr;
+
+        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+        if (ringBinding.runtimeEntity == kInvalidRuntimeEntityId)
+            ringBinding.runtimeEntity = runtimeWorld.FindBySourceSceneInstanceId(ringBinding.instanceId);
+
+        return ringBinding.runtimeEntity != kInvalidRuntimeEntityId
+            ? runtimeWorld.GetTransform(ringBinding.runtimeEntity)
+            : nullptr;
+    }
+
+    static void SyncRingBindingToRuntime(VaultGameplayState::RingBinding& ringBinding, bool active, bool completed)
+    {
+        VaultRingComponent* runtimeRing = FindRingRuntimeComponent(ringBinding);
+        if (!runtimeRing)
+            return;
+
+        runtimeRing->active = active;
+        runtimeRing->completed = completed;
     }
 
     static VaultCoreComponent* FindCoreRuntimeComponent(VaultGameplayState::CoreBinding& coreBinding)
@@ -1317,7 +1356,7 @@ namespace
             {
                 (void)ringComponent;
                 if (SceneInstance* instance = getSourceInstance(entityId))
-                    newState.rings.push_back({ instance->instanceId, instance->materialIndex, instance->rotation });
+                    newState.rings.push_back({ instance->instanceId, instance->materialIndex, instance->rotation, entityId });
             }
 
             for (const auto& [entityId, nodeComponent] : runtimeWorld.GetVaultNodes())
@@ -1383,7 +1422,7 @@ namespace
                 }
                 break;
             case VaultType::Ring:
-                newState.rings.push_back({ instance.instanceId, instance.materialIndex, instance.rotation });
+                newState.rings.push_back({ instance.instanceId, instance.materialIndex, instance.rotation, FindRuntimeEntityForSceneInstanceId(instance.instanceId) });
                 break;
             case VaultType::Node:
             {
@@ -1598,18 +1637,27 @@ namespace
 		// If the number of decayed nodes exceeds the maximum allowed, trigger vault failure
         for (int ringIndex = 0; ringIndex < ringCount; ++ringIndex)
         {
-            const VaultGameplayState::RingBinding& ringBinding = g_VaultState.rings[(size_t)ringIndex];
+            VaultGameplayState::RingBinding& ringBinding = g_VaultState.rings[(size_t)ringIndex];
             SceneInstance* ring = FindInstanceById(ringBinding.instanceId);
             if (!ring)
                 continue;
 
             const bool missionCompleted = (g_VaultMission.state == VaultMissionState::Completed);
             const bool isActiveRing = missionCompleted || ringIndex < completedRingCount;
+            SyncRingBindingToRuntime(ringBinding, isActiveRing, missionCompleted);
             ring->materialIndex = missionCompleted ? g_VaultState.ringCompletedMaterial : (isActiveRing ? g_VaultState.ringActiveMaterial : g_VaultState.ringInactiveMaterial);
             const float spinSpeed = missionCompleted
                 ? (1.6f + 0.2f * static_cast<float>(ringIndex))
                 : (0.35f + ringProgress * (0.85f + 0.15f * static_cast<float>(ringIndex)));
-            ring->rotation.y += deltaTime * spinSpeed;
+            if (RuntimeTransformComponent* runtimeTransform = FindRingRuntimeTransform(ringBinding))
+            {
+                runtimeTransform->rotation.y += deltaTime * spinSpeed;
+                ring->rotation = runtimeTransform->rotation;
+            }
+            else
+            {
+                ring->rotation.y += deltaTime * spinSpeed;
+            }
         }
 
 		// Unlock core if all nodes are active, and update core and exit visuals based on mission state
