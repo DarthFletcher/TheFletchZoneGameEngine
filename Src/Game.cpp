@@ -978,18 +978,6 @@ namespace
         return g_engineInstance->GetRuntimeWorld().FindBySourceSceneInstanceId(sceneInstanceId);
     }
 
-    static void SyncRuntimeTransformToSceneInstance(RuntimeWorld& runtimeWorld, RuntimeEntityId entityId)
-    {
-        RuntimeTransformComponent* transform = runtimeWorld.GetTransform(entityId);
-        SceneInstance* sceneInstance = FindSceneInstanceForRuntimeEntity(runtimeWorld, entityId);
-        if (!transform || !sceneInstance)
-            return;
-
-        sceneInstance->position = transform->position;
-        sceneInstance->rotation = transform->rotation;
-        sceneInstance->scale = transform->scale;
-    }
-
 	// Attempts to acquire a scene instance to be used as the player character for vault gameplay. The function first checks if the currently assigned instance ID in the player controller is valid and corresponds to an existing instance with a disabled camera. If not, it checks the currently selected instance in the scene for the same criteria. If neither of those are suitable, it iterates through all instances in the scene to find one with a disabled camera, prioritizing those with names that suggest they are intended for player use (e.g., containing "vaultrunner" or "player"). If a suitable instance is found, its ID is assigned to the player controller and returned. If no valid instance is found, the player controller's instance ID is reset to 0 and nullptr is returned. This function ensures that the vault gameplay has a valid player instance to work with, while also allowing for flexibility in how scenes are set up.
     static SceneInstance* AcquirePlayerInstance()
     {
@@ -1998,8 +1986,8 @@ void Game::Update(float deltaTime) {
 
     if (runtimeWorld)
     {
-        SyncRuntimeTransformToSceneInstance(*runtimeWorld, g_PlayerController.playerEntity);
-        SyncRuntimeTransformToSceneInstance(*runtimeWorld, g_PlayerController.cameraEntity);
+        runtimeWorld->SyncTransformToScene(g_PlayerController.playerEntity);
+        runtimeWorld->SyncTransformToScene(g_PlayerController.cameraEntity);
     }
 
     UpdateVaultScannerState(*playerInstance);

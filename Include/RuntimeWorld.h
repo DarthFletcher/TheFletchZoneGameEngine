@@ -55,6 +55,9 @@ public:
     RuntimeEntityId FindMainCameraEntity() const;
     RuntimeEntityId FindFirstPlayerControllerEntity() const;
 
+    bool SyncTransformToScene(RuntimeEntityId entityId) const;
+    size_t SyncAllTransformsToScene() const;
+
     RuntimeTransformComponent& AddTransform(RuntimeEntityId entityId, const RuntimeTransformComponent& component = {});
     RuntimeCameraComponent& AddCamera(RuntimeEntityId entityId, const RuntimeCameraComponent& component = {});
     RuntimeMeshRendererComponent& AddMeshRenderer(RuntimeEntityId entityId, const RuntimeMeshRendererComponent& component = {});

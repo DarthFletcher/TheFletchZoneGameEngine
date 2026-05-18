@@ -202,6 +202,43 @@ RuntimeEntityId RuntimeWorld::FindFirstPlayerControllerEntity() const
     return playerControllers.empty() ? kInvalidRuntimeEntityId : playerControllers.begin()->first;
 }
 
+bool RuntimeWorld::SyncTransformToScene(RuntimeEntityId entityId) const
+{
+    const RuntimeEntity* entity = GetEntity(entityId);
+    if (!entity || entity->sourceSceneInstanceId == 0)
+        return false;
+
+    const RuntimeTransformComponent* transform = GetTransform(entityId);
+    if (!transform)
+        return false;
+
+    for (UINT instanceIndex = 0; instanceIndex < Scene::GetInstanceCount(); ++instanceIndex)
+    {
+        SceneInstance* sceneInstance = Scene::GetInstance(instanceIndex);
+        if (!sceneInstance || sceneInstance->instanceId != entity->sourceSceneInstanceId)
+            continue;
+
+        sceneInstance->position = transform->position;
+        sceneInstance->rotation = transform->rotation;
+        sceneInstance->scale = transform->scale;
+        return true;
+    }
+
+    return false;
+}
+
+size_t RuntimeWorld::SyncAllTransformsToScene() const
+{
+    size_t syncedCount = 0;
+    for (const auto& [entityId, transform] : transforms)
+    {
+        (void)transform;
+        if (SyncTransformToScene(entityId))
+            ++syncedCount;
+    }
+    return syncedCount;
+}
+
 RuntimeTransformComponent& RuntimeWorld::AddTransform(RuntimeEntityId entityId, const RuntimeTransformComponent& component)
 {
     return transforms[entityId] = component;
