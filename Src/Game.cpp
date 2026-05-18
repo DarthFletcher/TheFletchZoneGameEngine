@@ -63,6 +63,7 @@ namespace
             float stabilizeProgress = 0.0f;
             bool warningPlayed = false;
             int originalMaterialIndex = 0;
+            RuntimeEntityId runtimeEntity = kInvalidRuntimeEntityId;
         };
 
         struct RingBinding
@@ -522,6 +523,110 @@ namespace
                 return &node;
         }
         return nullptr;
+    }
+
+    static VaultGameplayState::NodeType ToVaultNodeType(VaultNodeComponent::Type type)
+    {
+        switch (type)
+        {
+        case VaultNodeComponent::Type::SlowStabilize:
+            return VaultGameplayState::NodeType::SlowStabilize;
+        case VaultNodeComponent::Type::Fragile:
+            return VaultGameplayState::NodeType::Fragile;
+        case VaultNodeComponent::Type::Normal:
+        default:
+            return VaultGameplayState::NodeType::Normal;
+        }
+    }
+
+    static VaultNodeComponent::Type ToRuntimeNodeType(VaultGameplayState::NodeType type)
+    {
+        switch (type)
+        {
+        case VaultGameplayState::NodeType::SlowStabilize:
+            return VaultNodeComponent::Type::SlowStabilize;
+        case VaultGameplayState::NodeType::Fragile:
+            return VaultNodeComponent::Type::Fragile;
+        case VaultGameplayState::NodeType::Normal:
+        default:
+            return VaultNodeComponent::Type::Normal;
+        }
+    }
+
+    static VaultGameplayState::NodeState ToVaultNodeState(VaultNodeComponent::State state)
+    {
+        switch (state)
+        {
+        case VaultNodeComponent::State::Stabilizing:
+            return VaultGameplayState::NodeState::Stabilizing;
+        case VaultNodeComponent::State::Active:
+            return VaultGameplayState::NodeState::Active;
+        case VaultNodeComponent::State::Decaying:
+            return VaultGameplayState::NodeState::Decaying;
+        case VaultNodeComponent::State::Inactive:
+        default:
+            return VaultGameplayState::NodeState::Inactive;
+        }
+    }
+
+    static VaultNodeComponent::State ToRuntimeNodeState(VaultGameplayState::NodeState state)
+    {
+        switch (state)
+        {
+        case VaultGameplayState::NodeState::Stabilizing:
+            return VaultNodeComponent::State::Stabilizing;
+        case VaultGameplayState::NodeState::Active:
+            return VaultNodeComponent::State::Active;
+        case VaultGameplayState::NodeState::Decaying:
+            return VaultNodeComponent::State::Decaying;
+        case VaultGameplayState::NodeState::Inactive:
+        default:
+            return VaultNodeComponent::State::Inactive;
+        }
+    }
+
+    static VaultNodeComponent* FindNodeRuntimeComponent(VaultGameplayState::NodeBinding& nodeBinding)
+    {
+        if (!g_engineInstance)
+            return nullptr;
+
+        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+        if (nodeBinding.runtimeEntity == kInvalidRuntimeEntityId)
+            nodeBinding.runtimeEntity = runtimeWorld.FindBySourceSceneInstanceId(nodeBinding.instanceId);
+
+        return nodeBinding.runtimeEntity != kInvalidRuntimeEntityId
+            ? runtimeWorld.GetVaultNode(nodeBinding.runtimeEntity)
+            : nullptr;
+    }
+
+    static void SyncNodeBindingFromRuntime(VaultGameplayState::NodeBinding& nodeBinding)
+    {
+        VaultNodeComponent* runtimeNode = FindNodeRuntimeComponent(nodeBinding);
+        if (!runtimeNode)
+            return;
+
+        nodeBinding.type = ToVaultNodeType(runtimeNode->type);
+        nodeBinding.state = ToVaultNodeState(runtimeNode->state);
+        nodeBinding.decayTimer = runtimeNode->decayTimer;
+        nodeBinding.decayDuration = runtimeNode->decayDuration;
+        nodeBinding.stabilizeDuration = runtimeNode->stabilizeDuration;
+        nodeBinding.stabilizeProgress = runtimeNode->stabilizeProgress;
+        nodeBinding.warningPlayed = runtimeNode->warningPlayed;
+    }
+
+    static void SyncNodeBindingToRuntime(VaultGameplayState::NodeBinding& nodeBinding)
+    {
+        VaultNodeComponent* runtimeNode = FindNodeRuntimeComponent(nodeBinding);
+        if (!runtimeNode)
+            return;
+
+        runtimeNode->type = ToRuntimeNodeType(nodeBinding.type);
+        runtimeNode->state = ToRuntimeNodeState(nodeBinding.state);
+        runtimeNode->decayTimer = nodeBinding.decayTimer;
+        runtimeNode->decayDuration = nodeBinding.decayDuration;
+        runtimeNode->stabilizeDuration = nodeBinding.stabilizeDuration;
+        runtimeNode->stabilizeProgress = nodeBinding.stabilizeProgress;
+        runtimeNode->warningPlayed = nodeBinding.warningPlayed;
     }
 
     static void ShowVaultContextHint(VaultContextHintState::HintType hintType)
@@ -1098,20 +1203,6 @@ namespace
                 return instance;
             };
 
-            auto mapNodeType = [](VaultNodeComponent::Type type)
-            {
-                switch (type)
-                {
-                case VaultNodeComponent::Type::SlowStabilize:
-                    return VaultGameplayState::NodeType::SlowStabilize;
-                case VaultNodeComponent::Type::Fragile:
-                    return VaultGameplayState::NodeType::Fragile;
-                case VaultNodeComponent::Type::Normal:
-                default:
-                    return VaultGameplayState::NodeType::Normal;
-                }
-            };
-
             for (const auto& [entityId, exitComponent] : runtimeWorld.GetVaultExits())
             {
                 (void)exitComponent;
@@ -1150,10 +1241,11 @@ namespace
             {
                 if (SceneInstance* instance = getSourceInstance(entityId))
                 {
-                    const VaultGameplayState::NodeType nodeType = mapNodeType(nodeComponent.type);
+                    const VaultGameplayState::NodeType nodeType = ToVaultNodeType(nodeComponent.type);
                     const float decayDuration = (nodeType == VaultGameplayState::NodeType::Fragile) ? gameplaySettings.nodeDecayDuration * 0.65f : gameplaySettings.nodeDecayDuration;
                     const float stabilizeDuration = (nodeType == VaultGameplayState::NodeType::SlowStabilize) ? 1.8f : 0.0f;
-                    newState.nodes.push_back({ instance->instanceId, nodeType, VaultGameplayState::NodeState::Inactive, 0.0f, decayDuration, stabilizeDuration, 0.0f, false, instance->materialIndex });
+                    newState.nodes.push_back({ instance->instanceId, nodeType, VaultGameplayState::NodeState::Inactive, 0.0f, decayDuration, stabilizeDuration, 0.0f, false, instance->materialIndex, entityId });
+                    SyncNodeBindingToRuntime(newState.nodes.back());
                 }
             }
 
@@ -1344,6 +1436,8 @@ namespace
         int activeNodeCount = 0;
         for (VaultGameplayState::NodeBinding& nodeBinding : g_VaultState.nodes)
         {
+            SyncNodeBindingFromRuntime(nodeBinding);
+
             SceneInstance* node = FindInstanceById(nodeBinding.instanceId);
             if (!node)
                 continue;
@@ -1395,6 +1489,8 @@ namespace
                     : (nodeBinding.type == VaultGameplayState::NodeType::Fragile ? g_VaultState.nodeFragileMaterial : g_VaultState.nodeInactiveMaterial);
                 break;
             }
+
+            SyncNodeBindingToRuntime(nodeBinding);
         }
 
 		// Check for vault failure condition based on decayed nodes
@@ -1479,6 +1575,8 @@ namespace
         const float interactRangeSq = kVaultInteractionRange * kVaultInteractionRange;
         for (VaultGameplayState::NodeBinding& nodeBinding : g_VaultState.nodes)
         {
+            SyncNodeBindingFromRuntime(nodeBinding);
+
             if (nodeBinding.type != VaultGameplayState::NodeType::SlowStabilize ||
                 nodeBinding.state != VaultGameplayState::NodeState::Stabilizing)
                 continue;
@@ -1492,6 +1590,7 @@ namespace
             {
                 nodeBinding.state = VaultGameplayState::NodeState::Inactive;
                 nodeBinding.stabilizeProgress = 0.0f;
+                SyncNodeBindingToRuntime(nodeBinding);
                 continue;
             }
 
@@ -1504,6 +1603,8 @@ namespace
                 nodeBinding.warningPlayed = false;
                 GA_Play(GameplayAudioEvent::SlowNodeCompleted);
             }
+
+            SyncNodeBindingToRuntime(nodeBinding);
         }
     }
 }
@@ -1849,6 +1950,8 @@ void Game::Update(float deltaTime) {
             {
                 if (nodeBinding.instanceId == bestTargetId)
                 {
+                    SyncNodeBindingFromRuntime(nodeBinding);
+
                     if (nodeBinding.type == VaultGameplayState::NodeType::SlowStabilize)
                     {
                         nodeBinding.state = VaultGameplayState::NodeState::Stabilizing;
@@ -1863,6 +1966,7 @@ void Game::Update(float deltaTime) {
                         nodeBinding.warningPlayed = false;
                         GA_Play(GameplayAudioEvent::NodeActivated);
                     }
+                    SyncNodeBindingToRuntime(nodeBinding);
                     g_InteractionTargetId = 0;
                     break;
                 }
