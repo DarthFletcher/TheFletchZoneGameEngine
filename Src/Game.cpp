@@ -25,6 +25,8 @@ namespace
     struct PlayerController
     {
         uint32_t instanceId = 0;
+        RuntimeEntityId playerEntity = kInvalidRuntimeEntityId;
+        RuntimeEntityId cameraEntity = kInvalidRuntimeEntityId;
         float moveSpeed = 5.0f;
         float lookSensitivity = 0.0018f;
         float yaw = 0.0f;
@@ -743,13 +745,37 @@ namespace
         return FindInstanceById(entity->sourceSceneInstanceId);
     }
 
+    static RuntimeEntityId FindRuntimeEntityForSceneInstanceId(uint32_t sceneInstanceId)
+    {
+        if (!g_engineInstance || sceneInstanceId == 0)
+            return kInvalidRuntimeEntityId;
+
+        return g_engineInstance->GetRuntimeWorld().FindBySourceSceneInstanceId(sceneInstanceId);
+    }
+
+    static void SyncRuntimeTransformToSceneInstance(RuntimeWorld& runtimeWorld, RuntimeEntityId entityId)
+    {
+        RuntimeTransformComponent* transform = runtimeWorld.GetTransform(entityId);
+        SceneInstance* sceneInstance = FindSceneInstanceForRuntimeEntity(runtimeWorld, entityId);
+        if (!transform || !sceneInstance)
+            return;
+
+        sceneInstance->position = transform->position;
+        sceneInstance->rotation = transform->rotation;
+        sceneInstance->scale = transform->scale;
+    }
+
 	// Attempts to acquire a scene instance to be used as the player character for vault gameplay. The function first checks if the currently assigned instance ID in the player controller is valid and corresponds to an existing instance with a disabled camera. If not, it checks the currently selected instance in the scene for the same criteria. If neither of those are suitable, it iterates through all instances in the scene to find one with a disabled camera, prioritizing those with names that suggest they are intended for player use (e.g., containing "vaultrunner" or "player"). If a suitable instance is found, its ID is assigned to the player controller and returned. If no valid instance is found, the player controller's instance ID is reset to 0 and nullptr is returned. This function ensures that the vault gameplay has a valid player instance to work with, while also allowing for flexibility in how scenes are set up.
     static SceneInstance* AcquirePlayerInstance()
     {
         if (SceneInstance* existing = FindInstanceById(g_PlayerController.instanceId))
         {
             if (!existing->camera.enabled)
+            {
+                if (g_PlayerController.playerEntity == kInvalidRuntimeEntityId)
+                    g_PlayerController.playerEntity = FindRuntimeEntityForSceneInstanceId(existing->instanceId);
                 return existing;
+            }
         }
 
         if (g_engineInstance)
@@ -761,6 +787,7 @@ namespace
                 if (!runtimePlayer->camera.enabled)
                 {
                     g_PlayerController.instanceId = runtimePlayer->instanceId;
+                    g_PlayerController.playerEntity = runtimePlayerEntity;
                     g_PlayerController.initializedLook = false;
                     return runtimePlayer;
                 }
@@ -773,6 +800,7 @@ namespace
             if (!selected->camera.enabled)
             {
                 g_PlayerController.instanceId = selected->instanceId;
+                g_PlayerController.playerEntity = FindRuntimeEntityForSceneInstanceId(selected->instanceId);
                 g_PlayerController.initializedLook = false;
                 return selected;
             }
@@ -797,6 +825,7 @@ namespace
                 continue;
 
             g_PlayerController.instanceId = instance->instanceId;
+            g_PlayerController.playerEntity = FindRuntimeEntityForSceneInstanceId(instance->instanceId);
             g_PlayerController.initializedLook = false;
             return instance;
         }
@@ -808,11 +837,13 @@ namespace
                 continue;
 
             g_PlayerController.instanceId = instance->instanceId;
+            g_PlayerController.playerEntity = FindRuntimeEntityForSceneInstanceId(instance->instanceId);
             g_PlayerController.initializedLook = false;
             return instance;
         }
 
         g_PlayerController.instanceId = 0;
+        g_PlayerController.playerEntity = kInvalidRuntimeEntityId;
         g_PlayerController.initializedLook = false;
         return nullptr;
     }
@@ -826,11 +857,16 @@ namespace
             if (SceneInstance* runtimeCamera = FindSceneInstanceForRuntimeEntity(runtimeWorld, runtimeCameraEntity))
             {
                 if (runtimeCamera->camera.enabled)
+                {
+                    g_PlayerController.cameraEntity = runtimeCameraEntity;
                     return runtimeCamera;
+                }
             }
         }
 
-        return Scene::GetMainCameraInstanceMutable();
+        SceneInstance* mainCamera = Scene::GetMainCameraInstanceMutable();
+        g_PlayerController.cameraEntity = mainCamera ? FindRuntimeEntityForSceneInstanceId(mainCamera->instanceId) : kInvalidRuntimeEntityId;
+        return mainCamera;
     }
 
 	// Calculates the squared distance between two 3D points. This is used for proximity checks and distance-based logic in the vault gameplay, such as determining if the player is close enough to a vault node to activate it or if they are within range of the vault exit trigger, without incurring the overhead of a square root calculation that would be required for actual distance.
@@ -1564,6 +1600,14 @@ void Game::Update(float deltaTime) {
     if (!playerInstance || !mainCamera || !mainCamera->camera.enabled)
         return;
 
+    RuntimeWorld* runtimeWorld = g_engineInstance ? &g_engineInstance->GetRuntimeWorld() : nullptr;
+    RuntimeTransformComponent* playerRuntimeTransform = (runtimeWorld && g_PlayerController.playerEntity != kInvalidRuntimeEntityId)
+        ? runtimeWorld->GetTransform(g_PlayerController.playerEntity)
+        : nullptr;
+    RuntimeTransformComponent* cameraRuntimeTransform = (runtimeWorld && g_PlayerController.cameraEntity != kInvalidRuntimeEntityId)
+        ? runtimeWorld->GetTransform(g_PlayerController.cameraEntity)
+        : nullptr;
+
     if (!AreVaultBindingsValid())
         DiscoverVaultObjects(playerInstance->instanceId);
 
@@ -1670,23 +1714,54 @@ void Game::Update(float deltaTime) {
         move = DirectX::XMVectorScale(move, moveSpeed * deltaTime);
         DirectX::XMStoreFloat3(&moveDelta, move);
 
-        playerInstance->position.x += moveDelta.x;
-        playerInstance->position.y += moveDelta.y;
-        playerInstance->position.z += moveDelta.z;
+        DirectX::XMFLOAT3& playerPosition = playerRuntimeTransform ? playerRuntimeTransform->position : playerInstance->position;
+        playerPosition.x += moveDelta.x;
+        playerPosition.y += moveDelta.y;
+        playerPosition.z += moveDelta.z;
     }
 
-    UpdateVaultNodeVarietyState(playerInstance->position, deltaTime);
+    const DirectX::XMFLOAT3 playerGameplayPosition = playerRuntimeTransform ? playerRuntimeTransform->position : playerInstance->position;
+    UpdateVaultNodeVarietyState(playerGameplayPosition, deltaTime);
     UpdateVaultVisualState(0.0f);
 
-    playerInstance->rotation.y = g_PlayerController.yaw;
-    mainCamera->position = {
-        playerInstance->position.x,
-        playerInstance->position.y + g_PlayerController.cameraHeight,
-        playerInstance->position.z
-    };
-    mainCamera->rotation.x = g_PlayerController.pitch;
-    mainCamera->rotation.y = g_PlayerController.yaw;
-    mainCamera->rotation.z = 0.0f;
+    if (playerRuntimeTransform)
+    {
+        playerRuntimeTransform->rotation.y = g_PlayerController.yaw;
+    }
+    else
+    {
+        playerInstance->rotation.y = g_PlayerController.yaw;
+    }
+
+    const DirectX::XMFLOAT3 updatedPlayerPosition = playerRuntimeTransform ? playerRuntimeTransform->position : playerInstance->position;
+    if (cameraRuntimeTransform)
+    {
+        cameraRuntimeTransform->position = {
+            updatedPlayerPosition.x,
+            updatedPlayerPosition.y + g_PlayerController.cameraHeight,
+            updatedPlayerPosition.z
+        };
+        cameraRuntimeTransform->rotation.x = g_PlayerController.pitch;
+        cameraRuntimeTransform->rotation.y = g_PlayerController.yaw;
+        cameraRuntimeTransform->rotation.z = 0.0f;
+    }
+    else
+    {
+        mainCamera->position = {
+            updatedPlayerPosition.x,
+            updatedPlayerPosition.y + g_PlayerController.cameraHeight,
+            updatedPlayerPosition.z
+        };
+        mainCamera->rotation.x = g_PlayerController.pitch;
+        mainCamera->rotation.y = g_PlayerController.yaw;
+        mainCamera->rotation.z = 0.0f;
+    }
+
+    if (runtimeWorld)
+    {
+        SyncRuntimeTransformToSceneInstance(*runtimeWorld, g_PlayerController.playerEntity);
+        SyncRuntimeTransformToSceneInstance(*runtimeWorld, g_PlayerController.cameraEntity);
+    }
 
     UpdateVaultScannerState(*playerInstance);
 
