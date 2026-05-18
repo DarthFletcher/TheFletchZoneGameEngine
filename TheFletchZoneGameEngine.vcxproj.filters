@@ -210,6 +210,10 @@
     <ClInclude Include="Include\RuntimeWorld.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+
+    <ClInclude Include="Include\VaultRuntime.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui_demo.cpp">
@@ -339,6 +343,10 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Src\RuntimeWorld.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+
+    <ClCompile Include="Src\VaultRuntime.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

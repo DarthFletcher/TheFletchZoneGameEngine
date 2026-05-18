@@ -205,6 +205,7 @@
     <ClInclude Include="include\Timer.h" />
     <ClInclude Include="include\UI.h" />
     <ClInclude Include="include\Utils.h" />
+    <ClInclude Include="Include\VaultRuntime.h" />
     <ClInclude Include="Include\Vertex.h" />
     <ClInclude Include="Include\Win32Common.h" />
     <ClInclude Include="resource.h" />
@@ -256,6 +257,7 @@
     <ClCompile Include="src\UI.cpp" />
     <ClCompile Include="src\Utils.cpp" />
     <ClCompile Include="Src\TextureManager.cpp" />
+    <ClCompile Include="Src\VaultRuntime.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="TheFletchZoneGameEngine.rc" />
