@@ -733,6 +733,16 @@ namespace
 
         return nullptr;
     }
+
+    static SceneInstance* FindSceneInstanceForRuntimeEntity(const RuntimeWorld& runtimeWorld, RuntimeEntityId entityId)
+    {
+        const RuntimeEntity* entity = runtimeWorld.GetEntity(entityId);
+        if (!entity || entity->sourceSceneInstanceId == 0)
+            return nullptr;
+
+        return FindInstanceById(entity->sourceSceneInstanceId);
+    }
+
 	// Attempts to acquire a scene instance to be used as the player character for vault gameplay. The function first checks if the currently assigned instance ID in the player controller is valid and corresponds to an existing instance with a disabled camera. If not, it checks the currently selected instance in the scene for the same criteria. If neither of those are suitable, it iterates through all instances in the scene to find one with a disabled camera, prioritizing those with names that suggest they are intended for player use (e.g., containing "vaultrunner" or "player"). If a suitable instance is found, its ID is assigned to the player controller and returned. If no valid instance is found, the player controller's instance ID is reset to 0 and nullptr is returned. This function ensures that the vault gameplay has a valid player instance to work with, while also allowing for flexibility in how scenes are set up.
     static SceneInstance* AcquirePlayerInstance()
     {
@@ -740,6 +750,21 @@ namespace
         {
             if (!existing->camera.enabled)
                 return existing;
+        }
+
+        if (g_engineInstance)
+        {
+            const RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+            const RuntimeEntityId runtimePlayerEntity = runtimeWorld.FindFirstPlayerControllerEntity();
+            if (SceneInstance* runtimePlayer = FindSceneInstanceForRuntimeEntity(runtimeWorld, runtimePlayerEntity))
+            {
+                if (!runtimePlayer->camera.enabled)
+                {
+                    g_PlayerController.instanceId = runtimePlayer->instanceId;
+                    g_PlayerController.initializedLook = false;
+                    return runtimePlayer;
+                }
+            }
         }
 
         const uint32_t selectedId = Scene::GetSelectedInstanceId();
@@ -790,6 +815,22 @@ namespace
         g_PlayerController.instanceId = 0;
         g_PlayerController.initializedLook = false;
         return nullptr;
+    }
+
+    static SceneInstance* AcquireMainCameraInstance()
+    {
+        if (g_engineInstance)
+        {
+            const RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+            const RuntimeEntityId runtimeCameraEntity = runtimeWorld.FindMainCameraEntity();
+            if (SceneInstance* runtimeCamera = FindSceneInstanceForRuntimeEntity(runtimeWorld, runtimeCameraEntity))
+            {
+                if (runtimeCamera->camera.enabled)
+                    return runtimeCamera;
+            }
+        }
+
+        return Scene::GetMainCameraInstanceMutable();
     }
 
 	// Calculates the squared distance between two 3D points. This is used for proximity checks and distance-based logic in the vault gameplay, such as determining if the player is close enough to a vault node to activate it or if they are within range of the vault exit trigger, without incurring the overhead of a square root calculation that would be required for actual distance.
@@ -1519,7 +1560,7 @@ void Game::Update(float deltaTime) {
         return;
 
     SceneInstance* playerInstance = AcquirePlayerInstance();
-    SceneInstance* mainCamera = Scene::GetMainCameraInstanceMutable();
+    SceneInstance* mainCamera = AcquireMainCameraInstance();
     if (!playerInstance || !mainCamera || !mainCamera->camera.enabled)
         return;
 
