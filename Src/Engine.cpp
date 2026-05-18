@@ -660,6 +660,29 @@ bool Engine::StartPlayMode()
         return false;
     }
 
+    if (g_engineInstance)
+    {
+        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+        if (!runtimeWorld.CloneFromScene())
+        {
+            Logger::Log(LogLevel::Error, "Failed to clone scene into RuntimeWorld for Play mode.", "[Engine]");
+            g_playModeSnapshot = {};
+            return false;
+        }
+
+        const RuntimeWorldStats stats = runtimeWorld.GetStats();
+        Logger::Log(LogLevel::Info,
+            std::format("RuntimeWorld cloned {} entities from editor scene. cameras={} meshRenderers={} players={} vaultNodes={} vaultCores={} vaultExits={}",
+                stats.entities,
+                stats.cameras,
+                stats.meshRenderers,
+                stats.playerControllers,
+                stats.vaultNodes,
+                stats.vaultCores,
+                stats.vaultExits),
+            "[Engine]");
+    }
+
     Scene::RestoreSelectionState(g_playModeSnapshot.activeSelectedInstanceId, g_playModeSnapshot.selectedInstanceIds);
     g_engineState = State::Playing;
     Logger::Log(LogLevel::Info, "Engine state -> Playing", "[Engine]");
@@ -694,6 +717,9 @@ bool Engine::StopPlayMode()
         if (g_engineInstance)
             g_engineInstance->GetEditorState().focusedMaterialIndex = g_playModeSnapshot.focusedMaterialIndex;
     }
+
+    if (g_engineInstance)
+        g_engineInstance->GetRuntimeWorld().Clear();
 
     g_playModeSnapshot = {};
     g_engineState = State::Editing;

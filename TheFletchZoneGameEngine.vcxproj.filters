@@ -204,6 +204,12 @@
     <ClInclude Include="include\GameplayAudio.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Include\RuntimeComponents.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Include\RuntimeWorld.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui_demo.cpp">
@@ -332,6 +338,9 @@
     <ClCompile Include="src\GameplayAudio.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Src\RuntimeWorld.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="TheFletchZoneGameEngine.rc">
@@ -398,6 +407,12 @@
     <None Include="Local\Scratch\.gitkeep" />
     <None Include="logs\.gitkeep" />
     <None Include="CrashDumps\.gitkeep" />
+    <None Include="Assets\Scenes\Vault_Intro.scene" />
+    <None Include="Assets\Scenes\Vault_Priority.scene" />
+    <None Include="Assets\Scenes\Vault_Traversal.scene" />
+    <None Include="shaders\skybox_ps.hlsl" />
+    <None Include="shaders\skybox_vs.hlsl" />
+    <None Include="shaders\skybox_cube_ps.hlsl" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />

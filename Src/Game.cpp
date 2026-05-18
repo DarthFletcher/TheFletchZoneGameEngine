@@ -215,6 +215,31 @@ namespace
     static const VaultGameplayState::NodeBinding* FindMostUrgentDecayingNode();
     static void EnsureVaultMaterials();
 
+    static void RefreshRuntimeWorldFromCurrentScene(const char* reason)
+    {
+        if (!g_engineInstance)
+            return;
+
+        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+        if (runtimeWorld.CloneFromScene())
+        {
+            const RuntimeWorldStats stats = runtimeWorld.GetStats();
+            Logger::Log(LogLevel::Info,
+                std::format("RuntimeWorld refreshed after {}: {} entities, players={}, vaultNodes={}, vaultCores={}, vaultExits={}.",
+                    reason,
+                    stats.entities,
+                    stats.playerControllers,
+                    stats.vaultNodes,
+                    stats.vaultCores,
+                    stats.vaultExits),
+                "[Game]");
+        }
+        else
+        {
+            Logger::Log(LogLevel::Warning, std::format("RuntimeWorld refresh failed after {}.", reason), "[Game]");
+        }
+    }
+
     static DirectX::XMFLOAT3 ScaleColor(const DirectX::XMFLOAT3& color, float scale)
     {
         return {
@@ -659,6 +684,8 @@ namespace
         if (!Scene::LoadFromString(startSnapshot))
             return false;
 
+        RefreshRuntimeWorldFromCurrentScene("vault reset");
+
         ResetVaultRuntimeState(false);
         g_PlayerController = {};
         g_RuntimeWasPlaying = true;
@@ -677,6 +704,8 @@ namespace
             return false;
         if (!UI::LoadSceneAssetFromPath(nextScenePath))
             return false;
+
+        RefreshRuntimeWorldFromCurrentScene("vault scene transition");
 
         ResetVaultRuntimeState(false);
         g_PlayerController = {};

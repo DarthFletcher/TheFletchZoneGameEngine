@@ -8,6 +8,7 @@
 #include "Logger.h"
 #include "HintMacros.h"
 #include "EditorState.h"
+#include "RuntimeWorld.h"
 
 static constexpr int NUM_BACK_BUFFERS = 3;
 
@@ -43,6 +44,8 @@ public:
     const Input& GetInput() const { return input; }
     Game& GetGame() { return game; }
     const Game& GetGame() const { return game; }
+    RuntimeWorld& GetRuntimeWorld() { return runtimeWorld; }
+    const RuntimeWorld& GetRuntimeWorld() const { return runtimeWorld; }
 
 private:
     // Initialization
@@ -62,6 +65,7 @@ private:
     Input input;
     Timer timer;
     Game game;
+    RuntimeWorld runtimeWorld;
 
     EditorState editorState;
 

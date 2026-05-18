@@ -192,6 +192,8 @@
     <ClInclude Include="Include\MaterialManager.h" />
     <ClInclude Include="Include\Mesh.h" />
     <ClInclude Include="include\resource.h" />
+    <ClInclude Include="Include\RuntimeComponents.h" />
+    <ClInclude Include="Include\RuntimeWorld.h" />
     <ClInclude Include="Include\Scene.h" />
     <ClInclude Include="Include\SceneCamera.h" />
     <ClInclude Include="Include\ShaderCompiler.h" />
@@ -243,6 +245,7 @@
     <ClCompile Include="src\Main.cpp" />
     <ClCompile Include="Src\MaterialManager.cpp" />
     <ClCompile Include="Src\Mesh.cpp" />
+    <ClCompile Include="Src\RuntimeWorld.cpp" />
     <ClCompile Include="Src\Scene.cpp" />
     <ClCompile Include="Src\SceneCamera.cpp" />
     <ClCompile Include="Src\ShaderCompiler.cpp" />
