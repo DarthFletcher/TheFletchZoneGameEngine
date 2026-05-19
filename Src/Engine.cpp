@@ -734,6 +734,9 @@ void Engine::NewScene()
     UI::SetCurrentSceneAssetPath("");
     if (g_engineInstance)
     {
+        if (g_engineState == State::Editing)
+            g_engineInstance->GetRuntimeWorld().Clear();
+
         EditorState& editor = g_engineInstance->GetEditorState();
         editor.selection.Clear();
         editor.focusedMaterialIndex = -1;

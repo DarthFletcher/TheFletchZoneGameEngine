@@ -2259,6 +2259,11 @@ namespace EditorPanels
                     const RuntimeEntityId playerEntity = runtimeWorld.FindFirstPlayerControllerEntity();
 
                     ImGui::Text("Engine State: %s", engineStateLabel);
+                    if (engineState == Engine::State::Editing && runtimeStats.entities > 0)
+                    {
+                        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.18f, 1.0f),
+                            "Warning: RuntimeWorld contains entities while editing.");
+                    }
                     ImGui::Text("Entities:        %llu", static_cast<unsigned long long>(runtimeStats.entities));
                     ImGui::Text("Transforms:      %llu", static_cast<unsigned long long>(runtimeStats.transforms));
                     ImGui::Text("Cameras:         %llu", static_cast<unsigned long long>(runtimeStats.cameras));

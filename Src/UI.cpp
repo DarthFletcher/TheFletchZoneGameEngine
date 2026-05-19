@@ -29,6 +29,12 @@ namespace UI {
 
     static constexpr size_t kMaxUndoSnapshots = 64;
 
+    static void ClearRuntimeWorldIfEditing()
+    {
+        if (g_engineInstance && Engine::GetState() == Engine::State::Editing)
+            g_engineInstance->GetRuntimeWorld().Clear();
+    }
+
     static SceneHistoryEntry MakeHistoryEntry()
     {
         SceneHistoryEntry entry{};
@@ -1037,6 +1043,7 @@ namespace UI {
         if (!definition)
         {
             Scene::NewScene();
+            ClearRuntimeWorldIfEditing();
             outStartupScenePath = (projectRoot / GetDefaultSceneDirectory() / "Main.scene").string();
             Scene::ClearSelection();
             return;
@@ -1046,6 +1053,7 @@ namespace UI {
             return;
 
         Scene::NewScene();
+        ClearRuntimeWorldIfEditing();
 
         if (definition->hasCameraOverride)
         {
@@ -1396,6 +1404,7 @@ namespace UI {
             else
             {
                 Scene::NewScene();
+                ClearRuntimeWorldIfEditing();
                 g_CurrentScenePath.clear();
                 if (g_engineInstance)
                 {
@@ -1408,6 +1417,7 @@ namespace UI {
         else
         {
             Scene::NewScene();
+            ClearRuntimeWorldIfEditing();
             g_CurrentScenePath.clear();
             if (g_engineInstance)
             {
@@ -1690,6 +1700,7 @@ namespace UI {
             return false;
         if (!Scene::LoadFromFile(path))
             return false;
+        ClearRuntimeWorldIfEditing();
         g_CurrentScenePath = path;
         if (!g_CurrentProjectPath.empty())
         {
@@ -3061,6 +3072,7 @@ namespace UI {
               {
                   PushUndoSnapshot();
                   Scene::NewScene();
+                  ClearRuntimeWorldIfEditing();
                   g_CurrentScenePath.clear();
                   if (g_engineInstance)
                   {
