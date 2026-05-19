@@ -16,6 +16,7 @@
 #include <filesystem>
 
 #include <algorithm>
+#include <format>
 #include <fstream>
 #include <sstream>
 
@@ -29,10 +30,20 @@ namespace UI {
 
     static constexpr size_t kMaxUndoSnapshots = 64;
 
-    static void ClearRuntimeWorldIfEditing()
+    static void ClearRuntimeWorldIfEditing(const char* reason)
     {
-        if (g_engineInstance && Engine::GetState() == Engine::State::Editing)
-            g_engineInstance->GetRuntimeWorld().Clear();
+        if (!g_engineInstance || Engine::GetState() != Engine::State::Editing)
+            return;
+
+        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+        const size_t entityCount = runtimeWorld.GetEntityCount();
+        if (entityCount == 0)
+            return;
+
+        runtimeWorld.Clear();
+        Logger::Log(LogLevel::Info,
+            std::format("RuntimeWorld cleared while editing: {} ({} entities)", reason, entityCount),
+            "[RuntimeWorld]");
     }
 
     static SceneHistoryEntry MakeHistoryEntry()
@@ -1043,7 +1054,7 @@ namespace UI {
         if (!definition)
         {
             Scene::NewScene();
-            ClearRuntimeWorldIfEditing();
+            ClearRuntimeWorldIfEditing("project template fallback scene");
             outStartupScenePath = (projectRoot / GetDefaultSceneDirectory() / "Main.scene").string();
             Scene::ClearSelection();
             return;
@@ -1053,7 +1064,7 @@ namespace UI {
             return;
 
         Scene::NewScene();
-        ClearRuntimeWorldIfEditing();
+        ClearRuntimeWorldIfEditing("project template scene build");
 
         if (definition->hasCameraOverride)
         {
@@ -1404,7 +1415,7 @@ namespace UI {
             else
             {
                 Scene::NewScene();
-                ClearRuntimeWorldIfEditing();
+                ClearRuntimeWorldIfEditing("project scene missing fallback");
                 g_CurrentScenePath.clear();
                 if (g_engineInstance)
                 {
@@ -1417,7 +1428,7 @@ namespace UI {
         else
         {
             Scene::NewScene();
-            ClearRuntimeWorldIfEditing();
+            ClearRuntimeWorldIfEditing("project opened without preferred scene");
             g_CurrentScenePath.clear();
             if (g_engineInstance)
             {
@@ -1700,7 +1711,7 @@ namespace UI {
             return false;
         if (!Scene::LoadFromFile(path))
             return false;
-        ClearRuntimeWorldIfEditing();
+        ClearRuntimeWorldIfEditing("scene asset loaded");
         g_CurrentScenePath = path;
         if (!g_CurrentProjectPath.empty())
         {
@@ -3072,7 +3083,7 @@ namespace UI {
               {
                   PushUndoSnapshot();
                   Scene::NewScene();
-                  ClearRuntimeWorldIfEditing();
+                  ClearRuntimeWorldIfEditing("menu new scene");
                   g_CurrentScenePath.clear();
                   if (g_engineInstance)
                   {

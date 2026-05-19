@@ -720,7 +720,17 @@ bool Engine::StopPlayMode()
     }
 
     if (g_engineInstance)
-        g_engineInstance->GetRuntimeWorld().Clear();
+    {
+        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+        const size_t entityCount = runtimeWorld.GetEntityCount();
+        runtimeWorld.Clear();
+        if (entityCount > 0)
+        {
+            Logger::Log(LogLevel::Info,
+                std::format("RuntimeWorld cleared on Stop Play ({} entities)", entityCount),
+                "[RuntimeWorld]");
+        }
+    }
 
     g_playModeSnapshot = {};
     g_engineState = State::Editing;
@@ -735,7 +745,17 @@ void Engine::NewScene()
     if (g_engineInstance)
     {
         if (g_engineState == State::Editing)
-            g_engineInstance->GetRuntimeWorld().Clear();
+        {
+            RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
+            const size_t entityCount = runtimeWorld.GetEntityCount();
+            runtimeWorld.Clear();
+            if (entityCount > 0)
+            {
+                Logger::Log(LogLevel::Info,
+                    std::format("RuntimeWorld cleared while editing: engine new scene ({} entities)", entityCount),
+                    "[RuntimeWorld]");
+            }
+        }
 
         EditorState& editor = g_engineInstance->GetEditorState();
         editor.selection.Clear();
