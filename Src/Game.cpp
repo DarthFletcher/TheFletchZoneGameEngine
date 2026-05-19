@@ -10,6 +10,7 @@
 #include "VaultDiscovery.h"
 #include "VaultMissionSystem.h"
 #include "VaultNodeSystem.h"
+#include "VaultObjectSystem.h"
 #include "VaultPresentation.h"
 #include "VaultRuntime.h"
 #include "logger.h"
@@ -310,115 +311,6 @@ namespace
         return targetId != 0 && targetId == g_VaultState.core.instanceId;
     }
 
-    static VaultRingComponent* FindRingRuntimeComponent(VaultGameplayState::RingBinding& ringBinding)
-    {
-        if (!g_engineInstance)
-            return nullptr;
-
-        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
-        if (ringBinding.runtimeEntity == kInvalidRuntimeEntityId)
-            ringBinding.runtimeEntity = runtimeWorld.FindBySourceSceneInstanceId(ringBinding.instanceId);
-
-        return ringBinding.runtimeEntity != kInvalidRuntimeEntityId
-            ? runtimeWorld.GetVaultRing(ringBinding.runtimeEntity)
-            : nullptr;
-    }
-
-    static RuntimeTransformComponent* FindRingRuntimeTransform(VaultGameplayState::RingBinding& ringBinding)
-    {
-        if (!g_engineInstance)
-            return nullptr;
-
-        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
-        if (ringBinding.runtimeEntity == kInvalidRuntimeEntityId)
-            ringBinding.runtimeEntity = runtimeWorld.FindBySourceSceneInstanceId(ringBinding.instanceId);
-
-        return ringBinding.runtimeEntity != kInvalidRuntimeEntityId
-            ? runtimeWorld.GetTransform(ringBinding.runtimeEntity)
-            : nullptr;
-    }
-
-    static void SyncRingBindingToRuntime(VaultGameplayState::RingBinding& ringBinding, bool active, bool completed)
-    {
-        VaultRingComponent* runtimeRing = FindRingRuntimeComponent(ringBinding);
-        if (!runtimeRing)
-            return;
-
-        runtimeRing->active = active;
-        runtimeRing->completed = completed;
-    }
-
-    static VaultCoreComponent* FindCoreRuntimeComponent(VaultGameplayState::CoreBinding& coreBinding)
-    {
-        if (!g_engineInstance)
-            return nullptr;
-
-        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
-        if (coreBinding.runtimeEntity == kInvalidRuntimeEntityId)
-            coreBinding.runtimeEntity = runtimeWorld.FindBySourceSceneInstanceId(coreBinding.instanceId);
-
-        return coreBinding.runtimeEntity != kInvalidRuntimeEntityId
-            ? runtimeWorld.GetVaultCore(coreBinding.runtimeEntity)
-            : nullptr;
-    }
-
-    static VaultExitComponent* FindExitRuntimeComponent(VaultGameplayState::ExitBinding& exitBinding)
-    {
-        if (!g_engineInstance)
-            return nullptr;
-
-        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
-        if (exitBinding.runtimeEntity == kInvalidRuntimeEntityId)
-            exitBinding.runtimeEntity = runtimeWorld.FindBySourceSceneInstanceId(exitBinding.instanceId);
-
-        return exitBinding.runtimeEntity != kInvalidRuntimeEntityId
-            ? runtimeWorld.GetVaultExit(exitBinding.runtimeEntity)
-            : nullptr;
-    }
-
-    static void SyncCoreBindingFromRuntime(VaultGameplayState::CoreBinding& coreBinding)
-    {
-        VaultCoreComponent* runtimeCore = FindCoreRuntimeComponent(coreBinding);
-        if (!runtimeCore)
-            return;
-
-        g_VaultState.coreUnlocked = runtimeCore->unlocked;
-        g_VaultMission.coreUnlocked = runtimeCore->unlocked;
-    }
-
-    static void SyncCoreBindingToRuntime(VaultGameplayState::CoreBinding& coreBinding)
-    {
-        VaultCoreComponent* runtimeCore = FindCoreRuntimeComponent(coreBinding);
-        if (!runtimeCore)
-            return;
-
-        runtimeCore->unlocked = g_VaultMission.coreUnlocked || g_VaultState.coreUnlocked;
-        runtimeCore->stabilized = g_VaultMission.state == VaultMissionState::Completed ||
-            g_VaultMission.state == VaultMissionState::Escaped;
-    }
-
-    static void SyncExitBindingFromRuntime(VaultGameplayState::ExitBinding& exitBinding)
-    {
-        VaultExitComponent* runtimeExit = FindExitRuntimeComponent(exitBinding);
-        if (!runtimeExit)
-            return;
-
-        exitBinding.openOffsetY = runtimeExit->openOffsetY;
-        exitBinding.opened = runtimeExit->opened;
-    }
-
-    static void SyncExitBindingToRuntime(VaultGameplayState::ExitBinding& exitBinding)
-    {
-        VaultExitComponent* runtimeExit = FindExitRuntimeComponent(exitBinding);
-        if (!runtimeExit)
-            return;
-
-        runtimeExit->unlocked = g_VaultMission.state == VaultMissionState::Completed ||
-            g_VaultMission.state == VaultMissionState::Escaped;
-        runtimeExit->opened = exitBinding.opened;
-        runtimeExit->openOffsetY = exitBinding.openOffsetY;
-    }
-
     static void ShowVaultContextHint(VaultContextHintState::HintType hintType)
     {
         switch (hintType)
@@ -517,8 +409,8 @@ namespace
         g_VaultState.coreUnlocked = true;
         g_VaultMission.coreUnlocked = true;
         g_VaultState.exit.opened = true;
-        SyncCoreBindingToRuntime(g_VaultState.core);
-        SyncExitBindingToRuntime(g_VaultState.exit);
+        VaultObjectSystem::SyncCoreBindingToRuntime(GetRuntimeWorldForGameplay(), g_VaultState.core, g_VaultState, g_VaultMission);
+        VaultObjectSystem::SyncExitBindingToRuntime(GetRuntimeWorldForGameplay(), g_VaultState.exit, g_VaultMission);
         GA_Play(GameplayAudioEvent::CoreStabilized);
         if (g_VaultState.exit.instanceId != 0)
             GA_Play(GameplayAudioEvent::ExitOpened);
@@ -535,8 +427,8 @@ namespace
         g_PlayerFrozen = true;
         g_InteractionTargetId = 0;
         g_VaultState.exit.opened = true;
-        SyncCoreBindingToRuntime(g_VaultState.core);
-        SyncExitBindingToRuntime(g_VaultState.exit);
+        VaultObjectSystem::SyncCoreBindingToRuntime(GetRuntimeWorldForGameplay(), g_VaultState.core, g_VaultState, g_VaultMission);
+        VaultObjectSystem::SyncExitBindingToRuntime(GetRuntimeWorldForGameplay(), g_VaultState.exit, g_VaultMission);
         g_VaultPresentation.bannerType = VaultPresentationState::BannerType::Escape;
         g_VaultPresentation.bannerTimer = kVaultEscapeBannerSeconds;
         g_VaultPresentation.nextVaultAutoAdvanceTimer = ShouldAutoAdvanceToNextVault() ? kVaultAutoAdvanceSeconds : 0.0f;
@@ -948,8 +840,8 @@ namespace
         g_VaultState.unlockedLogged = false;
         g_VaultState.exit.opened = false;
         VaultMissionSystem::ResetForDiscoveredVault(g_VaultMission, gameplaySettings, static_cast<int>(g_VaultState.nodes.size()));
-        SyncCoreBindingToRuntime(g_VaultState.core);
-        SyncExitBindingToRuntime(g_VaultState.exit);
+        VaultObjectSystem::SyncCoreBindingToRuntime(GetRuntimeWorldForGameplay(), g_VaultState.core, g_VaultState, g_VaultMission);
+        VaultObjectSystem::SyncExitBindingToRuntime(GetRuntimeWorldForGameplay(), g_VaultState.exit, g_VaultMission);
     }
 
 	// Updates the state of the vault scanner based on the player's position and the current vault mission state. The scanner targets different objects (nodes, core, exit) depending on the mission progress, and calculates the distance, angle, and signal strength for the targeted object to provide directional feedback to the player. This function is called every frame to ensure that the scanner information is up-to-date as the player moves through the vault environment.
@@ -1139,12 +1031,12 @@ namespace
 
             const bool missionCompleted = (g_VaultMission.state == VaultMissionState::Completed);
             const bool isActiveRing = missionCompleted || ringIndex < completedRingCount;
-            SyncRingBindingToRuntime(ringBinding, isActiveRing, missionCompleted);
+            VaultObjectSystem::SyncRingBindingToRuntime(GetRuntimeWorldForGameplay(), ringBinding, isActiveRing, missionCompleted);
             ring->materialIndex = missionCompleted ? g_VaultState.ringCompletedMaterial : (isActiveRing ? g_VaultState.ringActiveMaterial : g_VaultState.ringInactiveMaterial);
             const float spinSpeed = missionCompleted
                 ? (1.6f + 0.2f * static_cast<float>(ringIndex))
                 : (0.35f + ringProgress * (0.85f + 0.15f * static_cast<float>(ringIndex)));
-            if (RuntimeTransformComponent* runtimeTransform = FindRingRuntimeTransform(ringBinding))
+            if (RuntimeTransformComponent* runtimeTransform = VaultObjectSystem::FindRingRuntimeTransform(GetRuntimeWorldForGameplay(), ringBinding))
             {
                 runtimeTransform->rotation.y += deltaTime * spinSpeed;
                 ring->rotation = runtimeTransform->rotation;
@@ -1159,7 +1051,7 @@ namespace
         const bool coreUnlocked = totalNodes > 0 && activeNodeCount >= totalNodes;
         g_VaultState.coreUnlocked = coreUnlocked;
         VaultMissionSystem::UpdateCoreAvailability(g_VaultMission, coreUnlocked);
-        SyncCoreBindingToRuntime(g_VaultState.core);
+        VaultObjectSystem::SyncCoreBindingToRuntime(GetRuntimeWorldForGameplay(), g_VaultState.core, g_VaultState, g_VaultMission);
         if (SceneInstance* core = FindInstanceById(g_VaultState.core.instanceId))
             core->materialIndex = (g_VaultMission.state == VaultMissionState::Completed)
                 ? g_VaultState.coreCompletedMaterial
@@ -1168,7 +1060,7 @@ namespace
 		// Open the exit if the mission is completed, otherwise keep it closed. This involves changing the material to indicate locked/unlocked state and moving the exit up to create an opening effect when unlocked.
         if (SceneInstance* exit = FindInstanceById(g_VaultState.exit.instanceId))
         {
-            SyncExitBindingFromRuntime(g_VaultState.exit);
+            VaultObjectSystem::SyncExitBindingFromRuntime(GetRuntimeWorldForGameplay(), g_VaultState.exit);
             const bool missionCompleted = (g_VaultMission.state == VaultMissionState::Completed);
             exit->materialIndex = missionCompleted ? g_VaultState.exitUnlockedMaterial : g_VaultState.exitLockedMaterial;
             const float targetY = g_VaultState.exit.originalPosition.y + (missionCompleted ? g_VaultState.exit.openOffsetY : 0.0f);
@@ -1184,7 +1076,7 @@ namespace
                 exit->position.y = targetY;
             }
             g_VaultState.exit.opened = missionCompleted;
-            SyncExitBindingToRuntime(g_VaultState.exit);
+            VaultObjectSystem::SyncExitBindingToRuntime(GetRuntimeWorldForGameplay(), g_VaultState.exit, g_VaultMission);
         }
 
 		// Log core unlock event only once when it happens

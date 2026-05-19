@@ -209,6 +209,7 @@
     <ClInclude Include="Include\VaultDiscovery.h" />
     <ClInclude Include="Include\VaultMissionSystem.h" />
     <ClInclude Include="Include\VaultNodeSystem.h" />
+    <ClInclude Include="Include\VaultObjectSystem.h" />
     <ClInclude Include="Include\VaultPresentation.h" />
     <ClInclude Include="Include\VaultRuntime.h" />
     <ClInclude Include="Include\Vertex.h" />
@@ -266,6 +267,7 @@
     <ClCompile Include="Src\VaultDiscovery.cpp" />
     <ClCompile Include="Src\VaultMissionSystem.cpp" />
     <ClCompile Include="Src\VaultNodeSystem.cpp" />
+    <ClCompile Include="Src\VaultObjectSystem.cpp" />
     <ClCompile Include="Src\VaultPresentation.cpp" />
     <ClCompile Include="Src\VaultRuntime.cpp" />
   </ItemGroup>
