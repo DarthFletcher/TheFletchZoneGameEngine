@@ -217,6 +217,9 @@
     <ClInclude Include="Include\VaultDiscovery.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Include\VaultMissionSystem.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="Include\VaultNodeSystem.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -362,6 +365,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Src\VaultDiscovery.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Src\VaultMissionSystem.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Src\VaultNodeSystem.cpp">

@@ -8,6 +8,7 @@
 #include "UI.h"
 #include "VaultCampaign.h"
 #include "VaultDiscovery.h"
+#include "VaultMissionSystem.h"
 #include "VaultNodeSystem.h"
 #include "VaultPresentation.h"
 #include "VaultRuntime.h"
@@ -946,14 +947,7 @@ namespace
         g_VaultState.coreUnlocked = false;
         g_VaultState.unlockedLogged = false;
         g_VaultState.exit.opened = false;
-        g_VaultMission.state = VaultMissionState::ActivatingNodes;
-        g_VaultMission.totalNodes = static_cast<int>(g_VaultState.nodes.size());
-        g_VaultMission.activatedNodes = 0;
-        g_VaultMission.decayedNodes = 0;
-        g_VaultMission.maxDecayedNodes = gameplaySettings.maxDecayedNodes;
-        g_VaultMission.nodeDecayDuration = gameplaySettings.nodeDecayDuration;
-        g_VaultMission.nodeDecayWarningSeconds = gameplaySettings.nodeDecayWarningSeconds;
-        g_VaultMission.coreUnlocked = false;
+        VaultMissionSystem::ResetForDiscoveredVault(g_VaultMission, gameplaySettings, static_cast<int>(g_VaultState.nodes.size()));
         SyncCoreBindingToRuntime(g_VaultState.core);
         SyncExitBindingToRuntime(g_VaultState.exit);
     }
@@ -1123,8 +1117,7 @@ namespace
 
 		// Check for vault failure condition based on decayed nodes
         const int totalNodes = static_cast<int>(g_VaultState.nodes.size());
-        g_VaultMission.totalNodes = totalNodes;
-        g_VaultMission.activatedNodes = activeNodeCount;
+        VaultMissionSystem::UpdateNodeProgress(g_VaultMission, activeNodeCount, totalNodes);
         const float gameplayTension = (totalNodes > 0)
             ? (1.0f - static_cast<float>(activeNodeCount) / static_cast<float>(totalNodes))
             : 0.0f;
@@ -1165,11 +1158,7 @@ namespace
 		// Unlock core if all nodes are active, and update core and exit visuals based on mission state
         const bool coreUnlocked = totalNodes > 0 && activeNodeCount >= totalNodes;
         g_VaultState.coreUnlocked = coreUnlocked;
-        g_VaultMission.coreUnlocked = coreUnlocked;
-        if (g_VaultMission.state != VaultMissionState::Completed &&
-            g_VaultMission.state != VaultMissionState::Escaped &&
-            g_VaultMission.state != VaultMissionState::Failed)
-            g_VaultMission.state = coreUnlocked ? VaultMissionState::CoreUnlocked : VaultMissionState::ActivatingNodes;
+        VaultMissionSystem::UpdateCoreAvailability(g_VaultMission, coreUnlocked);
         SyncCoreBindingToRuntime(g_VaultState.core);
         if (SceneInstance* core = FindInstanceById(g_VaultState.core.instanceId))
             core->materialIndex = (g_VaultMission.state == VaultMissionState::Completed)
@@ -1361,9 +1350,7 @@ void Game::Update(float deltaTime) {
 
     UpdateVaultVisualState(deltaTime);
 
-    if (g_VaultMission.state != VaultMissionState::Failed &&
-        g_VaultMission.state != VaultMissionState::Escaped &&
-        g_VaultMission.decayedNodes >= g_VaultMission.maxDecayedNodes)
+    if (VaultMissionSystem::ShouldFailFromDecay(g_VaultMission))
     {
         TriggerVaultFailure();
         return;
@@ -1725,8 +1712,7 @@ int Game::GetVaultTotalNodeCount() const
 // Returns whether the player can restart the current vault run. Restarting is only allowed if there is a valid level start snapshot (indicating that a run has been started) and if the current mission state is either "Escaped" or "Failed". This function is used to determine whether to enable the option for restarting the vault run after the player has either completed it successfully or failed, ensuring that restarts are only possible in appropriate contexts.
 bool Game::CanRestartVaultRun() const
 {
-    return !g_RuntimeLevelStartSnapshot.empty() &&
-        (g_VaultMission.state == VaultMissionState::Escaped || g_VaultMission.state == VaultMissionState::Failed);
+    return VaultMissionSystem::CanRestartRun(g_VaultMission, !g_RuntimeLevelStartSnapshot.empty());
 }
 
 // Restarts the current vault run by reloading the initial scene state captured at the start of the run. This function is only allowed if there is a valid level start snapshot and if the current mission state is either "Escaped" or "Failed". It resets the vault runtime state and player controller to ensure a clean restart of the vault mission. It returns true if the restart was successful, or false if it was not possible to restart (e.g., no snapshot available or current state does not allow restarting).
@@ -1738,7 +1724,7 @@ bool Game::IsVaultCoreUnlocked() const
 // Returns whether the vault mission has been completed, which occurs when the player successfully stabilizes the core and opens the exit. This function is used to determine if the player has met the primary objectives of the current vault run and can be used to trigger completion-specific UI elements, audio cues, or to allow the player to advance to the next vault or restart.
 bool Game::IsVaultMissionCompleted() const
 {
-    return g_VaultMission.state == VaultMissionState::Completed || g_VaultMission.state == VaultMissionState::Escaped;
+    return VaultMissionSystem::IsCompletedOrEscaped(g_VaultMission.state);
 }
 
 // Returns whether the vault mission has been escaped, which occurs when the player reaches the exit after completing the core activation. This function is used to determine if the player has successfully completed the current vault run and can be used to trigger escape-specific UI elements, audio cues, or to allow the player to advance to the next vault or restart.
@@ -1756,7 +1742,7 @@ bool Game::IsVaultMissionFailed() const
 // Returns whether the game can advance to the next vault based on the current mission state and the availability of the next vault scene. Advancing to the next vault is only possible if the current mission state is "Escaped" and there is a valid next vault scene to load. This function is used to determine whether to allow the player to transition to the next vault or to display an option for advancing after escaping the current vault.
 bool Game::CanAdvanceToNextVault() const
 {
-    return g_VaultMission.state == VaultMissionState::Escaped && GetNextVaultScenePath() != nullptr;
+    return VaultMissionSystem::CanAdvanceToNextVault(g_VaultMission, GetNextVaultScenePath() != nullptr);
 }
 
 // Advances the game to the next vault if possible. This function checks if advancing is allowed based on the current mission state and the availability of the next vault scene. If advancing is possible, it loads the next vault scene and resets the runtime state for the new vault. It returns true if the advance was successful, or false if it was not possible to advance (e.g., no next vault available or current state does not allow advancing).
