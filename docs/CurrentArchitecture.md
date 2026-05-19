@@ -17,6 +17,7 @@ At a high level:
 - `UI` builds the dockspace shell, menus, command strip, overlays, and editor windows
 - `EditorPanels` provides the editor-facing panels and authoring workflows
 - `Scene` owns scene instance data, selection, parenting, prefab persistence, picking support, and scene draw submission
+- `RuntimeWorld` owns the play-mode runtime entity/component clone used by gameplay systems
 - `MaterialManager` and `TextureManager` own material and texture-facing resource workflows used by the scene/editor
 
 ---
@@ -103,7 +104,38 @@ The engine does not yet expose a broader runtime ECS-style component model here.
 
 ---
 
-## 6. Rendering Path Today
+## 6. RuntimeWorld and Play Mode
+
+`RuntimeWorld` is now the engine's runtime-side gameplay world foundation.
+
+Current behavior includes:
+
+- cloning editor `SceneInstance` data into runtime entities when entering Play mode
+- stable runtime entity IDs and source scene instance mapping
+- runtime component storage for transforms, cameras, mesh renderers, player controller data, trigger volumes, and vault gameplay objects
+- runtime diagnostics in the editor Diagnostics panel
+- runtime refresh on vault reset and vault scene transition
+- runtime-to-scene transform sync helpers used as a compatibility bridge while rendering still consumes `Scene` data
+
+The current vault gameplay path now uses runtime components for discovery and gameplay state bridging:
+
+- player and main camera acquisition prefer runtime entity IDs
+- player and camera transforms update runtime components first, then sync back to `SceneInstance` for rendering
+- vault node, core, exit, and ring state is mirrored through runtime components
+- vault-specific logic has been split into focused helper modules:
+  - `VaultRuntime`
+  - `VaultDiscovery`
+  - `VaultNodeSystem`
+  - `VaultObjectSystem`
+  - `VaultMissionSystem`
+  - `VaultPresentation`
+  - `VaultCampaign`
+
+This is not a full data-oriented ECS yet. It is intentionally a simple, debuggable runtime layer that separates play-mode ownership from editor authoring while preserving compatibility with the current renderer.
+
+---
+
+## 7. Rendering Path Today
 
 The current scene rendering path is centered around primitive meshes and per-instance authoring data.
 
@@ -122,7 +154,7 @@ The scene render code also defensively rebinds root signature, heap, viewport, s
 
 ---
 
-## 7. Editor Shell and Panels
+## 8. Editor Shell and Panels
 
 The editor uses Dear ImGui with a dockspace-centered shell.
 
@@ -145,7 +177,7 @@ The main editor shell also includes menu-driven layout reset/save behavior, font
 
 ---
 
-## 8. Editor Interaction Systems
+## 9. Editor Interaction Systems
 
 The editor currently supports:
 
@@ -163,7 +195,7 @@ This means the engine is already beyond a rendering-only milestone and is firmly
 
 ---
 
-## 9. Prefab and Asset-Oriented Authoring
+## 10. Prefab and Asset-Oriented Authoring
 
 Prefab support already exists in practical form.
 
@@ -180,7 +212,7 @@ Textures and materials are also first-class editor-facing systems through `Textu
 
 ---
 
-## 10. Diagnostics and Logging
+## 11. Diagnostics and Logging
 
 Diagnostics are not an afterthought in this codebase.
 
@@ -191,19 +223,21 @@ Current diagnostic emphasis includes:
 - resize diagnostics
 - scene and culling logs
 - instancing and CBV debug logs
+- runtime world entity/component diagnostics
 - editor-visible diagnostics/log panels
 
 This is consistent with the engine's broader correctness-first philosophy.
 
 ---
 
-## 11. Current Architectural Pressure Points
+## 12. Current Architectural Pressure Points
 
 The largest current pressure points are structural, not conceptual.
 
 The main ones are:
 
 - `Src/Scene.cpp` has become too large and multi-purpose
+- `Src/Game.cpp` has been reduced through runtime helper modules, but still orchestrates the current vault update loop
 - scene/prefab serialization is still hand-parsed text rather than a more robust structured serializer
 - some older phase names in logs/docs no longer match the current feature set
 - parts of the render/update path still rebuild data every frame that could later become dirty-driven
@@ -212,12 +246,13 @@ These are normal pressure points for an engine that has grown from renderer foun
 
 ---
 
-## 12. Likely Next Structural Steps
+## 13. Likely Next Structural Steps
 
 The most natural architectural follow-ups are:
 
 - split `Scene` responsibilities into smaller implementation units
+- continue reducing `Game.cpp` into runtime systems where useful
 - harden serialization/versioning
-- separate editor-facing world state from eventual runtime/play-mode state
+- continue moving renderer-facing data consumption toward runtime-owned state over time
 - expand asset identity and import workflows
 - continue improving rendering quality without violating the existing frame contract

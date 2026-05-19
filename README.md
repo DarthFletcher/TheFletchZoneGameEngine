@@ -155,6 +155,8 @@ The current codebase already includes:
 - scene parenting / re-parenting with world-transform preservation
 - prefab save, instantiate, apply, revert, and override tracking flows
 - scene save/load support with stable instance and parent data
+- RuntimeWorld play-mode foundation with runtime entities/components and editor diagnostics
+- vault gameplay runtime-state bridge for player/camera transforms, nodes, core, exit, rings, mission state, and campaign flow helpers
 - camera ownership integrated into scene rendering and viewport interaction
 - resize safety, device diagnostics, and frame-health validation
 
@@ -169,10 +171,10 @@ Some log messages and older implementation notes still reference earlier histori
 The next stage is less about basic rendering bring-up and more about:
 
 - scaling the architecture safely
-- splitting large systems into cleaner units
+- continuing to split large systems into cleaner units
 - hardening serialization and asset workflows
 - improving dirty-driven updates and editor polish
-- preparing stronger runtime/play-mode boundaries
+- strengthening runtime/play-mode boundaries beyond the initial RuntimeWorld foundation
 
 ---
 

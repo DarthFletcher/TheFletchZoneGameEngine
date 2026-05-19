@@ -21,6 +21,8 @@ The current codebase already includes:
 - prefab save / instantiate / apply / revert flows
 - material and texture integration
 - scene save/load support
+- a `RuntimeWorld` play-mode foundation with runtime entities/components, diagnostics, and scene sync compatibility
+- vault gameplay split into runtime-focused helper modules for discovery, node/object state, mission state, presentation, and campaign routing
 
 That means the next work should focus less on proving the renderer exists and more on making the engine easier to scale, maintain, and use.
 
@@ -135,13 +137,14 @@ Focus:
 
 ### 5. Runtime / Play-Mode Separation
 
-A major next milestone is separating editor authoring state from runtime simulation state.
+The first major `RuntimeWorld` milestone is now in place. The engine has a runtime entity/component clone of the editor scene during Play mode, with gameplay systems beginning to use runtime-owned state.
 
-Goal:
+Remaining goals:
 
-- support a cleaner play/stop flow
+- continue reducing remaining `Game.cpp` orchestration into focused runtime systems only where it improves clarity
+- move more renderer-facing data consumption toward runtime-owned state over time
 - preserve editor state while running game logic
-- reduce long-term coupling between authoring tools and runtime behavior
+- keep the runtime layer simple, debuggable, and compatible with the existing explicit frame contract
 
 ### 6. Better Asset Pipeline
 
