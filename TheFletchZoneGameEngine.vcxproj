@@ -286,6 +286,7 @@
     <None Include="docs\CHANGELOG_0.3.0.md" />
     <None Include="docs\CurrentArchitecture.md" />
     <None Include="docs\EditorWorkflow.md" />
+    <None Include="docs\Phase10_PlayModeValidation.md" />
     <None Include="docs\Phase3F_RenderGraphNotes.md" />
     <None Include="docs\RenderingStatus.md" />
     <None Include="docs\Roadmap.md" />

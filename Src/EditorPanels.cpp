@@ -2271,6 +2271,43 @@ namespace EditorPanels
                     ImGui::Text("Vault Exits:     %llu", static_cast<unsigned long long>(runtimeStats.vaultExits));
                     ImGui::Text("Main Camera Entity: %u", mainCameraEntity);
                     ImGui::Text("Player Entity:      %u", playerEntity);
+
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("Selected Runtime Entity");
+                    const uint32_t selectedSceneInstanceId = Scene::GetSelectedInstanceId();
+                    const RuntimeEntityId selectedRuntimeEntityId = runtimeWorld.FindBySourceSceneInstanceId(selectedSceneInstanceId);
+                    ImGui::Text("Selected Scene Instance: %u", selectedSceneInstanceId);
+                    ImGui::Text("Runtime Entity:          %u", selectedRuntimeEntityId);
+                    if (const RuntimeEntity* selectedRuntimeEntity = runtimeWorld.GetEntity(selectedRuntimeEntityId))
+                    {
+                        ImGui::Text("Name: %s", selectedRuntimeEntity->name.c_str());
+                        ImGui::Text("Parent Entity: %u", selectedRuntimeEntity->parent);
+
+                        const RuntimeTransformComponent* transform = runtimeWorld.GetTransform(selectedRuntimeEntityId);
+                        if (transform)
+                        {
+                            ImGui::Text("Runtime Position: (%.2f, %.2f, %.2f)", transform->position.x, transform->position.y, transform->position.z);
+                            ImGui::Text("Runtime Rotation: (%.2f, %.2f, %.2f)", transform->rotation.x, transform->rotation.y, transform->rotation.z);
+                            ImGui::Text("Runtime Scale:    (%.2f, %.2f, %.2f)", transform->scale.x, transform->scale.y, transform->scale.z);
+                        }
+
+                        ImGui::Text("Components: %s%s%s%s%s%s%s%s",
+                            runtimeWorld.GetTransform(selectedRuntimeEntityId) ? "Transform " : "",
+                            runtimeWorld.GetCamera(selectedRuntimeEntityId) ? "Camera " : "",
+                            runtimeWorld.GetMeshRenderer(selectedRuntimeEntityId) ? "MeshRenderer " : "",
+                            runtimeWorld.GetPlayerController(selectedRuntimeEntityId) ? "PlayerController " : "",
+                            runtimeWorld.GetTriggerVolume(selectedRuntimeEntityId) ? "TriggerVolume " : "",
+                            runtimeWorld.GetVaultNode(selectedRuntimeEntityId) ? "VaultNode " : "",
+                            runtimeWorld.GetVaultCore(selectedRuntimeEntityId) ? "VaultCore " : "",
+                            runtimeWorld.GetVaultExit(selectedRuntimeEntityId) ? "VaultExit" : "");
+
+                        if (runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
+                            ImGui::TextUnformatted("Additional Component: VaultRing");
+                    }
+                    else
+                    {
+                        ImGui::TextDisabled("No selected runtime entity mapping. Enter Play mode or select a cloned scene object.");
+                    }
                 }
                 else
                 {

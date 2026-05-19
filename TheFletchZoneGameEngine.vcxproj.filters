@@ -442,6 +442,7 @@
     <None Include="docs\RenderingStatus.md" />
     <None Include="docs\EditorWorkflow.md" />
     <None Include="docs\Roadmap.md" />
+    <None Include="docs\Phase10_PlayModeValidation.md" />
     <None Include="shaders\scene_cb.hlsli" />
     <None Include="shaders\material_cb.hlsli" />
     <None Include="Local\README.md" />
