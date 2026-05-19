@@ -206,6 +206,7 @@
     <ClInclude Include="include\UI.h" />
     <ClInclude Include="include\Utils.h" />
     <ClInclude Include="Include\VaultDiscovery.h" />
+    <ClInclude Include="Include\VaultNodeSystem.h" />
     <ClInclude Include="Include\VaultRuntime.h" />
     <ClInclude Include="Include\Vertex.h" />
     <ClInclude Include="Include\Win32Common.h" />
@@ -259,6 +260,7 @@
     <ClCompile Include="src\Utils.cpp" />
     <ClCompile Include="Src\TextureManager.cpp" />
     <ClCompile Include="Src\VaultDiscovery.cpp" />
+    <ClCompile Include="Src\VaultNodeSystem.cpp" />
     <ClCompile Include="Src\VaultRuntime.cpp" />
   </ItemGroup>
   <ItemGroup>

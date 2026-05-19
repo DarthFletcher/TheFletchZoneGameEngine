@@ -1,4 +1,4 @@
-﻿#include "Game.h"
+#include "Game.h"
 
 #include "Engine.h"
 #include "GameplayAudio.h"
@@ -7,6 +7,7 @@
 #include "Scene.h"
 #include "UI.h"
 #include "VaultDiscovery.h"
+#include "VaultNodeSystem.h"
 #include "VaultRuntime.h"
 #include "logger.h"
 
@@ -92,7 +93,6 @@ namespace
     static constexpr float kVaultContextHintSeconds = 5.0f;
 
     static std::string ToLower(std::string value);
-    static const VaultGameplayState::NodeBinding* FindMostUrgentDecayingNode();
     static void EnsureVaultMaterials();
 
     static void RefreshRuntimeWorldFromCurrentScene(const char* reason)
@@ -119,6 +119,11 @@ namespace
         {
             Logger::Log(LogLevel::Warning, std::format("RuntimeWorld refresh failed after {}.", reason), "[Game]");
         }
+    }
+
+    static RuntimeWorld* GetRuntimeWorldForGameplay()
+    {
+        return g_engineInstance ? &g_engineInstance->GetRuntimeWorld() : nullptr;
     }
 
     static DirectX::XMFLOAT3 ScaleColor(const DirectX::XMFLOAT3& color, float scale)
@@ -289,7 +294,7 @@ namespace
         case VaultMissionState::ActivatingNodes:
             if (g_VaultMission.activatedNodes <= 0)
                 return "Step 1: Find a nearby node and press E to activate it.";
-            if (FindMostUrgentDecayingNode())
+            if (VaultNodeSystem::FindMostUrgentDecayingNode(g_VaultState))
                 return "If a node turns red, go back and refresh it before it fully decays.";
             return "Keep all nodes active at the same time to unlock the core.";
         case VaultMissionState::CoreUnlocked:
@@ -368,61 +373,6 @@ namespace
     static bool IsInteractionTargetCore(uint32_t targetId)
     {
         return targetId != 0 && targetId == g_VaultState.core.instanceId;
-    }
-
-	// Finds the node binding for the given instance ID, or returns nullptr if not found. This is used to look up the state of a node based on its instance ID, which is important for handling interactions with nodes, updating their state, and determining when to trigger warnings or failures due to decaying nodes. The function iterates through the list of node bindings in the vault gameplay state and checks if any of them match the given instance ID.
-    static VaultGameplayState::NodeBinding* FindNodeBindingById(uint32_t instanceId)
-    {
-        for (VaultGameplayState::NodeBinding& node : g_VaultState.nodes)
-        {
-            if (node.instanceId == instanceId)
-                return &node;
-        }
-        return nullptr;
-    }
-
-    static VaultNodeComponent* FindNodeRuntimeComponent(VaultGameplayState::NodeBinding& nodeBinding)
-    {
-        if (!g_engineInstance)
-            return nullptr;
-
-        RuntimeWorld& runtimeWorld = g_engineInstance->GetRuntimeWorld();
-        if (nodeBinding.runtimeEntity == kInvalidRuntimeEntityId)
-            nodeBinding.runtimeEntity = runtimeWorld.FindBySourceSceneInstanceId(nodeBinding.instanceId);
-
-        return nodeBinding.runtimeEntity != kInvalidRuntimeEntityId
-            ? runtimeWorld.GetVaultNode(nodeBinding.runtimeEntity)
-            : nullptr;
-    }
-
-    static void SyncNodeBindingFromRuntime(VaultGameplayState::NodeBinding& nodeBinding)
-    {
-        VaultNodeComponent* runtimeNode = FindNodeRuntimeComponent(nodeBinding);
-        if (!runtimeNode)
-            return;
-
-        nodeBinding.type = ToVaultNodeType(runtimeNode->type);
-        nodeBinding.state = ToVaultNodeState(runtimeNode->state);
-        nodeBinding.decayTimer = runtimeNode->decayTimer;
-        nodeBinding.decayDuration = runtimeNode->decayDuration;
-        nodeBinding.stabilizeDuration = runtimeNode->stabilizeDuration;
-        nodeBinding.stabilizeProgress = runtimeNode->stabilizeProgress;
-        nodeBinding.warningPlayed = runtimeNode->warningPlayed;
-    }
-
-    static void SyncNodeBindingToRuntime(VaultGameplayState::NodeBinding& nodeBinding)
-    {
-        VaultNodeComponent* runtimeNode = FindNodeRuntimeComponent(nodeBinding);
-        if (!runtimeNode)
-            return;
-
-        runtimeNode->type = ToRuntimeNodeType(nodeBinding.type);
-        runtimeNode->state = ToRuntimeNodeState(nodeBinding.state);
-        runtimeNode->decayTimer = nodeBinding.decayTimer;
-        runtimeNode->decayDuration = nodeBinding.decayDuration;
-        runtimeNode->stabilizeDuration = nodeBinding.stabilizeDuration;
-        runtimeNode->stabilizeProgress = nodeBinding.stabilizeProgress;
-        runtimeNode->warningPlayed = nodeBinding.warningPlayed;
     }
 
     static VaultRingComponent* FindRingRuntimeComponent(VaultGameplayState::RingBinding& ringBinding)
@@ -623,20 +573,6 @@ namespace
 
 	// Resets the vault runtime state to the initial conditions of the current level. If restoreSceneInstances is true, it will also restore the original transform and material state of all scene instances that are part of the vault gameplay (nodes, rings, core, exit) based on the data captured when they were first initialized. This is used when restarting a vault run to ensure that all gameplay elements are reset to their starting state, while allowing for flexibility in whether the scene instances themselves are reloaded from a snapshot or just reset in place.
     static void ResetVaultRuntimeState(bool restoreSceneInstances);
-
-	// Finds the most urgent decaying node, which is the one with the least time remaining before it fully decays. This is used to determine which node should trigger the warning state in the UI, and to provide feedback to the player about which nodes need attention first. The function iterates through all node bindings, checks if they are in the decaying state, and keeps track of the one with the lowest decay timer value.
-    static const VaultGameplayState::NodeBinding* FindMostUrgentDecayingNode()
-    {
-        const VaultGameplayState::NodeBinding* bestNode = nullptr;
-        for (const VaultGameplayState::NodeBinding& node : g_VaultState.nodes)
-        {
-            if (node.state != VaultGameplayState::NodeState::Decaying)
-                continue;
-            if (!bestNode || node.decayTimer < bestNode->decayTimer)
-                bestNode = &node;
-        }
-        return bestNode;
-    }
 
 	// Triggers the vault completion sequence. This function sets the vault mission state to completed, resets the interaction target, plays the core stabilized audio event, checks if the exit was defined and plays the exit opened audio event if so, and logs a message indicating that the vault core has been stabilized and the exit is unlocked. This is called when the player successfully interacts with the core after activating all nodes, marking the main objective of the vault as complete and allowing the player to proceed to the exit.
     static void TriggerVaultCompletion()
@@ -1058,7 +994,7 @@ namespace
             newState);
 
         for (VaultGameplayState::NodeBinding& nodeBinding : newState.nodes)
-            SyncNodeBindingToRuntime(nodeBinding);
+            VaultNodeSystem::SyncBindingToRuntime(GetRuntimeWorldForGameplay(), nodeBinding);
 
         if (discoveryResult.discoveredFromRuntimeWorld)
         {
@@ -1194,7 +1130,7 @@ namespace
         int activeNodeCount = 0;
         for (VaultGameplayState::NodeBinding& nodeBinding : g_VaultState.nodes)
         {
-            SyncNodeBindingFromRuntime(nodeBinding);
+            VaultNodeSystem::SyncBindingFromRuntime(GetRuntimeWorldForGameplay(), nodeBinding);
 
             SceneInstance* node = FindInstanceById(nodeBinding.instanceId);
             if (!node)
@@ -1248,7 +1184,7 @@ namespace
                 break;
             }
 
-            SyncNodeBindingToRuntime(nodeBinding);
+            VaultNodeSystem::SyncBindingToRuntime(GetRuntimeWorldForGameplay(), nodeBinding);
         }
 
 		// Check for vault failure condition based on decayed nodes
@@ -1345,7 +1281,7 @@ namespace
         const float interactRangeSq = kVaultInteractionRange * kVaultInteractionRange;
         for (VaultGameplayState::NodeBinding& nodeBinding : g_VaultState.nodes)
         {
-            SyncNodeBindingFromRuntime(nodeBinding);
+            VaultNodeSystem::SyncBindingFromRuntime(GetRuntimeWorldForGameplay(), nodeBinding);
 
             if (nodeBinding.type != VaultGameplayState::NodeType::SlowStabilize ||
                 nodeBinding.state != VaultGameplayState::NodeState::Stabilizing)
@@ -1360,7 +1296,7 @@ namespace
             {
                 nodeBinding.state = VaultGameplayState::NodeState::Inactive;
                 nodeBinding.stabilizeProgress = 0.0f;
-                SyncNodeBindingToRuntime(nodeBinding);
+                VaultNodeSystem::SyncBindingToRuntime(GetRuntimeWorldForGameplay(), nodeBinding);
                 continue;
             }
 
@@ -1374,7 +1310,7 @@ namespace
                 GA_Play(GameplayAudioEvent::SlowNodeCompleted);
             }
 
-            SyncNodeBindingToRuntime(nodeBinding);
+            VaultNodeSystem::SyncBindingToRuntime(GetRuntimeWorldForGameplay(), nodeBinding);
         }
     }
 }
@@ -1699,7 +1635,7 @@ void Game::Update(float deltaTime) {
 
     g_InteractionTargetId = bestTargetId;
 
-    if (const VaultGameplayState::NodeBinding* bestNodeBinding = FindNodeBindingById(bestTargetId))
+    if (const VaultGameplayState::NodeBinding* bestNodeBinding = VaultNodeSystem::FindNodeBindingById(g_VaultState, bestTargetId))
     {
         if (bestNodeBinding->type == VaultGameplayState::NodeType::SlowStabilize)
             ShowVaultContextHint(VaultContextHintState::HintType::SlowNode);
@@ -1720,7 +1656,7 @@ void Game::Update(float deltaTime) {
             {
                 if (nodeBinding.instanceId == bestTargetId)
                 {
-                    SyncNodeBindingFromRuntime(nodeBinding);
+                    VaultNodeSystem::SyncBindingFromRuntime(GetRuntimeWorldForGameplay(), nodeBinding);
 
                     if (nodeBinding.type == VaultGameplayState::NodeType::SlowStabilize)
                     {
@@ -1736,7 +1672,7 @@ void Game::Update(float deltaTime) {
                         nodeBinding.warningPlayed = false;
                         GA_Play(GameplayAudioEvent::NodeActivated);
                     }
-                    SyncNodeBindingToRuntime(nodeBinding);
+                    VaultNodeSystem::SyncBindingToRuntime(GetRuntimeWorldForGameplay(), nodeBinding);
                     g_InteractionTargetId = 0;
                     break;
                 }
@@ -1784,7 +1720,7 @@ const char* Game::GetInteractionPrompt() const
     if (IsInteractionTargetCore(g_InteractionTargetId))
         return "Press E to stabilize the core";
 
-    const VaultGameplayState::NodeBinding* nodeBinding = FindNodeBindingById(g_InteractionTargetId);
+    const VaultGameplayState::NodeBinding* nodeBinding = VaultNodeSystem::FindNodeBindingById(g_VaultState, g_InteractionTargetId);
     if (!nodeBinding)
         return "Press E to activate node";
 
@@ -1811,7 +1747,7 @@ const char* Game::GetInteractionActionLabel() const
     if (IsInteractionTargetCore(g_InteractionTargetId))
         return "Stabilize";
 
-    const VaultGameplayState::NodeBinding* nodeBinding = FindNodeBindingById(g_InteractionTargetId);
+    const VaultGameplayState::NodeBinding* nodeBinding = VaultNodeSystem::FindNodeBindingById(g_VaultState, g_InteractionTargetId);
     if (!nodeBinding)
         return "Activate";
     if (nodeBinding->type == VaultGameplayState::NodeType::SlowStabilize)
@@ -1826,13 +1762,13 @@ bool Game::HasVaultWarning() const
 {
     if (g_VaultMission.state == VaultMissionState::Failed || g_VaultMission.state == VaultMissionState::Escaped)
         return false;
-    return FindMostUrgentDecayingNode() != nullptr;
+    return VaultNodeSystem::FindMostUrgentDecayingNode(g_VaultState) != nullptr;
 }
 
 // Returns the warning text to display for the most urgent decaying node in the vault. If there is a node that is currently decaying, it checks if that node is the current interaction target. If it is, it returns a more specific warning prompting the player to refresh that node immediately. If it is not the interaction target, it returns a general warning about nodes destabilizing. If there are no decaying nodes, it returns nullptr, indicating that no warning should be displayed.
 const char* Game::GetVaultWarningText() const
 {
-    const VaultGameplayState::NodeBinding* warningNode = FindMostUrgentDecayingNode();
+    const VaultGameplayState::NodeBinding* warningNode = VaultNodeSystem::FindMostUrgentDecayingNode(g_VaultState);
     if (!warningNode)
         return nullptr;
     if (warningNode->instanceId == g_InteractionTargetId)
