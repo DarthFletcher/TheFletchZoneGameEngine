@@ -2308,6 +2308,75 @@ namespace EditorPanels
 
                         if (runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
                             ImGui::TextUnformatted("Additional Component: VaultRing");
+
+                        if (const PlayerControllerComponent* playerController = runtimeWorld.GetPlayerController(selectedRuntimeEntityId))
+                        {
+                            ImGui::TextUnformatted("PlayerController Details");
+                            ImGui::Text("Move Speed: %.2f", playerController->moveSpeed);
+                            ImGui::Text("Look Sensitivity: %.4f", playerController->lookSensitivity);
+                            ImGui::Text("Camera Height: %.2f", playerController->cameraHeight);
+                        }
+
+                        if (const TriggerVolumeComponent* triggerVolume = runtimeWorld.GetTriggerVolume(selectedRuntimeEntityId))
+                        {
+                            ImGui::TextUnformatted("TriggerVolume Details");
+                            ImGui::Text("Enabled: %s", triggerVolume->enabled ? "true" : "false");
+                            ImGui::Text("Half Extents: (%.2f, %.2f, %.2f)", triggerVolume->halfExtents.x, triggerVolume->halfExtents.y, triggerVolume->halfExtents.z);
+                        }
+
+                        if (const VaultNodeComponent* vaultNode = runtimeWorld.GetVaultNode(selectedRuntimeEntityId))
+                        {
+                            auto getVaultNodeTypeLabel = [](VaultNodeComponent::Type type)
+                            {
+                                switch (type)
+                                {
+                                case VaultNodeComponent::Type::SlowStabilize: return "SlowStabilize";
+                                case VaultNodeComponent::Type::Fragile: return "Fragile";
+                                case VaultNodeComponent::Type::Normal:
+                                default: return "Normal";
+                                }
+                            };
+                            auto getVaultNodeStateLabel = [](VaultNodeComponent::State state)
+                            {
+                                switch (state)
+                                {
+                                case VaultNodeComponent::State::Stabilizing: return "Stabilizing";
+                                case VaultNodeComponent::State::Active: return "Active";
+                                case VaultNodeComponent::State::Decaying: return "Decaying";
+                                case VaultNodeComponent::State::Inactive:
+                                default: return "Inactive";
+                                }
+                            };
+
+                            ImGui::TextUnformatted("VaultNode Details");
+                            ImGui::Text("Type: %s", getVaultNodeTypeLabel(vaultNode->type));
+                            ImGui::Text("State: %s", getVaultNodeStateLabel(vaultNode->state));
+                            ImGui::Text("Decay: %.2f / %.2f", vaultNode->decayTimer, vaultNode->decayDuration);
+                            ImGui::Text("Stabilize: %.2f / %.2f", vaultNode->stabilizeProgress, vaultNode->stabilizeDuration);
+                            ImGui::Text("Warning Played: %s", vaultNode->warningPlayed ? "true" : "false");
+                        }
+
+                        if (const VaultCoreComponent* vaultCore = runtimeWorld.GetVaultCore(selectedRuntimeEntityId))
+                        {
+                            ImGui::TextUnformatted("VaultCore Details");
+                            ImGui::Text("Unlocked: %s", vaultCore->unlocked ? "true" : "false");
+                            ImGui::Text("Stabilized: %s", vaultCore->stabilized ? "true" : "false");
+                        }
+
+                        if (const VaultExitComponent* vaultExit = runtimeWorld.GetVaultExit(selectedRuntimeEntityId))
+                        {
+                            ImGui::TextUnformatted("VaultExit Details");
+                            ImGui::Text("Unlocked: %s", vaultExit->unlocked ? "true" : "false");
+                            ImGui::Text("Opened: %s", vaultExit->opened ? "true" : "false");
+                            ImGui::Text("Open Offset Y: %.2f", vaultExit->openOffsetY);
+                        }
+
+                        if (const VaultRingComponent* vaultRing = runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
+                        {
+                            ImGui::TextUnformatted("VaultRing Details");
+                            ImGui::Text("Active: %s", vaultRing->active ? "true" : "false");
+                            ImGui::Text("Completed: %s", vaultRing->completed ? "true" : "false");
+                        }
                     }
                     else
                     {
