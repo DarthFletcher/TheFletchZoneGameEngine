@@ -8,6 +8,7 @@
 #include "UI.h"
 #include "VaultDiscovery.h"
 #include "VaultNodeSystem.h"
+#include "VaultPresentation.h"
 #include "VaultRuntime.h"
 #include "logger.h"
 
@@ -254,119 +255,61 @@ namespace
     {
         return GetNextVaultScenePath() != nullptr && !IsFinalVaultSceneCurrentScene();
     }
+
+    static std::string GetCurrentSceneFilenameLower()
+    {
+        const std::filesystem::path currentScenePath(UI::GetCurrentSceneAssetPath());
+        return ToLower(currentScenePath.filename().string());
+    }
 	
     // Returns the progression label for the current vault scene, or nullptr if the current scene is not a vault or if the progression should not be shown (e.g. in the tutorial).
     static const char* GetVaultProgressionLabelForCurrentScene()
     {
-        const std::filesystem::path currentScenePath(UI::GetCurrentSceneAssetPath());
-        const std::string currentFilename = ToLower(currentScenePath.filename().string());
-        if (currentFilename == "vault_intro.scene" || currentFilename == "main.scene")
-            return "Vault 1 / 3";
-        if (currentFilename == "vault_traversal.scene")
-            return "Vault 2 / 3";
-        if (currentFilename == "vault_priority.scene")
-            return "Vault 3 / 3";
-        return nullptr;
+        return VaultPresentation::GetProgressionLabel(GetCurrentSceneFilenameLower());
     }
 
 	// Returns true if the current scene is a tutorial scene. This is used to determine whether to show the tutorial hints and header, and also to gate certain logic that should only run in the tutorial (e.g. the node decay timers and the auto-advance).
     static bool IsTutorialSceneCurrentScene()
     {
-        const std::filesystem::path currentScenePath(UI::GetCurrentSceneAssetPath());
-        const std::string currentFilename = ToLower(currentScenePath.filename().string());
-        return currentFilename == "vault_intro.scene" || currentFilename == "main.scene";
+        return VaultPresentation::IsTutorialScene(GetCurrentSceneFilenameLower());
     }
 
 	// Returns the header text to show in the tutorial, or nullptr if the header should not be shown. This is used to show the "Tutorial" header in the tutorial scenes, and to hide the header in the vault scenes since they have their own progression label.
     static const char* GetTutorialHeaderText()
     {
-        return IsTutorialSceneCurrentScene() ? "Tutorial" : nullptr;
+        return VaultPresentation::GetTutorialHeader(GetCurrentSceneFilenameLower());
     }
 
 	// Returns the primary hint text to show in the tutorial, or nullptr if the hints should not be shown. This function checks the current vault mission state and returns the appropriate hint for the player based on their progress. For example, if they are in the "ActivatingNodes" state and have not activated any nodes yet, it will prompt them to activate a node. If they have activated some nodes but there are decaying nodes, it will warn them about the red nodes. If all nodes are active, it will tell them to keep them all active to unlock the core. Similar logic applies for the other states like "CoreUnlocked", "Completed", "Failed", and "Escaped". If they are not in a tutorial scene, it returns nullptr to hide the hints.
     static const char* GetTutorialHintPrimaryText()
     {
-        if (!IsTutorialSceneCurrentScene())
-            return nullptr;
-
-        switch (g_VaultMission.state)
-        {
-        case VaultMissionState::ActivatingNodes:
-            if (g_VaultMission.activatedNodes <= 0)
-                return "Step 1: Find a nearby node and press E to activate it.";
-            if (VaultNodeSystem::FindMostUrgentDecayingNode(g_VaultState))
-                return "If a node turns red, go back and refresh it before it fully decays.";
-            return "Keep all nodes active at the same time to unlock the core.";
-        case VaultMissionState::CoreUnlocked:
-            return "Step 2: The core is unlocked. Move to it and press E to stabilize it.";
-        case VaultMissionState::Completed:
-            return "Step 3: The exit is open. Walk through the gate area to escape.";
-        case VaultMissionState::Failed:
-            return "Too many nodes decayed. Retry and keep a tighter loop between nodes.";
-        case VaultMissionState::Escaped:
-            return "Tutorial complete. Vault 2 adds more traversal pressure.";
-        case VaultMissionState::Inactive:
-        default:
-            return "Learn the loop: nodes -> core -> exit.";
-        }
+        return VaultPresentation::GetTutorialHintPrimary(
+            GetCurrentSceneFilenameLower(),
+            g_VaultMission,
+            VaultNodeSystem::FindMostUrgentDecayingNode(g_VaultState) != nullptr);
     }
 
 	// Returns the secondary hint text to show in the tutorial, or nullptr if the hints should not be shown. Similar to GetTutorialHintPrimaryText, this function checks the current vault mission state and returns additional hints for the player. For example, in the "ActivatingNodes" state, it will show the basic controls for looking around, moving, sprinting, and interacting. In the "CoreUnlocked" state, it will explain that all nodes need to be active to interact with the core. In the "Completed" state, it will clarify that the gate raises but the trigger stays on the floor. In the "Failed" state, it will explain what red and orange nodes mean and how to restart. In the "Escaped" state, it will give instructions for advancing to the next vault. If they are not in a tutorial scene, it returns nullptr to hide the hints.
     static const char* GetTutorialHintSecondaryText()
     {
-        if (!IsTutorialSceneCurrentScene())
-            return nullptr;
-
-        switch (g_VaultMission.state)
-        {
-        case VaultMissionState::ActivatingNodes:
-            return "RMB look | WASD move | Shift sprint | E interact | Red means urgent";
-        case VaultMissionState::CoreUnlocked:
-            return "When every node stays active together, the core becomes interactable.";
-        case VaultMissionState::Completed:
-            return "The gate raises upward, but the escape trigger stays on the floor path below it.";
-        case VaultMissionState::Failed:
-            return "Orange means stable. Red means urgent. Press R to restart anytime.";
-        case VaultMissionState::Escaped:
-            return "Press N, click Next Vault, or wait for the auto-advance.";
-        case VaultMissionState::Inactive:
-        default:
-            return "Nodes decay slowly here so you can learn the rhythm.";
-        }
+        return VaultPresentation::GetTutorialHintSecondary(GetCurrentSceneFilenameLower(), g_VaultMission.state);
     }
 
 	// Returns the label for the action to advance to the next vault, or nullptr if the next vault cannot be advanced to yet. This function checks the current scene and returns a prompt to press N for the next vault if the player is in a vault scene that has a subsequent vault. If they are in the first vault, it prompts for Vault 2. If they are in the second vault, it prompts for Vault 3. If they are not in a vault scene or if there is no next vault, it returns nullptr to hide the prompt.
     static const char* GetNextVaultActionLabel()
     {
-        const std::filesystem::path currentScenePath(UI::GetCurrentSceneAssetPath());
-        const std::string currentFilename = ToLower(currentScenePath.filename().string());
-        if (currentFilename == "vault_intro.scene" || currentFilename == "main.scene")
-            return "Press N / A for Vault 2";
-        if (currentFilename == "vault_traversal.scene")
-            return "Press N / A for Vault 3";
-        if (currentFilename == "vault_priority.scene")
-            return "Press N / A to Restart From Vault 1";
-        return nullptr;
+        return VaultPresentation::GetNextVaultActionLabel(GetCurrentSceneFilenameLower());
     }
 
     static const char* GetNextVaultButtonLabelForCurrentScene()
     {
-        return IsFinalVaultSceneCurrentScene() ? "Restart Campaign" : "Next Vault";
+        return VaultPresentation::GetNextVaultButtonLabel(IsFinalVaultSceneCurrentScene());
     }
 
 	// Returns the objective text to show based on the current vault mission state. This function checks the current state of the vault mission and returns a string that describes the player's current objective. For example, if they are in the "ActivatingNodes" state, it will prompt them to activate all vault nodes. If they are in the "CoreUnlocked" state, it will tell them to reach and stabilize the vault core. If they have completed the mission, it will instruct them to reach the opened exit. If they have escaped, it will simply say "Vault Escaped!". If they have failed, it will say "Mission Failed". If they are inactive or in any other state, it will prompt them to enter the vault. This text is used in the UI to keep the player informed about their current goal.
     static const char* GetMissionObjectiveText(VaultMissionState state)
     {
-        switch (state)
-        {
-        case VaultMissionState::ActivatingNodes: return "Objective: Activate all vault nodes";
-        case VaultMissionState::CoreUnlocked: return "Objective: Reach and stabilize the vault core";
-        case VaultMissionState::Completed: return "Objective: Reach the opened exit";
-        case VaultMissionState::Escaped: return "Vault Escaped!";
-        case VaultMissionState::Failed: return "Mission Failed";
-        case VaultMissionState::Inactive:
-        default: return "Objective: Enter the vault";
-        }
+        return VaultPresentation::GetMissionObjectiveText(state);
     }
 
 	// Returns true if the given targetId matches the current interaction target, which is typically set to the core when it becomes interactable. This is used to determine whether the player is currently able to interact with the core, and to gate certain logic that should only run when the core is the interaction target (e.g. showing the prompt to stabilize the core, allowing the player to trigger vault completion, etc.). The targetId of 0 is reserved to mean "no target", so this function also checks that the targetId is not 0 before comparing it to the core's instanceId.
@@ -1899,25 +1842,12 @@ bool Game::HasVaultContextHint() const
 
 const char* Game::GetVaultContextHintTitle() const
 {
-    switch (g_VaultContextHint.activeHint)
-    {
-    case VaultContextHintState::HintType::SlowNode: return "New Node: Slow Stabilize";
-    case VaultContextHintState::HintType::FragileNode: return "New Node: Fragile";
-    default: return nullptr;
-    }
+    return VaultPresentation::GetContextHintTitle(g_VaultContextHint.activeHint);
 }
 
 const char* Game::GetVaultContextHintText() const
 {
-    switch (g_VaultContextHint.activeHint)
-    {
-    case VaultContextHintState::HintType::SlowNode:
-        return "Start it with E or A, then stay nearby until the node fully stabilizes.";
-    case VaultContextHintState::HintType::FragileNode:
-        return "Fragile nodes decay faster than normal ones, so refresh them first when routing gets tight.";
-    default:
-        return nullptr;
-    }
+    return VaultPresentation::GetContextHintText(g_VaultContextHint.activeHint);
 }
 
 float Game::GetVaultContextHintAlpha() const
@@ -1968,26 +1898,13 @@ const char* Game::GetNextVaultActionText() const
 // Returns the title text for the vault end overlay based on the final state of the vault mission. If the mission was successfully escaped, it returns a success message; if it failed, it returns a failure message. If the mission is still in progress or in an undefined state, it returns nullptr, indicating that no overlay should be shown.
 const char* Game::GetVaultEndOverlayTitle() const
 {
-    switch (g_VaultMission.state)
-    {
-    case VaultMissionState::Escaped: return IsFinalVaultSceneCurrentScene() ? "GAME COMPLETE" : "ESCAPE SUCCESSFUL";
-    case VaultMissionState::Failed: return "SYSTEM FAILURE";
-    default: return nullptr;
-    }
+    return VaultPresentation::GetEndOverlayTitle(g_VaultMission.state, IsFinalVaultSceneCurrentScene());
 }
 
 // Returns the subtitle text for the vault end overlay based on the final state of the vault mission. If the mission was successfully escaped, it provides a message about the core being stabilized and the vault being cleared. If the mission failed, it prompts the player to retry by pressing R. If the mission is still in progress or in an undefined state, it returns nullptr, indicating that no overlay should be shown.
 const char* Game::GetVaultEndOverlaySubtitle() const
 {
-    switch (g_VaultMission.state)
-    {
-    case VaultMissionState::Escaped:
-        return IsFinalVaultSceneCurrentScene()
-            ? "All three vaults are clear. Would you like to restart from the beginning?"
-            : "The core is stabilized and the vault has been cleared.";
-    case VaultMissionState::Failed: return "Too many vault nodes decayed. Press R to retry.";
-    default: return nullptr;
-    }
+    return VaultPresentation::GetEndOverlaySubtitle(g_VaultMission.state, IsFinalVaultSceneCurrentScene());
 }
 
 // Returns whether the vault presentation banner should be shown, which is a visual element that appears at the start of the vault mission and when the player successfully escapes. This function checks if the banner timer is greater than zero and if the banner type is not None, indicating that there is an active banner that should be displayed to provide feedback about the current state of the vault.
@@ -1999,25 +1916,13 @@ bool Game::HasVaultPresentationBanner() const
 // Returns the text for the vault presentation banner based on the current banner type. The banner is a visual element that appears at the start of the vault mission and when the player successfully escapes, providing feedback about the current state of the vault. If there is no active banner, it returns nullptr, indicating that no banner should be shown.
 const char* Game::GetVaultPresentationBannerText() const
 {
-    switch (g_VaultPresentation.bannerType)
-    {
-    case VaultPresentationState::BannerType::Start: return "Vault Initialized";
-    case VaultPresentationState::BannerType::Escape: return "Escape Successful";
-    default: return nullptr;
-    }
+    return VaultPresentation::GetPresentationBannerText(g_VaultPresentation.bannerType);
 }
 
 // Returns the alpha value for the vault presentation banner, which is a visual element that appears at the start of the vault mission and when the player successfully escapes. The alpha value is calculated based on the remaining time of the banner timer, normalized by the total duration of the banner display. If there is no active banner, it returns 0.0f, indicating that the banner should be fully transparent.
 float Game::GetVaultPresentationBannerAlpha() const
 {
-    if (!HasVaultPresentationBanner())
-        return 0.0f;
-
-    const float duration = (g_VaultPresentation.bannerType == VaultPresentationState::BannerType::Escape)
-        ? kVaultEscapeBannerSeconds
-        : kVaultStartBannerSeconds;
-    const float normalized = std::clamp(g_VaultPresentation.bannerTimer / duration, 0.0f, 1.0f);
-    return normalized;
+    return VaultPresentation::GetPresentationBannerAlpha(g_VaultPresentation, kVaultStartBannerSeconds, kVaultEscapeBannerSeconds);
 }
 
 // Returns whether the vault fail pulse effect is currently active, which indicates that the player is in a critical state where the vault mission is close to failing due to too many decayed nodes. This function checks if the fail pulse timer is greater than zero, which means that the effect should be active and providing visual feedback to the player about the impending failure condition.
@@ -2029,7 +1934,5 @@ bool Game::HasVaultFailPulse() const
 // Returns the alpha value for the vault fail pulse effect, which is a visual feedback mechanism that indicates an impending failure condition in the vault mission. The alpha value is calculated based on the remaining time of the fail pulse timer, normalized by the total duration of the fail pulse effect. If there is no active fail pulse, it returns 0.0f, indicating that the effect should be fully transparent.
 float Game::GetVaultFailPulseAlpha() const
 {
-    if (!HasVaultFailPulse())
-        return 0.0f;
-    return std::clamp(g_VaultPresentation.failPulseTimer / kVaultFailPulseSeconds, 0.0f, 1.0f);
+    return VaultPresentation::GetFailPulseAlpha(g_VaultPresentation.failPulseTimer, kVaultFailPulseSeconds);
 }
