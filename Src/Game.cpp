@@ -6,6 +6,7 @@
 #include "MaterialManager.h"
 #include "Scene.h"
 #include "UI.h"
+#include "VaultCampaign.h"
 #include "VaultDiscovery.h"
 #include "VaultNodeSystem.h"
 #include "VaultPresentation.h"
@@ -94,6 +95,7 @@ namespace
     static constexpr float kVaultContextHintSeconds = 5.0f;
 
     static std::string ToLower(std::string value);
+    static std::string GetCurrentSceneFilenameLower();
     static void EnsureVaultMaterials();
 
     static void RefreshRuntimeWorldFromCurrentScene(const char* reason)
@@ -233,33 +235,22 @@ namespace
     // Returns the path to the next vault scene to load, or nullptr if there is no next vault. This is used for both the auto-advance and the "Next Vault" button, so it should only return a non-null value if the player can actually advance to the next vault.
     static const char* GetNextVaultScenePath()
     {
-        const std::filesystem::path currentScenePath(UI::GetCurrentSceneAssetPath());
-        const std::string currentFilename = ToLower(currentScenePath.filename().string());
-        if (currentFilename == "vault_intro.scene" || currentFilename == "main.scene")
-            return "Assets/Scenes/Vault_Traversal.scene";
-        if (currentFilename == "vault_traversal.scene")
-            return "Assets/Scenes/Vault_Priority.scene";
-        if (currentFilename == "vault_priority.scene")
-            return "Assets/Scenes/Main.scene";
-        return nullptr;
+        return VaultCampaign::GetNextVaultScenePath(GetCurrentSceneFilenameLower());
     }
 
     static bool IsFinalVaultSceneCurrentScene()
     {
-        const std::filesystem::path currentScenePath(UI::GetCurrentSceneAssetPath());
-        const std::string currentFilename = ToLower(currentScenePath.filename().string());
-        return currentFilename == "vault_priority.scene";
+        return VaultCampaign::IsFinalVaultScene(GetCurrentSceneFilenameLower());
     }
 
     static bool ShouldAutoAdvanceToNextVault()
     {
-        return GetNextVaultScenePath() != nullptr && !IsFinalVaultSceneCurrentScene();
+        return VaultCampaign::ShouldAutoAdvanceToNextVault(GetCurrentSceneFilenameLower());
     }
 
     static std::string GetCurrentSceneFilenameLower()
     {
-        const std::filesystem::path currentScenePath(UI::GetCurrentSceneAssetPath());
-        return ToLower(currentScenePath.filename().string());
+        return VaultCampaign::GetSceneFilenameLower(UI::GetCurrentSceneAssetPath());
     }
 	
     // Returns the progression label for the current vault scene, or nullptr if the current scene is not a vault or if the progression should not be shown (e.g. in the tutorial).

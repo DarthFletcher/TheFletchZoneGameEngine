@@ -205,6 +205,7 @@
     <ClInclude Include="include\Timer.h" />
     <ClInclude Include="include\UI.h" />
     <ClInclude Include="include\Utils.h" />
+    <ClInclude Include="Include\VaultCampaign.h" />
     <ClInclude Include="Include\VaultDiscovery.h" />
     <ClInclude Include="Include\VaultNodeSystem.h" />
     <ClInclude Include="Include\VaultPresentation.h" />
@@ -260,6 +261,7 @@
     <ClCompile Include="src\UI.cpp" />
     <ClCompile Include="src\Utils.cpp" />
     <ClCompile Include="Src\TextureManager.cpp" />
+    <ClCompile Include="Src\VaultCampaign.cpp" />
     <ClCompile Include="Src\VaultDiscovery.cpp" />
     <ClCompile Include="Src\VaultNodeSystem.cpp" />
     <ClCompile Include="Src\VaultPresentation.cpp" />
