@@ -2258,157 +2258,184 @@ namespace EditorPanels
                     const RuntimeEntityId mainCameraEntity = runtimeWorld.FindMainCameraEntity();
                     const RuntimeEntityId playerEntity = runtimeWorld.FindFirstPlayerControllerEntity();
 
-                    ImGui::Text("Engine State: %s", engineStateLabel);
-                    if (engineState == Engine::State::Editing && runtimeStats.entities > 0)
+                    if (ImGui::CollapsingHeader("RuntimeWorld Summary", ImGuiTreeNodeFlags_DefaultOpen))
                     {
-                        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.18f, 1.0f),
-                            "Warning: RuntimeWorld contains entities while editing.");
+                        ImGui::Text("Engine State: %s", engineStateLabel);
+                        if (engineState == Engine::State::Editing && runtimeStats.entities > 0)
+                        {
+                            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.18f, 1.0f),
+                                "Warning: RuntimeWorld contains entities while editing.");
+                        }
+                        ImGui::Text("Entities:        %llu", static_cast<unsigned long long>(runtimeStats.entities));
+                        ImGui::Text("Transforms:      %llu", static_cast<unsigned long long>(runtimeStats.transforms));
+                        ImGui::Text("Cameras:         %llu", static_cast<unsigned long long>(runtimeStats.cameras));
+                        ImGui::Text("Mesh Renderers:  %llu", static_cast<unsigned long long>(runtimeStats.meshRenderers));
+                        ImGui::Text("Players:         %llu", static_cast<unsigned long long>(runtimeStats.playerControllers));
+                        ImGui::Text("Trigger Volumes: %llu", static_cast<unsigned long long>(runtimeStats.triggerVolumes));
+                        ImGui::Text("Vault Nodes:     %llu", static_cast<unsigned long long>(runtimeStats.vaultNodes));
+                        ImGui::Text("Vault Cores:     %llu", static_cast<unsigned long long>(runtimeStats.vaultCores));
+                        ImGui::Text("Vault Rings:     %llu", static_cast<unsigned long long>(runtimeStats.vaultRings));
+                        ImGui::Text("Vault Exits:     %llu", static_cast<unsigned long long>(runtimeStats.vaultExits));
+                        ImGui::Text("Main Camera Entity: %u", mainCameraEntity);
+                        ImGui::Text("Player Entity:      %u", playerEntity);
                     }
-                    ImGui::Text("Entities:        %llu", static_cast<unsigned long long>(runtimeStats.entities));
-                    ImGui::Text("Transforms:      %llu", static_cast<unsigned long long>(runtimeStats.transforms));
-                    ImGui::Text("Cameras:         %llu", static_cast<unsigned long long>(runtimeStats.cameras));
-                    ImGui::Text("Mesh Renderers:  %llu", static_cast<unsigned long long>(runtimeStats.meshRenderers));
-                    ImGui::Text("Players:         %llu", static_cast<unsigned long long>(runtimeStats.playerControllers));
-                    ImGui::Text("Trigger Volumes: %llu", static_cast<unsigned long long>(runtimeStats.triggerVolumes));
-                    ImGui::Text("Vault Nodes:     %llu", static_cast<unsigned long long>(runtimeStats.vaultNodes));
-                    ImGui::Text("Vault Cores:     %llu", static_cast<unsigned long long>(runtimeStats.vaultCores));
-                    ImGui::Text("Vault Rings:     %llu", static_cast<unsigned long long>(runtimeStats.vaultRings));
-                    ImGui::Text("Vault Exits:     %llu", static_cast<unsigned long long>(runtimeStats.vaultExits));
-                    ImGui::Text("Main Camera Entity: %u", mainCameraEntity);
-                    ImGui::Text("Player Entity:      %u", playerEntity);
 
-                    ImGui::Separator();
-                    ImGui::TextUnformatted("Selected Runtime Entity");
                     const uint32_t selectedSceneInstanceId = Scene::GetSelectedInstanceId();
                     const RuntimeEntityId selectedRuntimeEntityId = runtimeWorld.FindBySourceSceneInstanceId(selectedSceneInstanceId);
-                    ImGui::Text("Selected Scene Instance: %u", selectedSceneInstanceId);
-                    ImGui::Text("Runtime Entity:          %u", selectedRuntimeEntityId);
                     if (const RuntimeEntity* selectedRuntimeEntity = runtimeWorld.GetEntity(selectedRuntimeEntityId))
                     {
-                        ImGui::Text("Name: %s", selectedRuntimeEntity->name.c_str());
-                        ImGui::Text("Parent Entity: %u", selectedRuntimeEntity->parent);
+                        if (ImGui::CollapsingHeader("Selected Runtime Entity", ImGuiTreeNodeFlags_DefaultOpen))
+                        {
+                            ImGui::Text("Selected Scene Instance: %u", selectedSceneInstanceId);
+                            ImGui::Text("Runtime Entity:          %u", selectedRuntimeEntityId);
+                            ImGui::Text("Name: %s", selectedRuntimeEntity->name.c_str());
+                            ImGui::Text("Parent Entity: %u", selectedRuntimeEntity->parent);
+
+                            ImGui::Text("Components: %s%s%s%s%s%s%s%s",
+                                runtimeWorld.GetTransform(selectedRuntimeEntityId) ? "Transform " : "",
+                                runtimeWorld.GetCamera(selectedRuntimeEntityId) ? "Camera " : "",
+                                runtimeWorld.GetMeshRenderer(selectedRuntimeEntityId) ? "MeshRenderer " : "",
+                                runtimeWorld.GetPlayerController(selectedRuntimeEntityId) ? "PlayerController " : "",
+                                runtimeWorld.GetTriggerVolume(selectedRuntimeEntityId) ? "TriggerVolume " : "",
+                                runtimeWorld.GetVaultNode(selectedRuntimeEntityId) ? "VaultNode " : "",
+                                runtimeWorld.GetVaultCore(selectedRuntimeEntityId) ? "VaultCore " : "",
+                                runtimeWorld.GetVaultExit(selectedRuntimeEntityId) ? "VaultExit" : "");
+
+                            if (runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
+                                ImGui::TextUnformatted("Additional Component: VaultRing");
+                        }
 
                         const RuntimeTransformComponent* transform = runtimeWorld.GetTransform(selectedRuntimeEntityId);
-                        if (transform)
+                        if (transform && ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen))
                         {
                             ImGui::Text("Runtime Position: (%.2f, %.2f, %.2f)", transform->position.x, transform->position.y, transform->position.z);
                             ImGui::Text("Runtime Rotation: (%.2f, %.2f, %.2f)", transform->rotation.x, transform->rotation.y, transform->rotation.z);
                             ImGui::Text("Runtime Scale:    (%.2f, %.2f, %.2f)", transform->scale.x, transform->scale.y, transform->scale.z);
                         }
 
-                        ImGui::Text("Components: %s%s%s%s%s%s%s%s",
-                            runtimeWorld.GetTransform(selectedRuntimeEntityId) ? "Transform " : "",
-                            runtimeWorld.GetCamera(selectedRuntimeEntityId) ? "Camera " : "",
-                            runtimeWorld.GetMeshRenderer(selectedRuntimeEntityId) ? "MeshRenderer " : "",
-                            runtimeWorld.GetPlayerController(selectedRuntimeEntityId) ? "PlayerController " : "",
-                            runtimeWorld.GetTriggerVolume(selectedRuntimeEntityId) ? "TriggerVolume " : "",
-                            runtimeWorld.GetVaultNode(selectedRuntimeEntityId) ? "VaultNode " : "",
-                            runtimeWorld.GetVaultCore(selectedRuntimeEntityId) ? "VaultCore " : "",
-                            runtimeWorld.GetVaultExit(selectedRuntimeEntityId) ? "VaultExit" : "");
-
-                        if (runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
-                            ImGui::TextUnformatted("Additional Component: VaultRing");
-
-                        if (const RuntimeCameraComponent* camera = runtimeWorld.GetCamera(selectedRuntimeEntityId))
+                        if (ImGui::CollapsingHeader("Rendering Components", ImGuiTreeNodeFlags_DefaultOpen))
                         {
-                            ImGui::TextUnformatted("Camera Details");
-                            ImGui::Text("Enabled: %s", camera->enabled ? "true" : "false");
-                            ImGui::Text("Main Camera: %s", camera->isMain ? "true" : "false");
-                            ImGui::Text("FOV Y: %.2f deg", DirectX::XMConvertToDegrees(camera->fovY));
-                            ImGui::Text("Near/Far: %.3f / %.2f", camera->nearClip, camera->farClip);
-                        }
-
-                        if (const RuntimeMeshRendererComponent* meshRenderer = runtimeWorld.GetMeshRenderer(selectedRuntimeEntityId))
-                        {
-                            auto getPrimitiveLabel = [](ScenePrimitive primitive)
+                            if (const RuntimeCameraComponent* camera = runtimeWorld.GetCamera(selectedRuntimeEntityId))
                             {
-                                switch (primitive)
-                                {
-                                case ScenePrimitive::Cube: return "Cube";
-                                case ScenePrimitive::Sphere: return "Sphere";
-                                case ScenePrimitive::Plane: return "Plane";
-                                case ScenePrimitive::Cylinder: return "Cylinder";
-                                case ScenePrimitive::Empty: return "Empty";
-                                case ScenePrimitive::Capsule: return "Capsule";
-                                case ScenePrimitive::Torus: return "Torus";
-                                case ScenePrimitive::Cone: return "Cone";
-                                default: return "Unknown";
-                                }
-                            };
+                                ImGui::TextUnformatted("Camera Details");
+                                ImGui::Text("Enabled: %s", camera->enabled ? "true" : "false");
+                                ImGui::Text("Main Camera: %s", camera->isMain ? "true" : "false");
+                                ImGui::Text("FOV Y: %.2f deg", DirectX::XMConvertToDegrees(camera->fovY));
+                                ImGui::Text("Near/Far: %.3f / %.2f", camera->nearClip, camera->farClip);
+                            }
 
-                            ImGui::TextUnformatted("MeshRenderer Details");
-                            ImGui::Text("Visible: %s", meshRenderer->visible ? "true" : "false");
-                            ImGui::Text("Material Index: %d", meshRenderer->materialIndex);
-                            ImGui::Text("Primitive: %s", getPrimitiveLabel(meshRenderer->primitive));
-                        }
-
-                        if (const PlayerControllerComponent* playerController = runtimeWorld.GetPlayerController(selectedRuntimeEntityId))
-                        {
-                            ImGui::TextUnformatted("PlayerController Details");
-                            ImGui::Text("Move Speed: %.2f", playerController->moveSpeed);
-                            ImGui::Text("Look Sensitivity: %.4f", playerController->lookSensitivity);
-                            ImGui::Text("Camera Height: %.2f", playerController->cameraHeight);
-                        }
-
-                        if (const TriggerVolumeComponent* triggerVolume = runtimeWorld.GetTriggerVolume(selectedRuntimeEntityId))
-                        {
-                            ImGui::TextUnformatted("TriggerVolume Details");
-                            ImGui::Text("Enabled: %s", triggerVolume->enabled ? "true" : "false");
-                            ImGui::Text("Half Extents: (%.2f, %.2f, %.2f)", triggerVolume->halfExtents.x, triggerVolume->halfExtents.y, triggerVolume->halfExtents.z);
-                        }
-
-                        if (const VaultNodeComponent* vaultNode = runtimeWorld.GetVaultNode(selectedRuntimeEntityId))
-                        {
-                            auto getVaultNodeTypeLabel = [](VaultNodeComponent::Type type)
+                            if (const RuntimeMeshRendererComponent* meshRenderer = runtimeWorld.GetMeshRenderer(selectedRuntimeEntityId))
                             {
-                                switch (type)
+                                auto getPrimitiveLabel = [](ScenePrimitive primitive)
                                 {
-                                case VaultNodeComponent::Type::SlowStabilize: return "SlowStabilize";
-                                case VaultNodeComponent::Type::Fragile: return "Fragile";
-                                case VaultNodeComponent::Type::Normal:
-                                default: return "Normal";
-                                }
-                            };
-                            auto getVaultNodeStateLabel = [](VaultNodeComponent::State state)
+                                    switch (primitive)
+                                    {
+                                    case ScenePrimitive::Cube: return "Cube";
+                                    case ScenePrimitive::Sphere: return "Sphere";
+                                    case ScenePrimitive::Plane: return "Plane";
+                                    case ScenePrimitive::Cylinder: return "Cylinder";
+                                    case ScenePrimitive::Empty: return "Empty";
+                                    case ScenePrimitive::Capsule: return "Capsule";
+                                    case ScenePrimitive::Torus: return "Torus";
+                                    case ScenePrimitive::Cone: return "Cone";
+                                    default: return "Unknown";
+                                    }
+                                };
+
+                                ImGui::TextUnformatted("MeshRenderer Details");
+                                ImGui::Text("Visible: %s", meshRenderer->visible ? "true" : "false");
+                                ImGui::Text("Material Index: %d", meshRenderer->materialIndex);
+                                ImGui::Text("Primitive: %s", getPrimitiveLabel(meshRenderer->primitive));
+                            }
+
+                            if (!runtimeWorld.GetCamera(selectedRuntimeEntityId) && !runtimeWorld.GetMeshRenderer(selectedRuntimeEntityId))
+                                ImGui::TextDisabled("No rendering components on selected runtime entity.");
+                        }
+
+                        if (ImGui::CollapsingHeader("Gameplay Components", ImGuiTreeNodeFlags_DefaultOpen))
+                        {
+                            if (const PlayerControllerComponent* playerController = runtimeWorld.GetPlayerController(selectedRuntimeEntityId))
                             {
-                                switch (state)
+                                ImGui::TextUnformatted("PlayerController Details");
+                                ImGui::Text("Move Speed: %.2f", playerController->moveSpeed);
+                                ImGui::Text("Look Sensitivity: %.4f", playerController->lookSensitivity);
+                                ImGui::Text("Camera Height: %.2f", playerController->cameraHeight);
+                            }
+
+                            if (const TriggerVolumeComponent* triggerVolume = runtimeWorld.GetTriggerVolume(selectedRuntimeEntityId))
+                            {
+                                ImGui::TextUnformatted("TriggerVolume Details");
+                                ImGui::Text("Enabled: %s", triggerVolume->enabled ? "true" : "false");
+                                ImGui::Text("Half Extents: (%.2f, %.2f, %.2f)", triggerVolume->halfExtents.x, triggerVolume->halfExtents.y, triggerVolume->halfExtents.z);
+                            }
+
+                            if (!runtimeWorld.GetPlayerController(selectedRuntimeEntityId) && !runtimeWorld.GetTriggerVolume(selectedRuntimeEntityId))
+                                ImGui::TextDisabled("No generic gameplay components on selected runtime entity.");
+                        }
+
+                        if (ImGui::CollapsingHeader("Vault Components", ImGuiTreeNodeFlags_DefaultOpen))
+                        {
+                            if (const VaultNodeComponent* vaultNode = runtimeWorld.GetVaultNode(selectedRuntimeEntityId))
+                            {
+                                auto getVaultNodeTypeLabel = [](VaultNodeComponent::Type type)
                                 {
-                                case VaultNodeComponent::State::Stabilizing: return "Stabilizing";
-                                case VaultNodeComponent::State::Active: return "Active";
-                                case VaultNodeComponent::State::Decaying: return "Decaying";
-                                case VaultNodeComponent::State::Inactive:
-                                default: return "Inactive";
-                                }
-                            };
+                                    switch (type)
+                                    {
+                                    case VaultNodeComponent::Type::SlowStabilize: return "SlowStabilize";
+                                    case VaultNodeComponent::Type::Fragile: return "Fragile";
+                                    case VaultNodeComponent::Type::Normal:
+                                    default: return "Normal";
+                                    }
+                                };
+                                auto getVaultNodeStateLabel = [](VaultNodeComponent::State state)
+                                {
+                                    switch (state)
+                                    {
+                                    case VaultNodeComponent::State::Stabilizing: return "Stabilizing";
+                                    case VaultNodeComponent::State::Active: return "Active";
+                                    case VaultNodeComponent::State::Decaying: return "Decaying";
+                                    case VaultNodeComponent::State::Inactive:
+                                    default: return "Inactive";
+                                    }
+                                };
 
-                            ImGui::TextUnformatted("VaultNode Details");
-                            ImGui::Text("Type: %s", getVaultNodeTypeLabel(vaultNode->type));
-                            ImGui::Text("State: %s", getVaultNodeStateLabel(vaultNode->state));
-                            ImGui::Text("Decay: %.2f / %.2f", vaultNode->decayTimer, vaultNode->decayDuration);
-                            ImGui::Text("Stabilize: %.2f / %.2f", vaultNode->stabilizeProgress, vaultNode->stabilizeDuration);
-                            ImGui::Text("Warning Played: %s", vaultNode->warningPlayed ? "true" : "false");
-                        }
+                                ImGui::TextUnformatted("VaultNode Details");
+                                ImGui::Text("Type: %s", getVaultNodeTypeLabel(vaultNode->type));
+                                ImGui::Text("State: %s", getVaultNodeStateLabel(vaultNode->state));
+                                ImGui::Text("Decay: %.2f / %.2f", vaultNode->decayTimer, vaultNode->decayDuration);
+                                ImGui::Text("Stabilize: %.2f / %.2f", vaultNode->stabilizeProgress, vaultNode->stabilizeDuration);
+                                ImGui::Text("Warning Played: %s", vaultNode->warningPlayed ? "true" : "false");
+                            }
 
-                        if (const VaultCoreComponent* vaultCore = runtimeWorld.GetVaultCore(selectedRuntimeEntityId))
-                        {
-                            ImGui::TextUnformatted("VaultCore Details");
-                            ImGui::Text("Unlocked: %s", vaultCore->unlocked ? "true" : "false");
-                            ImGui::Text("Stabilized: %s", vaultCore->stabilized ? "true" : "false");
-                        }
+                            if (const VaultCoreComponent* vaultCore = runtimeWorld.GetVaultCore(selectedRuntimeEntityId))
+                            {
+                                ImGui::TextUnformatted("VaultCore Details");
+                                ImGui::Text("Unlocked: %s", vaultCore->unlocked ? "true" : "false");
+                                ImGui::Text("Stabilized: %s", vaultCore->stabilized ? "true" : "false");
+                            }
 
-                        if (const VaultExitComponent* vaultExit = runtimeWorld.GetVaultExit(selectedRuntimeEntityId))
-                        {
-                            ImGui::TextUnformatted("VaultExit Details");
-                            ImGui::Text("Unlocked: %s", vaultExit->unlocked ? "true" : "false");
-                            ImGui::Text("Opened: %s", vaultExit->opened ? "true" : "false");
-                            ImGui::Text("Open Offset Y: %.2f", vaultExit->openOffsetY);
-                        }
+                            if (const VaultExitComponent* vaultExit = runtimeWorld.GetVaultExit(selectedRuntimeEntityId))
+                            {
+                                ImGui::TextUnformatted("VaultExit Details");
+                                ImGui::Text("Unlocked: %s", vaultExit->unlocked ? "true" : "false");
+                                ImGui::Text("Opened: %s", vaultExit->opened ? "true" : "false");
+                                ImGui::Text("Open Offset Y: %.2f", vaultExit->openOffsetY);
+                            }
 
-                        if (const VaultRingComponent* vaultRing = runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
-                        {
-                            ImGui::TextUnformatted("VaultRing Details");
-                            ImGui::Text("Active: %s", vaultRing->active ? "true" : "false");
-                            ImGui::Text("Completed: %s", vaultRing->completed ? "true" : "false");
+                            if (const VaultRingComponent* vaultRing = runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
+                            {
+                                ImGui::TextUnformatted("VaultRing Details");
+                                ImGui::Text("Active: %s", vaultRing->active ? "true" : "false");
+                                ImGui::Text("Completed: %s", vaultRing->completed ? "true" : "false");
+                            }
+
+                            if (!runtimeWorld.GetVaultNode(selectedRuntimeEntityId) &&
+                                !runtimeWorld.GetVaultCore(selectedRuntimeEntityId) &&
+                                !runtimeWorld.GetVaultExit(selectedRuntimeEntityId) &&
+                                !runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
+                            {
+                                ImGui::TextDisabled("No vault components on selected runtime entity.");
+                            }
                         }
                     }
                     else
