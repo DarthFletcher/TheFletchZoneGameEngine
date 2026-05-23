@@ -1951,7 +1951,7 @@ namespace EditorPanels
                                 const ImVec2 scannerMax(scannerMin.x + scannerWidth, scannerMin.y + scannerHeight);
                                 const ImVec2 scannerCenter(scannerMin.x + scannerWidth * 0.5f, scannerMin.y + 76.0f);
                                 const float relativeAngle = game.GetVaultScannerDirectionAngleRadians();
-                                const float arrowAngle = relativeAngle - DirectX::XM_PIDIV2;
+                                const float arrowAngle = relativeAngle;
                                 const float cosA = std::cos(arrowAngle);
                                 const float sinA = std::sin(arrowAngle);
                                 const float strength = game.GetVaultScannerStrength();
