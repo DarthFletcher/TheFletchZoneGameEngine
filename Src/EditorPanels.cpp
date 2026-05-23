@@ -2278,6 +2278,45 @@ namespace EditorPanels
                         ImGui::Text("Vault Exits:     %llu", static_cast<unsigned long long>(runtimeStats.vaultExits));
                         ImGui::Text("Main Camera Entity: %u", mainCameraEntity);
                         ImGui::Text("Player Entity:      %u", playerEntity);
+
+                        auto getCurrentSceneFilenameLower = []()
+                        {
+                            std::filesystem::path currentScenePath(UI::GetCurrentSceneAssetPath());
+                            std::string filename = currentScenePath.filename().string();
+                            std::transform(filename.begin(), filename.end(), filename.begin(), [](unsigned char c)
+                            {
+                                return static_cast<char>(std::tolower(c));
+                            });
+                            return filename;
+                        };
+
+                        const std::string currentSceneFilename = getCurrentSceneFilenameLower();
+                        const bool isVaultScene = currentSceneFilename == "main.scene" ||
+                            currentSceneFilename == "vault_intro.scene" ||
+                            currentSceneFilename == "vault_traversal.scene" ||
+                            currentSceneFilename == "vault_priority.scene";
+                        if ((engineState == Engine::State::Playing || engineState == Engine::State::Paused) && isVaultScene)
+                        {
+                            bool hasWarning = false;
+                            auto warnMissing = [&](bool missing, const char* message)
+                            {
+                                if (!missing)
+                                    return;
+                                hasWarning = true;
+                                ImGui::TextColored(ImVec4(1.0f, 0.42f, 0.24f, 1.0f), "%s", message);
+                            };
+
+                            ImGui::Separator();
+                            ImGui::TextUnformatted("Vault Runtime Validation");
+                            warnMissing(playerEntity == kInvalidRuntimeEntityId, "Missing PlayerController runtime entity.");
+                            warnMissing(mainCameraEntity == kInvalidRuntimeEntityId, "Missing main camera runtime entity.");
+                            warnMissing(runtimeStats.vaultNodes == 0, "Missing VaultNode runtime components.");
+                            warnMissing(runtimeStats.vaultCores == 0, "Missing VaultCore runtime component.");
+                            warnMissing(runtimeStats.vaultRings == 0, "Missing VaultRing runtime components.");
+                            warnMissing(runtimeStats.vaultExits == 0, "Missing VaultExit runtime component.");
+                            if (!hasWarning)
+                                ImGui::TextColored(ImVec4(0.42f, 0.86f, 0.48f, 1.0f), "Vault runtime components look valid.");
+                        }
                     }
 
                     const uint32_t selectedSceneInstanceId = Scene::GetSelectedInstanceId();
