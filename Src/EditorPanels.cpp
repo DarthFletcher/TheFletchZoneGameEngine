@@ -2309,6 +2309,39 @@ namespace EditorPanels
                         if (runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
                             ImGui::TextUnformatted("Additional Component: VaultRing");
 
+                        if (const RuntimeCameraComponent* camera = runtimeWorld.GetCamera(selectedRuntimeEntityId))
+                        {
+                            ImGui::TextUnformatted("Camera Details");
+                            ImGui::Text("Enabled: %s", camera->enabled ? "true" : "false");
+                            ImGui::Text("Main Camera: %s", camera->isMain ? "true" : "false");
+                            ImGui::Text("FOV Y: %.2f deg", DirectX::XMConvertToDegrees(camera->fovY));
+                            ImGui::Text("Near/Far: %.3f / %.2f", camera->nearClip, camera->farClip);
+                        }
+
+                        if (const RuntimeMeshRendererComponent* meshRenderer = runtimeWorld.GetMeshRenderer(selectedRuntimeEntityId))
+                        {
+                            auto getPrimitiveLabel = [](ScenePrimitive primitive)
+                            {
+                                switch (primitive)
+                                {
+                                case ScenePrimitive::Cube: return "Cube";
+                                case ScenePrimitive::Sphere: return "Sphere";
+                                case ScenePrimitive::Plane: return "Plane";
+                                case ScenePrimitive::Cylinder: return "Cylinder";
+                                case ScenePrimitive::Empty: return "Empty";
+                                case ScenePrimitive::Capsule: return "Capsule";
+                                case ScenePrimitive::Torus: return "Torus";
+                                case ScenePrimitive::Cone: return "Cone";
+                                default: return "Unknown";
+                                }
+                            };
+
+                            ImGui::TextUnformatted("MeshRenderer Details");
+                            ImGui::Text("Visible: %s", meshRenderer->visible ? "true" : "false");
+                            ImGui::Text("Material Index: %d", meshRenderer->materialIndex);
+                            ImGui::Text("Primitive: %s", getPrimitiveLabel(meshRenderer->primitive));
+                        }
+
                         if (const PlayerControllerComponent* playerController = runtimeWorld.GetPlayerController(selectedRuntimeEntityId))
                         {
                             ImGui::TextUnformatted("PlayerController Details");
