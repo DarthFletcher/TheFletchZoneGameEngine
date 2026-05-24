@@ -1444,6 +1444,7 @@ namespace UI {
     static void DrawStartupProjectBrowser()
     {
         LoadRecentProjects();
+        static ImVec2 s_LastProjectBrowserWorkSize{ 0.0f, 0.0f };
 
         if (!g_ShowProjectBrowser)
             return;
@@ -1458,12 +1459,15 @@ namespace UI {
         {
             ImGui::OpenPopup("Welcome to TheFletchZone Engine##ProjectBrowser");
             g_RequestOpenProjectBrowserPopup = false;
+            s_LastProjectBrowserWorkSize = {};
         }
 
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         if (viewport)
         {
             const ImVec2 workSize = viewport->WorkSize;
+            const bool viewportSizeChanged = workSize.x != s_LastProjectBrowserWorkSize.x ||
+                workSize.y != s_LastProjectBrowserWorkSize.y;
             const ImVec2 browserSize(
                 (std::min)(1040.0f, (std::max)(560.0f, workSize.x - 64.0f)),
                 (std::min)(720.0f, (std::max)(420.0f, workSize.y - 64.0f)));
@@ -1471,8 +1475,9 @@ namespace UI {
                 viewport->WorkPos.x + workSize.x * 0.5f,
                 viewport->WorkPos.y + workSize.y * 0.5f);
 
-            ImGui::SetNextWindowPos(browserCenter, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-            ImGui::SetNextWindowSize(browserSize, ImGuiCond_Always);
+            ImGui::SetNextWindowPos(browserCenter, viewportSizeChanged ? ImGuiCond_Always : ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(browserSize, ImGuiCond_Appearing);
+            s_LastProjectBrowserWorkSize = workSize;
         }
 
         if (!ImGui::BeginPopupModal("Welcome to TheFletchZone Engine##ProjectBrowser", nullptr,
