@@ -210,7 +210,6 @@
     <ClInclude Include="Include\RuntimeWorld.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-
     <ClInclude Include="Include\VaultCampaign.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -363,7 +362,6 @@
     <ClCompile Include="Src\RuntimeWorld.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-
     <ClCompile Include="Src\VaultCampaign.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -458,6 +456,7 @@
     <None Include="shaders\skybox_ps.hlsl" />
     <None Include="shaders\skybox_vs.hlsl" />
     <None Include="shaders\skybox_cube_ps.hlsl" />
+    <None Include="docs\RuntimeWorld.md" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />

@@ -290,6 +290,7 @@
     <None Include="docs\Phase3F_RenderGraphNotes.md" />
     <None Include="docs\RenderingStatus.md" />
     <None Include="docs\Roadmap.md" />
+    <None Include="docs\RuntimeWorld.md" />
     <None Include="Docs\ShaderCompilationComplete.md" />
     <None Include="Docs\ShaderCompilationQuickRef.md" />
     <None Include="ENGINE_CONTRACT.md" />
