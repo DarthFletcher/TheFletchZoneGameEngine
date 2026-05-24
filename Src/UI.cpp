@@ -1463,8 +1463,16 @@ namespace UI {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
         if (viewport)
         {
-            ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-            ImGui::SetNextWindowSize(ImVec2(1040.0f, 720.0f), ImGuiCond_Appearing);
+            const ImVec2 workSize = viewport->WorkSize;
+            const ImVec2 browserSize(
+                (std::min)(1040.0f, (std::max)(560.0f, workSize.x - 64.0f)),
+                (std::min)(720.0f, (std::max)(420.0f, workSize.y - 64.0f)));
+            const ImVec2 browserCenter(
+                viewport->WorkPos.x + workSize.x * 0.5f,
+                viewport->WorkPos.y + workSize.y * 0.5f);
+
+            ImGui::SetNextWindowPos(browserCenter, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(browserSize, ImGuiCond_Always);
         }
 
         if (!ImGui::BeginPopupModal("Welcome to TheFletchZone Engine##ProjectBrowser", nullptr,
