@@ -222,9 +222,14 @@ void Graphics::HandleResize(HWND hWnd)
 
 void Graphics::ProcessPendingFontReload()
 {
-    // Contract restoration: this symbol is referenced by BeginFrame().
-    // Font reload behavior remains owned by Graphics.cpp; if the implementation was moved,
-    // keep this as a no-op until consolidated.
+    if (!pendingFontReload || pendingFontPixelSize <= 0.0f || !hasPresentedOnce)
+        return;
+
+    const float requestedSize = pendingFontPixelSize;
+    pendingFontReload = false;
+    pendingFontPixelSize = 0.0f;
+
+    ReloadImGuiFontImpl(requestedSize, "ProcessPendingFontReload", 0);
 }
 
 // NOTE: Some builds may compile `Graphics.cpp` variants where resize implementations are excluded.
