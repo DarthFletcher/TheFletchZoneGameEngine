@@ -286,6 +286,7 @@
     <None Include="docs\CHANGELOG_0.3.0.md" />
     <None Include="docs\CurrentArchitecture.md" />
     <None Include="docs\EditorWorkflow.md" />
+    <None Include="docs\EngineOverview.md" />
     <None Include="docs\Phase10_PlayModeValidation.md" />
     <None Include="docs\Phase3F_RenderGraphNotes.md" />
     <None Include="docs\RenderingStatus.md" />
@@ -293,6 +294,7 @@
     <None Include="docs\RuntimeWorld.md" />
     <None Include="Docs\ShaderCompilationComplete.md" />
     <None Include="Docs\ShaderCompilationQuickRef.md" />
+    <None Include="docs\SinivaultGameplay.md" />
     <None Include="ENGINE_CONTRACT.md" />
     <None Include="include\macros.hints" />
     <None Include="Local\Captures\.gitkeep" />

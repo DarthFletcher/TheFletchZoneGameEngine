@@ -457,6 +457,8 @@
     <None Include="shaders\skybox_vs.hlsl" />
     <None Include="shaders\skybox_cube_ps.hlsl" />
     <None Include="docs\RuntimeWorld.md" />
+    <None Include="docs\EngineOverview.md" />
+    <None Include="docs\SinivaultGameplay.md" />
   </ItemGroup>
   <ItemGroup>
     <Text Include="TheFletchZoneGameEngine.exe.manifest" />
