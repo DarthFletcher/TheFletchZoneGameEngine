@@ -2790,10 +2790,7 @@ void Graphics::ReloadImGuiFontImpl(float dpiScale, const char* callerFile, int c
 
     if (commandListOpen || frameStarted || ImGuiFrameStarted)
     {
-        pendingFontReload = true;
-        pendingFontPixelSize = dpiScale;
-        Logger::Log(LogLevel::Info,
-            std::format("[FontDiag] ReloadImGuiFont deferred — requested mid-frame (sizePx={:.1f})", dpiScale));
+        Logger::Log(LogLevel::Error, "❌ ReloadImGuiFont() called mid-frame. Ignoring.");
         return;
     }
 

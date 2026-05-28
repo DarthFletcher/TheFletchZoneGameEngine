@@ -222,14 +222,8 @@ void Graphics::HandleResize(HWND hWnd)
 
 void Graphics::ProcessPendingFontReload()
 {
-    if (!pendingFontReload || pendingFontPixelSize <= 0.0f || !hasPresentedOnce)
-        return;
-
-    const float requestedSize = pendingFontPixelSize;
-    pendingFontReload = false;
-    pendingFontPixelSize = 0.0f;
-
-    ReloadImGuiFontImpl(requestedSize, "ProcessPendingFontReload", 0);
+    // Contract restoration: this symbol is referenced by BeginFrame().
+    // Font atlas rebuilds are not processed from UI menu interactions; the editor font-size menu uses ImGui scaling instead.
 }
 
 // NOTE: Some builds may compile `Graphics.cpp` variants where resize implementations are excluded.
