@@ -110,14 +110,15 @@ namespace
         {
             const RuntimeWorldStats stats = runtimeWorld.GetStats();
             Logger::Log(LogLevel::Info,
-                std::format("RuntimeWorld refreshed after {}: {} entities, players={}, vaultNodes={}, vaultCores={}, vaultRings={}, vaultExits={}.",
+                std::format("RuntimeWorld refreshed after {}: {} entities, players={}, vaultNodes={}, vaultCores={}, vaultRings={}, vaultExits={}, vaultLords={}.",
                     reason,
                     stats.entities,
                     stats.playerControllers,
                     stats.vaultNodes,
                     stats.vaultCores,
                     stats.vaultRings,
-                    stats.vaultExits),
+                    stats.vaultExits,
+                    stats.vaultLords),
                 "[Game]");
         }
         else

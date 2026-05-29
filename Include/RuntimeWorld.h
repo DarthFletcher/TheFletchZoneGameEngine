@@ -30,6 +30,7 @@ struct RuntimeWorldStats
     size_t vaultCores = 0;
     size_t vaultRings = 0;
     size_t vaultExits = 0;
+    size_t vaultLords = 0;
 };
 
 class RuntimeWorld
@@ -67,6 +68,7 @@ public:
     VaultCoreComponent& AddVaultCore(RuntimeEntityId entityId, const VaultCoreComponent& component = {});
     VaultRingComponent& AddVaultRing(RuntimeEntityId entityId, const VaultRingComponent& component = {});
     VaultExitComponent& AddVaultExit(RuntimeEntityId entityId, const VaultExitComponent& component = {});
+    VaultLordComponent& AddVaultLord(RuntimeEntityId entityId, const VaultLordComponent& component = {});
 
     RuntimeTransformComponent* GetTransform(RuntimeEntityId entityId);
     const RuntimeTransformComponent* GetTransform(RuntimeEntityId entityId) const;
@@ -86,6 +88,8 @@ public:
     const VaultRingComponent* GetVaultRing(RuntimeEntityId entityId) const;
     VaultExitComponent* GetVaultExit(RuntimeEntityId entityId);
     const VaultExitComponent* GetVaultExit(RuntimeEntityId entityId) const;
+    VaultLordComponent* GetVaultLord(RuntimeEntityId entityId);
+    const VaultLordComponent* GetVaultLord(RuntimeEntityId entityId) const;
 
     const std::unordered_map<RuntimeEntityId, RuntimeTransformComponent>& GetTransforms() const;
     const std::unordered_map<RuntimeEntityId, RuntimeCameraComponent>& GetCameras() const;
@@ -96,6 +100,7 @@ public:
     const std::unordered_map<RuntimeEntityId, VaultCoreComponent>& GetVaultCores() const;
     const std::unordered_map<RuntimeEntityId, VaultRingComponent>& GetVaultRings() const;
     const std::unordered_map<RuntimeEntityId, VaultExitComponent>& GetVaultExits() const;
+    const std::unordered_map<RuntimeEntityId, VaultLordComponent>& GetVaultLords() const;
 
 private:
     RuntimeEntityId AllocateEntityId();
@@ -116,4 +121,5 @@ private:
     std::unordered_map<RuntimeEntityId, VaultCoreComponent> vaultCores;
     std::unordered_map<RuntimeEntityId, VaultRingComponent> vaultRings;
     std::unordered_map<RuntimeEntityId, VaultExitComponent> vaultExits;
+    std::unordered_map<RuntimeEntityId, VaultLordComponent> vaultLords;
 };

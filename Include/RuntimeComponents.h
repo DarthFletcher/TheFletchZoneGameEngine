@@ -92,3 +92,12 @@ struct VaultExitComponent
     bool opened = false;
     float openOffsetY = 3.5f;
 };
+
+struct VaultLordComponent
+{
+    bool enabled = true;
+    bool discovered = false;
+    bool active = false;
+    float threatLevel = 0.0f;
+    float influenceRadius = 25.0f;
+};

@@ -21,6 +21,7 @@ void RuntimeWorld::Clear()
     vaultCores.clear();
     vaultRings.clear();
     vaultExits.clear();
+    vaultLords.clear();
 }
 
 bool RuntimeWorld::CloneFromScene()
@@ -157,6 +158,7 @@ RuntimeWorldStats RuntimeWorld::GetStats() const
     stats.vaultCores = vaultCores.size();
     stats.vaultRings = vaultRings.size();
     stats.vaultExits = vaultExits.size();
+    stats.vaultLords = vaultLords.size();
     return stats;
 }
 
@@ -284,6 +286,11 @@ VaultExitComponent& RuntimeWorld::AddVaultExit(RuntimeEntityId entityId, const V
     return vaultExits[entityId] = component;
 }
 
+VaultLordComponent& RuntimeWorld::AddVaultLord(RuntimeEntityId entityId, const VaultLordComponent& component)
+{
+    return vaultLords[entityId] = component;
+}
+
 RuntimeTransformComponent* RuntimeWorld::GetTransform(RuntimeEntityId entityId)
 {
     const auto it = transforms.find(entityId);
@@ -392,6 +399,18 @@ const VaultExitComponent* RuntimeWorld::GetVaultExit(RuntimeEntityId entityId) c
     return it != vaultExits.end() ? &it->second : nullptr;
 }
 
+VaultLordComponent* RuntimeWorld::GetVaultLord(RuntimeEntityId entityId)
+{
+    const auto it = vaultLords.find(entityId);
+    return it != vaultLords.end() ? &it->second : nullptr;
+}
+
+const VaultLordComponent* RuntimeWorld::GetVaultLord(RuntimeEntityId entityId) const
+{
+    const auto it = vaultLords.find(entityId);
+    return it != vaultLords.end() ? &it->second : nullptr;
+}
+
 const std::unordered_map<RuntimeEntityId, RuntimeTransformComponent>& RuntimeWorld::GetTransforms() const
 {
     return transforms;
@@ -437,6 +456,11 @@ const std::unordered_map<RuntimeEntityId, VaultExitComponent>& RuntimeWorld::Get
     return vaultExits;
 }
 
+const std::unordered_map<RuntimeEntityId, VaultLordComponent>& RuntimeWorld::GetVaultLords() const
+{
+    return vaultLords;
+}
+
 RuntimeEntityId RuntimeWorld::AllocateEntityId()
 {
     return nextEntityId++;
@@ -453,6 +477,7 @@ void RuntimeWorld::RemoveComponents(RuntimeEntityId entityId)
     vaultCores.erase(entityId);
     vaultRings.erase(entityId);
     vaultExits.erase(entityId);
+    vaultLords.erase(entityId);
 }
 
 void RuntimeWorld::AddGameplayComponentsFromSceneInstance(RuntimeEntityId entityId, const SceneInstance& sceneInstance, bool& coreAssigned)
@@ -468,6 +493,13 @@ void RuntimeWorld::AddGameplayComponentsFromSceneInstance(RuntimeEntityId entity
 
     const std::string loweredName = toLower(sceneInstance.name);
     const std::string loweredPrefabPath = toLower(sceneInstance.prefabSourcePath);
+
+    if (loweredName.find("vaultlord") != std::string::npos ||
+        loweredPrefabPath.find("vaultlord") != std::string::npos)
+    {
+        AddVaultLord(entityId);
+        return;
+    }
 
     if (!sceneInstance.camera.enabled &&
         (loweredName == "vaultrunner" || loweredName == "player"))

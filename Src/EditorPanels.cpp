@@ -2276,6 +2276,7 @@ namespace EditorPanels
                         ImGui::Text("Vault Cores:     %llu", static_cast<unsigned long long>(runtimeStats.vaultCores));
                         ImGui::Text("Vault Rings:     %llu", static_cast<unsigned long long>(runtimeStats.vaultRings));
                         ImGui::Text("Vault Exits:     %llu", static_cast<unsigned long long>(runtimeStats.vaultExits));
+                        ImGui::Text("Vault Lords:     %llu", static_cast<unsigned long long>(runtimeStats.vaultLords));
                         ImGui::Text("Main Camera Entity: %u", mainCameraEntity);
                         ImGui::Text("Player Entity:      %u", playerEntity);
 
@@ -2342,6 +2343,8 @@ namespace EditorPanels
 
                             if (runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
                                 ImGui::TextUnformatted("Additional Component: VaultRing");
+                            if (runtimeWorld.GetVaultLord(selectedRuntimeEntityId))
+                                ImGui::TextUnformatted("Additional Component: VaultLord");
                         }
 
                         const RuntimeTransformComponent* transform = runtimeWorld.GetTransform(selectedRuntimeEntityId);
@@ -2468,10 +2471,21 @@ namespace EditorPanels
                                 ImGui::Text("Completed: %s", vaultRing->completed ? "true" : "false");
                             }
 
+                            if (const VaultLordComponent* vaultLord = runtimeWorld.GetVaultLord(selectedRuntimeEntityId))
+                            {
+                                ImGui::TextUnformatted("VaultLord Details");
+                                ImGui::Text("Enabled: %s", vaultLord->enabled ? "true" : "false");
+                                ImGui::Text("Discovered: %s", vaultLord->discovered ? "true" : "false");
+                                ImGui::Text("Active: %s", vaultLord->active ? "true" : "false");
+                                ImGui::Text("Threat Level: %.2f", vaultLord->threatLevel);
+                                ImGui::Text("Influence Radius: %.2f", vaultLord->influenceRadius);
+                            }
+
                             if (!runtimeWorld.GetVaultNode(selectedRuntimeEntityId) &&
                                 !runtimeWorld.GetVaultCore(selectedRuntimeEntityId) &&
                                 !runtimeWorld.GetVaultExit(selectedRuntimeEntityId) &&
-                                !runtimeWorld.GetVaultRing(selectedRuntimeEntityId))
+                                !runtimeWorld.GetVaultRing(selectedRuntimeEntityId) &&
+                                !runtimeWorld.GetVaultLord(selectedRuntimeEntityId))
                             {
                                 ImGui::TextDisabled("No vault components on selected runtime entity.");
                             }
