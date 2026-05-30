@@ -456,6 +456,11 @@ const std::unordered_map<RuntimeEntityId, VaultExitComponent>& RuntimeWorld::Get
     return vaultExits;
 }
 
+std::unordered_map<RuntimeEntityId, VaultLordComponent>& RuntimeWorld::GetVaultLords()
+{
+    return vaultLords;
+}
+
 const std::unordered_map<RuntimeEntityId, VaultLordComponent>& RuntimeWorld::GetVaultLords() const
 {
     return vaultLords;

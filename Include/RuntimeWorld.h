@@ -100,6 +100,7 @@ public:
     const std::unordered_map<RuntimeEntityId, VaultCoreComponent>& GetVaultCores() const;
     const std::unordered_map<RuntimeEntityId, VaultRingComponent>& GetVaultRings() const;
     const std::unordered_map<RuntimeEntityId, VaultExitComponent>& GetVaultExits() const;
+    std::unordered_map<RuntimeEntityId, VaultLordComponent>& GetVaultLords();
     const std::unordered_map<RuntimeEntityId, VaultLordComponent>& GetVaultLords() const;
 
 private:

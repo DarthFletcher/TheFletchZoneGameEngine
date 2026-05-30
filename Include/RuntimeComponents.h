@@ -100,4 +100,5 @@ struct VaultLordComponent
     bool active = false;
     float threatLevel = 0.0f;
     float influenceRadius = 25.0f;
+    float distanceToPlayer = 0.0f;
 };

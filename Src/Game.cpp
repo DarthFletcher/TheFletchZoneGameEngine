@@ -8,6 +8,7 @@
 #include "UI.h"
 #include "VaultCampaign.h"
 #include "VaultDiscovery.h"
+#include "VaultLordSystem.h"
 #include "VaultMissionSystem.h"
 #include "VaultNodeSystem.h"
 #include "VaultObjectSystem.h"
@@ -1342,6 +1343,8 @@ void Game::Update(float deltaTime) {
     }
 
     const DirectX::XMFLOAT3 playerGameplayPosition = playerRuntimeTransform ? playerRuntimeTransform->position : playerInstance->position;
+    if (runtimeWorld)
+        (void)VaultLordSystem::UpdatePresence(*runtimeWorld, playerGameplayPosition);
     UpdateVaultNodeVarietyState(playerGameplayPosition, deltaTime);
     UpdateVaultVisualState(0.0f);
 

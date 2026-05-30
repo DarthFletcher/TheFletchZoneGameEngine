@@ -231,6 +231,9 @@
     <ClInclude Include="Include\VaultRuntime.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Include\VaultLordSystem.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Dependencies\imgui-docking\imgui_demo.cpp">
@@ -381,6 +384,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Src\VaultRuntime.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Src\VaultLordSystem.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
