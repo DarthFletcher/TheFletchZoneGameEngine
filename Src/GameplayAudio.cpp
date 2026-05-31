@@ -18,7 +18,7 @@ namespace
         float currentTension = 0.0f;
         float masterVolume = 0.60f;
         GameplayAudioMood mood = GameplayAudioMood::Calm;
-        std::array<Clock::time_point, 11> lastPlayTimes{};
+        std::array<Clock::time_point, static_cast<size_t>(GameplayAudioEvent::Count)> lastPlayTimes{};
     };
 
     struct AudioMoodProfile
@@ -70,6 +70,8 @@ namespace
         case GameplayAudioEvent::EscapeTriggered: return 1.10f;
         case GameplayAudioEvent::FailureTriggered: return 1.15f;
         case GameplayAudioEvent::CampaignCompleted: return 1.22f;
+        case GameplayAudioEvent::VaultLordDetected: return 0.82f;
+        case GameplayAudioEvent::VaultLordThreatPulse: return 0.46f;
         default: return 1.00f;
         }
     }
@@ -141,6 +143,13 @@ void GA_Play(GameplayAudioEvent eventType)
     case GameplayAudioEvent::CampaignCompleted:
         BlackFlameAudio::Get().Play(BlackFlameSoundEvent::HighConfidence, BlackFlameSoundStyle::Clean, 0.78f * volume);
         BlackFlameAudio::Get().Play(BlackFlameSoundEvent::Ready, BlackFlameSoundStyle::Arcane, 0.56f * volume);
+        break;
+    case GameplayAudioEvent::VaultLordDetected:
+        BlackFlameAudio::Get().Play(BlackFlameSoundEvent::SuggestionAppear, BlackFlameSoundStyle::Glitch, 0.52f * volume);
+        BlackFlameAudio::Get().Play(BlackFlameSoundEvent::Denied, BlackFlameSoundStyle::Arcane, 0.24f * volume);
+        break;
+    case GameplayAudioEvent::VaultLordThreatPulse:
+        BlackFlameAudio::Get().Play(BlackFlameSoundEvent::SuggestionAppear, BlackFlameSoundStyle::Glitch, 0.24f * volume);
         break;
     default:
         break;

@@ -73,6 +73,14 @@ namespace
         Graphics::DirectionalLight originalLight{};
     };
 
+    struct VaultLordAudioPresenceState
+    {
+        bool threatActive = false;
+        bool detectedPlayed = false;
+        float strongestThreat = 0.0f;
+        float pulseTimer = 0.0f;
+    };
+
 	// Note: these static variables are not thread safe, but that's fine since the game is single-threaded for now. If we ever need to support multiple threads, we can refactor these into a proper GameState class and add synchronization as needed.
     static PlayerController g_PlayerController{};
     static uint32_t g_InteractionTargetId = 0;
@@ -82,6 +90,7 @@ namespace
     static VaultScannerState g_VaultScanner{};
     static VaultContextHintState g_VaultContextHint{};
     static VaultMoodRuntimeState g_VaultMoodRuntime{};
+    static VaultLordAudioPresenceState g_VaultLordAudioPresence{};
     static bool g_RuntimeWasPlaying = false;
     static bool g_PlayerFrozen = false;
     static std::string g_RuntimeLevelStartSnapshot;
@@ -398,6 +407,41 @@ namespace
         setMoodMaterial(g_VaultState.ringInactiveMaterial, { 0.32f, 0.24f, 0.18f }, 0.18f, 0.02f);
         setMoodMaterial(g_VaultState.ringActiveMaterial, { 1.00f, 0.48f, 0.12f }, 0.22f, 0.28f);
         setMoodMaterial(g_VaultState.ringCompletedMaterial, { 0.38f, 0.94f, 1.00f }, 0.20f, 0.36f);
+    }
+
+    static void UpdateVaultLordAudioPresence(const VaultLordSystem::PresenceUpdateResult& presenceResult, float deltaTime)
+    {
+        const bool hasThreat = presenceResult.strongestThreatLevel > 0.0f &&
+            presenceResult.strongestThreatEntity != kInvalidRuntimeEntityId;
+
+        g_VaultLordAudioPresence.strongestThreat = hasThreat ? presenceResult.strongestThreatLevel : 0.0f;
+        g_VaultLordAudioPresence.pulseTimer = (std::max)(0.0f, g_VaultLordAudioPresence.pulseTimer - deltaTime);
+
+        if (!hasThreat)
+        {
+            g_VaultLordAudioPresence.threatActive = false;
+            g_VaultLordAudioPresence.pulseTimer = 0.0f;
+            return;
+        }
+
+        if (!g_VaultLordAudioPresence.threatActive)
+        {
+            g_VaultLordAudioPresence.threatActive = true;
+            if (!g_VaultLordAudioPresence.detectedPlayed)
+            {
+                GA_Play(GameplayAudioEvent::VaultLordDetected);
+                g_VaultLordAudioPresence.detectedPlayed = true;
+            }
+        }
+
+        const float threat = std::clamp(presenceResult.strongestThreatLevel, 0.0f, 1.0f);
+        GA_SetTension(std::clamp(0.35f + threat * 0.65f, 0.0f, 1.0f));
+
+        if (threat >= 0.55f && g_VaultLordAudioPresence.pulseTimer <= 0.0f)
+        {
+            GA_Play(GameplayAudioEvent::VaultLordThreatPulse);
+            g_VaultLordAudioPresence.pulseTimer = std::lerp(2.6f, 0.85f, threat);
+        }
     }
 
 	// Resets the vault runtime state to the initial conditions of the current level. If restoreSceneInstances is true, it will also restore the original transform and material state of all scene instances that are part of the vault gameplay (nodes, rings, core, exit) based on the data captured when they were first initialized. This is used when restarting a vault run to ensure that all gameplay elements are reset to their starting state, while allowing for flexibility in whether the scene instances themselves are reloaded from a snapshot or just reset in place.
@@ -751,6 +795,7 @@ namespace
         g_VaultScanner = {};
         g_VaultContextHint = {};
         g_VaultMoodRuntime = {};
+        g_VaultLordAudioPresence = {};
         g_PlayerFrozen = false;
         g_RuntimeLevelStartSnapshot.clear();
         GA_Reset();
@@ -1358,8 +1403,10 @@ void Game::Update(float deltaTime) {
     }
 
     const DirectX::XMFLOAT3 playerGameplayPosition = playerRuntimeTransform ? playerRuntimeTransform->position : playerInstance->position;
+    VaultLordSystem::PresenceUpdateResult vaultLordPresence{};
     if (runtimeWorld)
-        (void)VaultLordSystem::UpdatePresence(*runtimeWorld, playerGameplayPosition);
+        vaultLordPresence = VaultLordSystem::UpdatePresence(*runtimeWorld, playerGameplayPosition);
+    UpdateVaultLordAudioPresence(vaultLordPresence, deltaTime);
     UpdateVaultNodeVarietyState(playerGameplayPosition, deltaTime);
     UpdateVaultVisualState(0.0f);
 

@@ -15,7 +15,10 @@ enum class GameplayAudioEvent : uint8_t
     ExitOpened,
     EscapeTriggered,
     FailureTriggered,
-    CampaignCompleted
+    CampaignCompleted,
+    VaultLordDetected,
+    VaultLordThreatPulse,
+    Count
 };
 
 enum class GameplayAudioMood : uint8_t
