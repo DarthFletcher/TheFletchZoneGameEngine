@@ -59,4 +59,30 @@ namespace VaultLordSystem
 
         return result;
     }
+
+    ThreatSignal FindStrongestThreatSignal(const RuntimeWorld& runtimeWorld)
+    {
+        ThreatSignal signal{};
+
+        for (const auto& [entityId, vaultLord] : runtimeWorld.GetVaultLords())
+        {
+            if (!vaultLord.enabled || vaultLord.threatLevel <= 0.0f)
+                continue;
+
+            const RuntimeTransformComponent* transform = runtimeWorld.GetTransform(entityId);
+            if (!transform)
+                continue;
+
+            if (!signal.hasSignal || vaultLord.threatLevel > signal.threatLevel)
+            {
+                signal.hasSignal = true;
+                signal.entity = entityId;
+                signal.position = transform->position;
+                signal.threatLevel = vaultLord.threatLevel;
+                signal.discovered = vaultLord.discovered;
+            }
+        }
+
+        return signal;
+    }
 }

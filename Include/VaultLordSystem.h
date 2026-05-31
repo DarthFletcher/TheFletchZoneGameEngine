@@ -15,5 +15,15 @@ namespace VaultLordSystem
         RuntimeEntityId strongestThreatEntity = kInvalidRuntimeEntityId;
     };
 
+    struct ThreatSignal
+    {
+        bool hasSignal = false;
+        RuntimeEntityId entity = kInvalidRuntimeEntityId;
+        DirectX::XMFLOAT3 position{ 0.0f, 0.0f, 0.0f };
+        float threatLevel = 0.0f;
+        bool discovered = false;
+    };
+
     PresenceUpdateResult UpdatePresence(RuntimeWorld& runtimeWorld, const DirectX::XMFLOAT3& playerPosition);
+    ThreatSignal FindStrongestThreatSignal(const RuntimeWorld& runtimeWorld);
 }

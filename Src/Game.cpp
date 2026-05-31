@@ -854,8 +854,21 @@ namespace
         DirectX::XMFLOAT3 targetPosition{};
         const char* targetLabel = nullptr;
         bool foundTarget = false;
+        float scannerStrengthOverride = -1.0f;
 
-        if (g_VaultMission.state == VaultMissionState::ActivatingNodes)
+        if (g_engineInstance)
+        {
+            const VaultLordSystem::ThreatSignal threatSignal = VaultLordSystem::FindStrongestThreatSignal(g_engineInstance->GetRuntimeWorld());
+            if (threatSignal.hasSignal)
+            {
+                targetPosition = threatSignal.position;
+                targetLabel = threatSignal.discovered ? "Scanner: Threat Signal" : "Scanner: Unknown Signal";
+                scannerStrengthOverride = threatSignal.threatLevel;
+                foundTarget = true;
+            }
+        }
+
+        if (!foundTarget && g_VaultMission.state == VaultMissionState::ActivatingNodes)
         {
             float bestDistSq = std::numeric_limits<float>::max();
             for (const VaultGameplayState::NodeBinding& nodeBinding : g_VaultState.nodes)
@@ -915,7 +928,7 @@ namespace
                 }
             }
         }
-        else if (g_VaultMission.state == VaultMissionState::CoreUnlocked)
+        else if (!foundTarget && g_VaultMission.state == VaultMissionState::CoreUnlocked)
         {
             if (SceneInstance* core = FindInstanceById(g_VaultState.core.instanceId))
             {
@@ -924,7 +937,7 @@ namespace
                 foundTarget = true;
             }
         }
-        else if (g_VaultMission.state == VaultMissionState::Completed)
+        else if (!foundTarget && g_VaultMission.state == VaultMissionState::Completed)
         {
             targetPosition = g_VaultState.exit.originalPosition;
             targetLabel = "Scanner: Exit";
@@ -943,7 +956,9 @@ namespace
         g_VaultScanner.label = targetLabel;
         g_VaultScanner.distance = distance;
         g_VaultScanner.relativeAngleRadians = NormalizeAngleRadians(worldAngle - g_PlayerController.yaw);
-        g_VaultScanner.strength = std::clamp(1.0f / (1.0f + distance * 0.18f), 0.05f, 1.0f);
+        g_VaultScanner.strength = scannerStrengthOverride >= 0.0f
+            ? std::clamp(scannerStrengthOverride, 0.05f, 1.0f)
+            : std::clamp(1.0f / (1.0f + distance * 0.18f), 0.05f, 1.0f);
     }
 
 	// Updates the visual state of the vault nodes, rings, core, and exit based on the current gameplay state and mission progress. This includes handling node decay timers, changing materials to reflect active/decaying/inactive states, spinning rings based on progress, unlocking the core when all nodes are active, and opening the exit when the mission is completed. This function is called every frame to ensure that the visual feedback in the scene accurately represents the current state of the vault gameplay.
