@@ -1956,20 +1956,35 @@ namespace EditorPanels
                                 const float sinA = std::sin(arrowAngle);
                                 const float strength = game.GetVaultScannerStrength();
                                 const float scannerTime = static_cast<float>(ImGui::GetTime());
+                                const char* scannerLabel = game.GetVaultScannerTargetLabel();
+                                const bool threatSignal = scannerLabel &&
+                                    (std::strstr(scannerLabel, "Threat Signal") || std::strstr(scannerLabel, "Unknown Signal"));
                                 const float pulse = 0.5f + 0.5f * std::sin(scannerTime * (2.8f + strength * 2.2f));
                                 const float audioPulse = 0.5f + 0.5f * std::sin(scannerTime * (3.6f + strength * 4.8f));
-                                const float pulseRadius = 12.0f + pulse * 18.0f;
-                                const float sweepAngle = scannerTime * (0.9f + strength * 1.6f) - DirectX::XM_PIDIV2;
+                                const float interference = threatSignal ? strength : 0.0f;
+                                const float jitter = interference * std::sin(scannerTime * 19.0f) * 0.16f;
+                                const float pulseRadius = 12.0f + pulse * (18.0f + 10.0f * interference);
+                                const float sweepAngle = scannerTime * (0.9f + strength * (1.6f + 1.4f * interference)) - DirectX::XM_PIDIV2 + jitter;
                                 const std::string distanceText = std::format("{:.1f}m", game.GetVaultScannerDistance());
-                                const std::string strengthText = std::format("Strength {:0.0f}%%", strength * 100.0f);
+                                const std::string strengthText = threatSignal
+                                    ? std::format("Threat {:0.0f}%%", strength * 100.0f)
+                                    : std::format("Strength {:0.0f}%%", strength * 100.0f);
+                                const ImU32 scannerAccentColor = threatSignal
+                                    ? IM_COL32(190, 82, 255, 255)
+                                    : colorFromMood(moodAccent, 1.0f);
+                                const ImU32 scannerSecondaryColor = threatSignal
+                                    ? IM_COL32(255, 128, 96, 235)
+                                    : colorFromMood(moodSecondary, 1.0f, 235);
 
                                 gameDraw->AddRectFilled(ImVec2(scannerMin.x + 3.0f, scannerMin.y + 4.0f), ImVec2(scannerMax.x + 3.0f, scannerMax.y + 4.0f), IM_COL32(0, 0, 0, 80), 10.0f);
-                                gameDraw->AddRectFilledMultiColor(scannerMin, ImVec2(scannerMax.x, scannerMin.y + 4.0f), colorFromMood(moodAccent, 1.0f, 225), colorFromMood(moodSecondary, 1.0f, 210), colorFromMood(moodSecondary, 1.0f, 210), colorFromMood(moodAccent, 1.0f, 225));
-                                gameDraw->AddRectFilled(ImVec2(scannerMin.x, scannerMin.y + 4.0f), scannerMax, IM_COL32(8, 10, 18, 198), 10.0f);
-                                gameDraw->AddRect(scannerMin, scannerMax, colorFromMood(moodSecondary, 0.78f, 210), 10.0f, 0, 1.2f);
+                                gameDraw->AddRectFilledMultiColor(scannerMin, ImVec2(scannerMax.x, scannerMin.y + 4.0f), scannerAccentColor, scannerSecondaryColor, scannerSecondaryColor, scannerAccentColor);
+                                gameDraw->AddRectFilled(ImVec2(scannerMin.x, scannerMin.y + 4.0f), scannerMax, threatSignal ? IM_COL32(18, 8, 28, 210) : IM_COL32(8, 10, 18, 198), 10.0f);
+                                gameDraw->AddRect(scannerMin, scannerMax, threatSignal ? IM_COL32(255, 96, 124, static_cast<int>(180.0f + 65.0f * pulse)) : colorFromMood(moodSecondary, 0.78f, 210), 10.0f, 0, threatSignal ? 1.8f : 1.2f);
 
-                                if (const char* scannerLabel = game.GetVaultScannerTargetLabel())
-                                    gameDraw->AddText(ImVec2(scannerMin.x + 14.0f, scannerMin.y + 14.0f), colorFromMood(moodSecondary, 1.0f), scannerLabel);
+                                if (scannerLabel)
+                                    gameDraw->AddText(ImVec2(scannerMin.x + 14.0f, scannerMin.y + 14.0f), threatSignal ? IM_COL32(255, 182, 128, 255) : colorFromMood(moodSecondary, 1.0f), scannerLabel);
+                                if (threatSignal)
+                                    gameDraw->AddText(ImVec2(scannerMax.x - 128.0f, scannerMin.y + 14.0f), IM_COL32(210, 118, 255, static_cast<int>(150.0f + 90.0f * pulse)), "ANOMALY");
 
                                 for (int sweepTrail = 0; sweepTrail < 4; ++sweepTrail)
                                 {
@@ -1978,13 +1993,13 @@ namespace EditorPanels
                                     const ImVec2 sweepEnd(
                                         scannerCenter.x + std::cos(trailAngle) * 28.0f,
                                         scannerCenter.y + std::sin(trailAngle) * 28.0f);
-                                    gameDraw->AddLine(scannerCenter, sweepEnd, colorFromMood(moodSecondary, 1.0f, static_cast<int>(255.0f * trailAlpha)), 1.4f - 0.15f * static_cast<float>(sweepTrail));
+                                    gameDraw->AddLine(scannerCenter, sweepEnd, threatSignal ? IM_COL32(255, 104, 128, static_cast<int>(255.0f * trailAlpha)) : colorFromMood(moodSecondary, 1.0f, static_cast<int>(255.0f * trailAlpha)), 1.4f - 0.15f * static_cast<float>(sweepTrail));
                                 }
 
-                                gameDraw->AddCircle(scannerCenter, pulseRadius, colorFromMood(moodAccent, 1.0f, static_cast<int>(22.0f + 78.0f * strength * (1.0f - pulse * 0.35f))), 40, 1.8f);
-                                gameDraw->AddCircle(scannerCenter, 28.0f, colorFromMood(moodSecondary, 0.78f, 220), 32, 1.0f);
-                                gameDraw->AddCircle(scannerCenter, 18.0f + pulse * 4.0f, colorFromMood(moodSecondary, 1.0f, static_cast<int>(36.0f + 44.0f * strength)), 32, 1.0f);
-                                gameDraw->AddCircleFilled(scannerCenter, 3.5f + audioPulse * 1.4f, colorFromMood(moodAccent, 1.0f, static_cast<int>(185.0f + 70.0f * audioPulse)));
+                                gameDraw->AddCircle(scannerCenter, pulseRadius, threatSignal ? IM_COL32(190, 82, 255, static_cast<int>(48.0f + 122.0f * strength * (1.0f - pulse * 0.35f))) : colorFromMood(moodAccent, 1.0f, static_cast<int>(22.0f + 78.0f * strength * (1.0f - pulse * 0.35f))), 40, threatSignal ? 2.3f : 1.8f);
+                                gameDraw->AddCircle(scannerCenter, 28.0f + interference * 3.0f * pulse, threatSignal ? IM_COL32(255, 128, 96, 230) : colorFromMood(moodSecondary, 0.78f, 220), 32, threatSignal ? 1.4f : 1.0f);
+                                gameDraw->AddCircle(scannerCenter, 18.0f + pulse * (4.0f + 4.0f * interference), threatSignal ? IM_COL32(210, 118, 255, static_cast<int>(64.0f + 88.0f * strength)) : colorFromMood(moodSecondary, 1.0f, static_cast<int>(36.0f + 44.0f * strength)), 32, 1.0f);
+                                gameDraw->AddCircleFilled(scannerCenter, 3.5f + audioPulse * (1.4f + 1.6f * interference), threatSignal ? IM_COL32(255, 104, 128, static_cast<int>(190.0f + 62.0f * audioPulse)) : colorFromMood(moodAccent, 1.0f, static_cast<int>(185.0f + 70.0f * audioPulse)));
 
                                 const auto rotatePoint = [&](float localX, float localY)
                                 {
@@ -1995,20 +2010,27 @@ namespace EditorPanels
                                 const ImVec2 tip = rotatePoint(0.0f, -22.0f);
                                 const ImVec2 left = rotatePoint(-10.0f, 11.0f);
                                 const ImVec2 right = rotatePoint(10.0f, 11.0f);
-                                gameDraw->AddTriangleFilled(tip, left, right, colorFromMood(moodAccent, 1.0f));
+                                gameDraw->AddTriangleFilled(tip, left, right, scannerAccentColor);
+
+                                if (threatSignal)
+                                {
+                                    const float glitchY = scannerCenter.y + 38.0f + std::sin(scannerTime * 23.0f) * 6.0f;
+                                    gameDraw->AddLine(ImVec2(scannerMin.x + 16.0f, glitchY), ImVec2(scannerMax.x - 18.0f, glitchY + std::sin(scannerTime * 31.0f) * 3.0f), IM_COL32(255, 96, 124, static_cast<int>(70.0f + 110.0f * strength)), 1.2f);
+                                    gameDraw->AddLine(ImVec2(scannerMin.x + 28.0f, glitchY + 13.0f), ImVec2(scannerMax.x - 36.0f, glitchY + 10.0f), IM_COL32(190, 82, 255, static_cast<int>(54.0f + 90.0f * strength)), 1.0f);
+                                }
 
                                 const ImVec2 distancePos(scannerMin.x + 16.0f, scannerMin.y + 134.0f);
                                 const ImVec2 strengthPos(scannerMin.x + 16.0f, scannerMin.y + 156.0f);
                                 const ImVec2 meterMin(scannerMin.x + 16.0f, scannerMin.y + 172.0f);
                                 const ImVec2 meterMax(scannerMax.x - 16.0f, scannerMin.y + 184.0f);
                                 gameDraw->AddText(distancePos, IM_COL32(238, 245, 255, 255), distanceText.c_str());
-                                gameDraw->AddText(strengthPos, IM_COL32(176, 192, 214, static_cast<int>(168.0f + 87.0f * (0.4f + 0.6f * audioPulse) * strength)), strengthText.c_str());
+                                gameDraw->AddText(strengthPos, threatSignal ? IM_COL32(255, 168, 126, static_cast<int>(186.0f + 69.0f * (0.4f + 0.6f * audioPulse) * strength)) : IM_COL32(176, 192, 214, static_cast<int>(168.0f + 87.0f * (0.4f + 0.6f * audioPulse) * strength)), strengthText.c_str());
                                 gameDraw->AddRectFilled(meterMin, meterMax, IM_COL32(18, 24, 38, 200), 4.0f);
                                 const float meterFill = (meterMax.x - meterMin.x - 2.0f) * strength;
                                 gameDraw->AddRectFilled(
                                     ImVec2(meterMin.x + 1.0f, meterMin.y + 1.0f),
                                     ImVec2(meterMin.x + 1.0f + meterFill, meterMax.y - 1.0f),
-                                    colorFromMood(moodAccent, 1.0f, static_cast<int>(120.0f + 110.0f * audioPulse)),
+                                    threatSignal ? IM_COL32(190, 82, 255, static_cast<int>(150.0f + 95.0f * audioPulse)) : colorFromMood(moodAccent, 1.0f, static_cast<int>(120.0f + 110.0f * audioPulse)),
                                     3.0f);
                             }
                         }
