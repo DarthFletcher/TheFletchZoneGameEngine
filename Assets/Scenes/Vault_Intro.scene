@@ -193,6 +193,25 @@
       "cameraFovY": 1.0472,
       "cameraNearClip": 0.1,
       "cameraFarClip": 100
+    },
+    {
+      "id": 11,
+      "parent": 0,
+      "prefabLocalId": 0,
+      "name": "VaultLord_Test",
+      "prefabSource": "",
+      "position": [5, 1.15, 1.5],
+      "rotation": [0, 0, 0],
+      "scale": [1.35, 2.3, 1.35],
+      "visible": true,
+      "material": 0,
+      "primitive": 1,
+      "vaultType": 0,
+      "cameraEnabled": false,
+      "cameraMain": false,
+      "cameraFovY": 1.0472,
+      "cameraNearClip": 0.1,
+      "cameraFarClip": 100
     }
   ]
 }
