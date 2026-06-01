@@ -105,10 +105,17 @@ namespace
     static constexpr float kVaultFailPulseSeconds = 0.55f;
     static constexpr float kVaultAutoAdvanceSeconds = 5.0f;
     static constexpr float kVaultContextHintSeconds = 5.0f;
+    static constexpr float kVaultLordMaxNodeDecayPressure = 0.20f;
 
     static std::string ToLower(std::string value);
     static std::string GetCurrentSceneFilenameLower();
     static void EnsureVaultMaterials();
+
+    static float GetVaultLordNodeDecayMultiplier()
+    {
+        const float threat = std::clamp(g_VaultLordAudioPresence.strongestThreat, 0.0f, 1.0f);
+        return 1.0f + threat * kVaultLordMaxNodeDecayPressure;
+    }
 
     static void RefreshRuntimeWorldFromCurrentScene(const char* reason)
     {
@@ -1035,7 +1042,7 @@ namespace
             if (g_VaultMission.state != VaultMissionState::Completed &&
                 (nodeBinding.state == VaultGameplayState::NodeState::Active || nodeBinding.state == VaultGameplayState::NodeState::Decaying))
             {
-                nodeBinding.decayTimer -= deltaTime;
+                nodeBinding.decayTimer -= deltaTime * GetVaultLordNodeDecayMultiplier();
                 if (nodeBinding.decayTimer <= 0.0f)
                 {
                     nodeBinding.decayTimer = 0.0f;

@@ -2502,6 +2502,7 @@ namespace EditorPanels
                                 ImGui::Text("Threat Level: %.2f", vaultLord->threatLevel);
                                 ImGui::Text("Influence Radius: %.2f", vaultLord->influenceRadius);
                                 ImGui::Text("Distance To Player: %.2f", vaultLord->distanceToPlayer);
+                                ImGui::Text("Node Decay Pressure: +%.0f%%", vaultLord->threatLevel * 20.0f);
                             }
 
                             if (!runtimeWorld.GetVaultNode(selectedRuntimeEntityId) &&
