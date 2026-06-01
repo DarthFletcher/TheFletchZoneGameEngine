@@ -1984,7 +1984,7 @@ namespace EditorPanels
                                 if (scannerLabel)
                                     gameDraw->AddText(ImVec2(scannerMin.x + 14.0f, scannerMin.y + 14.0f), threatSignal ? IM_COL32(255, 182, 128, 255) : colorFromMood(moodSecondary, 1.0f), scannerLabel);
                                 if (threatSignal)
-                                    gameDraw->AddText(ImVec2(scannerMax.x - 128.0f, scannerMin.y + 14.0f), IM_COL32(210, 118, 255, static_cast<int>(150.0f + 90.0f * pulse)), "ANOMALY");
+                                    gameDraw->AddText(ImVec2(scannerMin.x + 14.0f, scannerMin.y + 31.0f), IM_COL32(210, 118, 255, static_cast<int>(150.0f + 90.0f * pulse)), "ANOMALY DETECTED");
 
                                 for (int sweepTrail = 0; sweepTrail < 4; ++sweepTrail)
                                 {
