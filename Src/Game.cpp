@@ -376,20 +376,34 @@ namespace
 
         Graphics::DirectionalLight light = g_VaultMoodRuntime.originalLight;
         const float moodPulse = 0.5f + 0.5f * std::sin(g_VaultMoodRuntime.elapsedTime * mood.nodePulseSpeed);
+        const float vaultLordThreat = std::clamp(g_VaultLordAudioPresence.strongestThreat, 0.0f, 1.0f);
+        const float threatPulse = 0.5f + 0.5f * std::sin(g_VaultMoodRuntime.elapsedTime * (4.5f + vaultLordThreat * 5.5f));
+        const DirectX::XMFLOAT3 threatTint{ 0.72f, 0.28f, 1.0f };
+
+        SceneSkyboxSettings skybox = g_VaultMoodRuntime.originalSkybox;
+        skybox.enabled = true;
+        skybox.useCubemap = false;
+        skybox.builtInPreset = mood.skyPreset;
+        skybox.tint = LerpColor(mood.skyTint, { 0.60f, 0.20f, 0.95f }, vaultLordThreat * 0.35f);
+        skybox.intensity = mood.skyIntensity * (1.0f - vaultLordThreat * 0.10f);
+        skybox.exposure = mood.skyExposure - vaultLordThreat * 0.08f;
+        Scene::SetSkyboxSettings(skybox);
+
         const float lightFlicker = 1.0f + (moodPulse - 0.5f) * 0.08f * mood.nodePulseStrength;
-        light.intensity = mood.lightIntensity * lightFlicker;
-        light.ambient = mood.ambient;
-        light.color = mood.lightColor;
+        light.intensity = mood.lightIntensity * lightFlicker * (1.0f + vaultLordThreat * (0.12f + threatPulse * 0.05f));
+        light.ambient = mood.ambient * (1.0f - vaultLordThreat * 0.28f);
+        light.color = LerpColor(mood.lightColor, threatTint, vaultLordThreat * 0.42f);
         graphics.GetDirectionalLight() = light;
 
         MaterialManager& materials = MaterialManager::GetInstance();
-        const float pulseBoost = mood.nodePulseStrength * moodPulse;
+        const float pulseBoost = mood.nodePulseStrength * moodPulse + vaultLordThreat * (0.18f + threatPulse * 0.10f);
+        const DirectX::XMFLOAT3 materialTint = LerpColor(mood.colorTint, threatTint, vaultLordThreat * 0.24f);
 
         auto setMoodMaterial = [&](int materialIndex, const DirectX::XMFLOAT3& baseColor, float tintBlend, float pulseScale)
         {
             if (Material* material = materials.GetMaterialByIndex(materialIndex))
             {
-                const DirectX::XMFLOAT3 tinted = LerpColor(baseColor, MultiplyColor(baseColor, mood.colorTint), tintBlend);
+                const DirectX::XMFLOAT3 tinted = LerpColor(baseColor, MultiplyColor(baseColor, materialTint), tintBlend);
                 material->SetBaseColor(ScaleColor(tinted, 1.0f + pulseBoost * pulseScale));
             }
         };
