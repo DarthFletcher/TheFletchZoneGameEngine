@@ -391,14 +391,14 @@ namespace
         skybox.enabled = true;
         skybox.useCubemap = false;
         skybox.builtInPreset = mood.skyPreset;
-        skybox.tint = LerpColor(mood.skyTint, { 0.60f, 0.20f, 0.95f }, vaultLordThreat * 0.35f);
-        skybox.intensity = mood.skyIntensity * (1.0f - vaultLordThreat * 0.10f);
-        skybox.exposure = mood.skyExposure - vaultLordThreat * 0.08f;
+        skybox.tint = LerpColor(mood.skyTint, { 0.42f, 0.12f, 0.72f }, vaultLordThreat * 0.55f);
+        skybox.intensity = mood.skyIntensity * (1.0f - vaultLordThreat * 0.22f);
+        skybox.exposure = mood.skyExposure - vaultLordThreat * 0.18f;
         Scene::SetSkyboxSettings(skybox);
 
         const float lightFlicker = 1.0f + (moodPulse - 0.5f) * 0.08f * mood.nodePulseStrength;
         light.intensity = mood.lightIntensity * lightFlicker * (1.0f + vaultLordThreat * (0.12f + threatPulse * 0.05f));
-        light.ambient = mood.ambient * (1.0f - vaultLordThreat * 0.28f);
+        light.ambient = mood.ambient * (1.0f - vaultLordThreat * 0.38f);
         light.color = LerpColor(mood.lightColor, threatTint, vaultLordThreat * 0.42f);
         graphics.GetDirectionalLight() = light;
 
