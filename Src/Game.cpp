@@ -913,7 +913,7 @@ namespace
     }
 
 	// Updates the state of the vault scanner based on the player's position and the current vault mission state. The scanner targets different objects (nodes, core, exit) depending on the mission progress, and calculates the distance, angle, and signal strength for the targeted object to provide directional feedback to the player. This function is called every frame to ensure that the scanner information is up-to-date as the player moves through the vault environment.
-    static void UpdateVaultScannerState(const SceneInstance& playerInstance)
+    static void UpdateVaultScannerState(const SceneInstance& playerInstance, const SceneInstance& cameraInstance)
     {
         g_VaultScanner = {};
 
@@ -1016,12 +1016,25 @@ namespace
         const float dx = targetPosition.x - playerInstance.position.x;
         const float dz = targetPosition.z - playerInstance.position.z;
         const float distance = std::sqrt(dx * dx + dz * dz);
-        const float worldAngle = std::atan2(dx, dz);
+        float relativeAngle = NormalizeAngleRadians(std::atan2(dx, dz) - g_PlayerController.yaw);
+        CameraData scannerCamera{};
+        if (Scene::TryBuildMainCameraData(1.0f, scannerCamera))
+        {
+            const DirectX::XMMATRIX view = DirectX::XMLoadFloat4x4(&scannerCamera.view);
+            DirectX::XMFLOAT3 cameraSpaceTarget{};
+            DirectX::XMStoreFloat3(&cameraSpaceTarget,
+                DirectX::XMVector3TransformCoord(DirectX::XMLoadFloat3(&targetPosition), view));
+
+            if (cameraSpaceTarget.z > 0.0001f)
+            {
+                relativeAngle = NormalizeAngleRadians(std::atan2(cameraSpaceTarget.x, cameraSpaceTarget.z));
+            }
+        }
 
         g_VaultScanner.hasTarget = true;
         g_VaultScanner.label = targetLabel;
         g_VaultScanner.distance = distance;
-        g_VaultScanner.relativeAngleRadians = NormalizeAngleRadians(worldAngle - g_PlayerController.yaw);
+        g_VaultScanner.relativeAngleRadians = relativeAngle;
         g_VaultScanner.strength = scannerStrengthOverride >= 0.0f
             ? std::clamp(scannerStrengthOverride, 0.05f, 1.0f)
             : std::clamp(1.0f / (1.0f + distance * 0.18f), 0.05f, 1.0f);
@@ -1470,7 +1483,7 @@ void Game::Update(float deltaTime) {
         runtimeWorld->SyncTransformToScene(g_PlayerController.cameraEntity);
     }
 
-    UpdateVaultScannerState(*playerInstance);
+    UpdateVaultScannerState(*playerInstance, *mainCamera);
 
     const float interactRangeSq = kVaultInteractionRange * kVaultInteractionRange;
     uint32_t bestTargetId = 0;
