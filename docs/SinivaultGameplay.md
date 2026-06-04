@@ -178,6 +178,39 @@ Ring state sync is handled by `VaultObjectSystem`.
 
 ---
 
+## Vault Lords
+
+Vault Lords are currently presence/anomaly systems, not combat bosses.
+
+The first Vault Lord prototype is designed around the idea that the vault is being watched or influenced by an ancient intelligence. A Vault Lord does not attack, chase, use health, or deal damage yet. Instead, it changes how the vault feels and applies subtle pressure to the existing node/core/exit loop.
+
+Current Vault Lord behavior:
+
+- runtime objects are classified by names or prefab paths containing `vaultlord`
+- proximity to the player drives threat
+- entering the influence radius marks the Vault Lord as discovered
+- `discovered` remains true after first detection
+- `active` is true while the player is inside the influence radius
+- `threatLevel` rises as the player gets closer
+- `distanceToPlayer` is tracked for diagnostics
+
+Runtime state is stored in `VaultLordComponent`:
+
+- `enabled`
+- `discovered`
+- `active`
+- `threatLevel`
+- `influenceRadius`
+- `distanceToPlayer`
+
+Presence rules live in `VaultLordSystem`.
+
+The current design goal is:
+
+> Vault Lords should create dread before danger.
+
+---
+
 ## Mission states
 
 Current mission states include:
@@ -203,13 +236,27 @@ Responsibilities include:
 
 ## Scanner behavior
 
-The scanner points toward the next relevant objective.
+The scanner points toward the next relevant objective or strongest active threat signal.
+
+The scanner is intended to become a gameplay language, not just a waypoint arrow. It should help the player interpret the vault, prioritize routes, and notice anomalies.
+
+Vault Lord threat currently overrides normal scanner objectives while active.
+
+Current Vault Lord scanner language:
+
+- `Scanner: Unknown Signal` can represent an undiscovered anomaly signal
+- `Scanner: Threat Signal` represents a discovered Vault Lord threat
+- `ANOMALY DETECTED` appears during threat scanner interference
+- scanner strength becomes `Threat XX%` while tracking a Vault Lord
+- scanner visuals shift toward red/purple interference
+- scanner sweep jitter and glitch lines increase under threat
 
 Expected target priority while activating nodes:
 
-1. stabilizing node
-2. decaying/unstable node
-3. inactive vault node
+1. active Vault Lord threat signal
+2. stabilizing node
+3. decaying/unstable node
+4. inactive vault node
 
 Other states:
 
@@ -218,11 +265,23 @@ Other states:
 
 Scanner direction convention:
 
-- `0` relative angle means target is straight ahead
+- `0` relative angle means target is straight ahead / screen-centered
 - positive angle means target is to the right
 - negative angle means target is to the left
 
-The scanner UI arrow uses that convention directly so the arrow points up when the target is straight ahead.
+The scanner uses the active camera view to align the arrow with what the player sees. If a target is centered on screen, the scanner arrow should point up.
+
+Future scanner node classification should expand this language with labels such as:
+
+- `Scanner: Normal Node`
+- `Scanner: Slow Node`
+- `Scanner: Fragile Node`
+- `Scanner: Unstable Node`
+- `Scanner: Corrupted Node`
+- `Scanner: Hidden Node`
+- `Scanner: Relay Node`
+
+This belongs to the future node ecology work.
 
 ---
 
@@ -237,6 +296,7 @@ Current feedback includes:
 - tutorial primary/secondary hints
 - context hints for special node types
 - scanner target label/distance/strength
+- scanner anomaly/interference visuals
 - start and escape banners
 - fail pulse
 - end overlay title/subtitle
@@ -260,8 +320,23 @@ Important events include:
 - escape triggered
 - vault failure
 - campaign completed
+- Vault Lord detected
+- Vault Lord threat pulse
 
 Vault mood changes lighting, skybox, material color intensity, and audio tension.
+
+Vault Lord presence also affects presentation:
+
+- scanner interference becomes red/purple
+- audio plays a first-detection stinger
+- high threat can trigger periodic pulse/interference audio
+- sky tint shifts toward darker purple
+- sky intensity and exposure lower under threat
+- ambient lighting lowers under threat
+- node/core/ring material pulses become more intense
+- strongest threat slightly increases audio tension
+
+The current goal is atmospheric pressure, not combat music.
 
 Current broad mood progression:
 
@@ -284,6 +359,7 @@ Sinivault currently uses these runtime components:
 - `VaultCoreComponent`
 - `VaultRingComponent`
 - `VaultExitComponent`
+- `VaultLordComponent`
 
 These are cloned/classified from scene data by `RuntimeWorld` and `VaultDiscovery`.
 
@@ -300,9 +376,20 @@ During Play mode in a valid vault scene, the Diagnostics panel should show:
 - vault core
 - vault rings
 - vault exit
+- vault lords, when a scene contains `VaultLord` objects
 - selected runtime entity mapping when a scene object is selected
 - detailed selected component state
 - `Vault runtime components look valid.`
+
+For selected Vault Lord objects, diagnostics should show:
+
+- enabled
+- discovered
+- active
+- threat level
+- influence radius
+- distance to player
+- node decay pressure
 
 Warnings in this section usually indicate a scene classification or runtime clone issue.
 
@@ -330,6 +417,7 @@ Known limitations:
 - Play mode rendering still depends on syncing runtime transforms back to `SceneInstance`
 - vault object discovery still has scene fallback logic for compatibility
 - scanner and UI feedback are tuned for the current vault campaign, not a generalized quest system
+- Vault Lords are presence/anomaly systems only; they do not have combat, health, attacks, or AI behavior yet
 
 These are acceptable for the current milestone.
 
@@ -339,12 +427,31 @@ These are acceptable for the current milestone.
 
 Likely next gameplay additions:
 
-- Vault Lords
-- richer runtime enemy or hazard components
-- more node variants
+- node ecology expansion
+- scanner node classification labels
+- corrupted nodes
+- relay nodes
+- hidden nodes
+- richer Vault Lord archetypes that alter vault rules
+- hybrid camera modes
+- 3D text / world labels
 - stronger scanner/route feedback
 - better campaign progression UI
 - runtime-driven rendering path for Play mode
+
+Potential Vault Lord direction:
+
+- Vault Lords should act like ancient vault intelligences or anomalies first.
+- Each Vault Lord can eventually influence node behavior, scanner reliability, atmosphere, and routing pressure.
+- Combat should not be added until the presence/anomaly identity is proven.
+
+Potential node ecology direction:
+
+- `Relay Node`: supports or slows decay of nearby nodes
+- `Corrupted Node`: creates unstable or misleading benefits
+- `Hidden Node`: requires scanner interpretation
+- `Anchor Node`: keeps core stability from collapsing
+- `Overload Node`: activates quickly but creates later pressure
 
 Important rule:
 
