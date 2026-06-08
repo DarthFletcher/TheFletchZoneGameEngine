@@ -323,6 +323,31 @@ namespace
         return VaultPresentation::GetMissionObjectiveText(state);
     }
 
+    static const char* GetScannerNodeLabel(const VaultGameplayState::NodeBinding& nodeBinding)
+    {
+        if (nodeBinding.state == VaultGameplayState::NodeState::Decaying)
+            return "Scanner: Unstable Node";
+
+        if (nodeBinding.state == VaultGameplayState::NodeState::Stabilizing)
+        {
+            switch (nodeBinding.type)
+            {
+            case VaultGameplayState::NodeType::SlowStabilize: return "Scanner: Stabilizing Slow Node";
+            case VaultGameplayState::NodeType::Fragile: return "Scanner: Stabilizing Fragile Node";
+            case VaultGameplayState::NodeType::Normal:
+            default: return "Scanner: Stabilizing Node";
+            }
+        }
+
+        switch (nodeBinding.type)
+        {
+        case VaultGameplayState::NodeType::SlowStabilize: return "Scanner: Slow Node";
+        case VaultGameplayState::NodeType::Fragile: return "Scanner: Fragile Node";
+        case VaultGameplayState::NodeType::Normal:
+        default: return "Scanner: Normal Node";
+        }
+    }
+
 	// Returns true if the given targetId matches the current interaction target, which is typically set to the core when it becomes interactable. This is used to determine whether the player is currently able to interact with the core, and to gate certain logic that should only run when the core is the interaction target (e.g. showing the prompt to stabilize the core, allowing the player to trigger vault completion, etc.). The targetId of 0 is reserved to mean "no target", so this function also checks that the targetId is not 0 before comparing it to the core's instanceId.
     static bool IsInteractionTargetCore(uint32_t targetId)
     {
@@ -948,7 +973,7 @@ namespace
                     {
                         bestDistSq = distSq;
                         targetPosition = node->position;
-                        targetLabel = "Scanner: Stabilizing Node";
+                        targetLabel = GetScannerNodeLabel(nodeBinding);
                         foundTarget = true;
                     }
                 }
@@ -967,7 +992,7 @@ namespace
                         {
                             bestDistSq = distSq;
                             targetPosition = node->position;
-                            targetLabel = "Scanner: Unstable Node";
+                            targetLabel = GetScannerNodeLabel(nodeBinding);
                             foundTarget = true;
                         }
                     }
@@ -987,7 +1012,7 @@ namespace
                         {
                             bestDistSq = distSq;
                             targetPosition = node->position;
-                            targetLabel = "Scanner: Vault Node";
+                            targetLabel = GetScannerNodeLabel(nodeBinding);
                             foundTarget = true;
                         }
                     }
