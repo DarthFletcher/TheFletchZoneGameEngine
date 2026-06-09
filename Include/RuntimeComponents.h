@@ -55,6 +55,7 @@ struct VaultNodeComponent
         Normal = 0,
         SlowStabilize,
         Fragile,
+        Corrupted,
     };
 
     enum class State : uint8_t

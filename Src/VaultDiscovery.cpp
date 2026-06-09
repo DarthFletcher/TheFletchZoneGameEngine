@@ -70,6 +70,8 @@ namespace
         const std::string lowered = ToLower(value);
         if (lowered.find("fragile") != std::string::npos)
             return VaultGameplayState::NodeType::Fragile;
+        if (lowered.find("corrupt") != std::string::npos)
+            return VaultGameplayState::NodeType::Corrupted;
         if (lowered.find("slow") != std::string::npos || lowered.find("stabilize") != std::string::npos)
             return VaultGameplayState::NodeType::SlowStabilize;
         return VaultGameplayState::NodeType::Normal;

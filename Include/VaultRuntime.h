@@ -23,6 +23,7 @@ struct VaultGameplayState
         Normal = 0,
         SlowStabilize,
         Fragile,
+        Corrupted,
     };
 
     struct NodeBinding
@@ -71,6 +72,7 @@ struct VaultGameplayState
     int nodeInactiveMaterial = 0;
     int nodeSlowMaterial = 0;
     int nodeFragileMaterial = 0;
+    int nodeCorruptedMaterial = 0;
     int nodeActiveMaterial = 0;
     int nodeDecayMaterial = 0;
     int coreInactiveMaterial = 0;

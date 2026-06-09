@@ -8,6 +8,8 @@ VaultGameplayState::NodeType ToVaultNodeType(VaultNodeComponent::Type type)
         return VaultGameplayState::NodeType::SlowStabilize;
     case VaultNodeComponent::Type::Fragile:
         return VaultGameplayState::NodeType::Fragile;
+    case VaultNodeComponent::Type::Corrupted:
+        return VaultGameplayState::NodeType::Corrupted;
     case VaultNodeComponent::Type::Normal:
     default:
         return VaultGameplayState::NodeType::Normal;
@@ -22,6 +24,8 @@ VaultNodeComponent::Type ToRuntimeNodeType(VaultGameplayState::NodeType type)
         return VaultNodeComponent::Type::SlowStabilize;
     case VaultGameplayState::NodeType::Fragile:
         return VaultNodeComponent::Type::Fragile;
+    case VaultGameplayState::NodeType::Corrupted:
+        return VaultNodeComponent::Type::Corrupted;
     case VaultGameplayState::NodeType::Normal:
     default:
         return VaultNodeComponent::Type::Normal;

@@ -566,6 +566,10 @@ void RuntimeWorld::AddGameplayComponentsFromSceneInstance(RuntimeEntityId entity
             node.type = VaultNodeComponent::Type::Fragile;
             node.decayDuration = 9.0f * 0.65f;
         }
+        else if (loweredName.find("corrupt") != std::string::npos)
+        {
+            node.type = VaultNodeComponent::Type::Corrupted;
+        }
         else if (loweredName.find("slow") != std::string::npos || loweredName.find("stabilize") != std::string::npos)
         {
             node.type = VaultNodeComponent::Type::SlowStabilize;

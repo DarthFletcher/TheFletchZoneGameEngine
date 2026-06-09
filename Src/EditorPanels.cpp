@@ -2447,6 +2447,7 @@ namespace EditorPanels
                                     {
                                     case VaultNodeComponent::Type::SlowStabilize: return "SlowStabilize";
                                     case VaultNodeComponent::Type::Fragile: return "Fragile";
+                                    case VaultNodeComponent::Type::Corrupted: return "Corrupted";
                                     case VaultNodeComponent::Type::Normal:
                                     default: return "Normal";
                                     }

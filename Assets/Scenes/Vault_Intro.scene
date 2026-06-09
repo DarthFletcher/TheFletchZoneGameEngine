@@ -176,6 +176,25 @@
       "cameraFarClip": 100
     },
     {
+      "id": 12,
+      "parent": 0,
+      "prefabLocalId": 0,
+      "name": "VaultNode_Corrupted_4",
+      "prefabSource": "",
+      "position": [0, 0.75, -2.75],
+      "rotation": [0, 0, 0],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "material": 0,
+      "primitive": 5,
+      "vaultType": 0,
+      "cameraEnabled": false,
+      "cameraMain": false,
+      "cameraFovY": 1.0472,
+      "cameraNearClip": 0.1,
+      "cameraFarClip": 100
+    },
+    {
       "id": 10,
       "parent": 0,
       "prefabLocalId": 0,
