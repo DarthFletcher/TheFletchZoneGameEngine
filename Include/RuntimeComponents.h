@@ -56,6 +56,7 @@ struct VaultNodeComponent
         SlowStabilize,
         Fragile,
         Corrupted,
+        Relay,
     };
 
     enum class State : uint8_t

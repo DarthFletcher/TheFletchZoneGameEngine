@@ -195,6 +195,25 @@
       "cameraFarClip": 100
     },
     {
+      "id": 13,
+      "parent": 0,
+      "prefabLocalId": 0,
+      "name": "VaultNode_Relay_5",
+      "prefabSource": "",
+      "position": [-2.75, 0.75, -2.75],
+      "rotation": [0, 0, 0],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "material": 0,
+      "primitive": 5,
+      "vaultType": 0,
+      "cameraEnabled": false,
+      "cameraMain": false,
+      "cameraFovY": 1.0472,
+      "cameraNearClip": 0.1,
+      "cameraFarClip": 100
+    },
+    {
       "id": 10,
       "parent": 0,
       "prefabLocalId": 0,

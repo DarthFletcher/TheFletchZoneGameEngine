@@ -72,6 +72,8 @@ namespace
             return VaultGameplayState::NodeType::Fragile;
         if (lowered.find("corrupt") != std::string::npos)
             return VaultGameplayState::NodeType::Corrupted;
+        if (lowered.find("relay") != std::string::npos)
+            return VaultGameplayState::NodeType::Relay;
         if (lowered.find("slow") != std::string::npos || lowered.find("stabilize") != std::string::npos)
             return VaultGameplayState::NodeType::SlowStabilize;
         return VaultGameplayState::NodeType::Normal;

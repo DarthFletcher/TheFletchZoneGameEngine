@@ -107,6 +107,7 @@ namespace
     static constexpr float kVaultContextHintSeconds = 5.0f;
     static constexpr float kVaultLordMaxNodeDecayPressure = 0.20f;
     static constexpr float kCorruptedNodeDecayPressure = 0.10f;
+    static constexpr float kRelayNodeDecayRelief = 0.10f;
 
     static std::string ToLower(std::string value);
     static std::string GetCurrentSceneFilenameLower();
@@ -121,6 +122,13 @@ namespace
     static bool IsCorruptedNodeApplyingPressure(const VaultGameplayState::NodeBinding& nodeBinding)
     {
         return nodeBinding.type == VaultGameplayState::NodeType::Corrupted &&
+            (nodeBinding.state == VaultGameplayState::NodeState::Active ||
+                nodeBinding.state == VaultGameplayState::NodeState::Decaying);
+    }
+
+    static bool IsRelayNodeApplyingRelief(const VaultGameplayState::NodeBinding& nodeBinding)
+    {
+        return nodeBinding.type == VaultGameplayState::NodeType::Relay &&
             (nodeBinding.state == VaultGameplayState::NodeState::Active ||
                 nodeBinding.state == VaultGameplayState::NodeState::Decaying);
     }
@@ -343,6 +351,7 @@ namespace
             case VaultGameplayState::NodeType::SlowStabilize: return "Scanner: Stabilizing Slow Node";
             case VaultGameplayState::NodeType::Fragile: return "Scanner: Stabilizing Fragile Node";
             case VaultGameplayState::NodeType::Corrupted: return "Scanner: Stabilizing Corrupted Node";
+            case VaultGameplayState::NodeType::Relay: return "Scanner: Stabilizing Relay Node";
             case VaultGameplayState::NodeType::Normal:
             default: return "Scanner: Stabilizing Node";
             }
@@ -353,6 +362,7 @@ namespace
         case VaultGameplayState::NodeType::SlowStabilize: return "Scanner: Slow Node";
         case VaultGameplayState::NodeType::Fragile: return "Scanner: Fragile Node";
         case VaultGameplayState::NodeType::Corrupted: return "Scanner: Corrupted Node";
+        case VaultGameplayState::NodeType::Relay: return "Scanner: Relay Node";
         case VaultGameplayState::NodeType::Normal:
         default: return "Scanner: Normal Node";
         }
@@ -454,6 +464,7 @@ namespace
         setMoodMaterial(g_VaultState.nodeSlowMaterial, { 0.34f, 0.24f, 0.52f }, 0.34f, 0.06f);
         setMoodMaterial(g_VaultState.nodeFragileMaterial, { 0.42f, 0.18f, 0.16f }, 0.36f, 0.08f);
         setMoodMaterial(g_VaultState.nodeCorruptedMaterial, { 0.34f, 0.08f, 0.42f }, 0.42f, 0.12f);
+        setMoodMaterial(g_VaultState.nodeRelayMaterial, { 0.12f, 0.48f, 0.62f }, 0.30f, 0.10f);
         setMoodMaterial(g_VaultState.nodeActiveMaterial, { 0.76f, 0.44f, 0.14f }, 0.24f, 0.35f);
         setMoodMaterial(g_VaultState.nodeDecayMaterial, { 0.82f, 0.16f, 0.14f }, 0.30f, 0.52f);
         setMoodMaterial(g_VaultState.coreInactiveMaterial, { 0.18f, 0.20f, 0.26f }, 0.22f, 0.02f);
@@ -909,6 +920,7 @@ namespace
         newState.nodeSlowMaterial = g_VaultState.nodeSlowMaterial;
         newState.nodeFragileMaterial = g_VaultState.nodeFragileMaterial;
         newState.nodeCorruptedMaterial = g_VaultState.nodeCorruptedMaterial;
+        newState.nodeRelayMaterial = g_VaultState.nodeRelayMaterial;
         newState.nodeActiveMaterial = g_VaultState.nodeActiveMaterial;
         newState.nodeDecayMaterial = g_VaultState.nodeDecayMaterial;
         newState.coreInactiveMaterial = g_VaultState.coreInactiveMaterial;
@@ -1082,14 +1094,17 @@ namespace
     {
         int activeNodeCount = 0;
         bool corruptedPressureActive = false;
+        bool relayReliefActive = false;
         for (VaultGameplayState::NodeBinding& nodeBinding : g_VaultState.nodes)
         {
             VaultNodeSystem::SyncBindingFromRuntime(GetRuntimeWorldForGameplay(), nodeBinding);
             corruptedPressureActive = corruptedPressureActive || IsCorruptedNodeApplyingPressure(nodeBinding);
+            relayReliefActive = relayReliefActive || IsRelayNodeApplyingRelief(nodeBinding);
         }
 
         const float nodeDecayMultiplier = GetVaultLordNodeDecayMultiplier() *
-            (corruptedPressureActive ? (1.0f + kCorruptedNodeDecayPressure) : 1.0f);
+            (corruptedPressureActive ? (1.0f + kCorruptedNodeDecayPressure) : 1.0f) *
+            (relayReliefActive ? (1.0f - kRelayNodeDecayRelief) : 1.0f);
 
         for (VaultGameplayState::NodeBinding& nodeBinding : g_VaultState.nodes)
         {
@@ -1145,7 +1160,9 @@ namespace
                     ? g_VaultState.nodeSlowMaterial
                     : (nodeBinding.type == VaultGameplayState::NodeType::Fragile
                         ? g_VaultState.nodeFragileMaterial
-                        : (nodeBinding.type == VaultGameplayState::NodeType::Corrupted ? g_VaultState.nodeCorruptedMaterial : g_VaultState.nodeInactiveMaterial));
+                        : (nodeBinding.type == VaultGameplayState::NodeType::Corrupted
+                            ? g_VaultState.nodeCorruptedMaterial
+                            : (nodeBinding.type == VaultGameplayState::NodeType::Relay ? g_VaultState.nodeRelayMaterial : g_VaultState.nodeInactiveMaterial)));
                 break;
             }
 
@@ -1697,6 +1714,8 @@ const char* Game::GetInteractionPrompt() const
         return "Press E to activate fragile node";
     if (nodeBinding->type == VaultGameplayState::NodeType::Corrupted && nodeBinding->state == VaultGameplayState::NodeState::Inactive)
         return "Press E to activate corrupted node";
+    if (nodeBinding->type == VaultGameplayState::NodeType::Relay && nodeBinding->state == VaultGameplayState::NodeState::Inactive)
+        return "Press E to activate relay node";
 
     return nodeBinding->state == VaultGameplayState::NodeState::Inactive
         ? "Press E to activate node"
@@ -1720,6 +1739,8 @@ const char* Game::GetInteractionActionLabel() const
         return "Activate Fragile";
     if (nodeBinding->type == VaultGameplayState::NodeType::Corrupted && nodeBinding->state == VaultGameplayState::NodeState::Inactive)
         return "Activate Corrupted";
+    if (nodeBinding->type == VaultGameplayState::NodeType::Relay && nodeBinding->state == VaultGameplayState::NodeState::Inactive)
+        return "Activate Relay";
     return nodeBinding->state == VaultGameplayState::NodeState::Inactive ? "Activate" : "Refresh";
 }
 
