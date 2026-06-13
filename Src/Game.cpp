@@ -352,6 +352,7 @@ namespace
             case VaultGameplayState::NodeType::Fragile: return "Scanner: Stabilizing Fragile Node";
             case VaultGameplayState::NodeType::Corrupted: return "Scanner: Stabilizing Corrupted Node";
             case VaultGameplayState::NodeType::Relay: return "Scanner: Stabilizing Relay Node";
+            case VaultGameplayState::NodeType::Hidden: return "Scanner: Stabilizing Weak Signal";
             case VaultGameplayState::NodeType::Normal:
             default: return "Scanner: Stabilizing Node";
             }
@@ -363,6 +364,7 @@ namespace
         case VaultGameplayState::NodeType::Fragile: return "Scanner: Fragile Node";
         case VaultGameplayState::NodeType::Corrupted: return "Scanner: Corrupted Node";
         case VaultGameplayState::NodeType::Relay: return "Scanner: Relay Node";
+        case VaultGameplayState::NodeType::Hidden: return "Scanner: Weak Signal";
         case VaultGameplayState::NodeType::Normal:
         default: return "Scanner: Normal Node";
         }
@@ -465,6 +467,7 @@ namespace
         setMoodMaterial(g_VaultState.nodeFragileMaterial, { 0.42f, 0.18f, 0.16f }, 0.36f, 0.08f);
         setMoodMaterial(g_VaultState.nodeCorruptedMaterial, { 0.34f, 0.08f, 0.42f }, 0.42f, 0.12f);
         setMoodMaterial(g_VaultState.nodeRelayMaterial, { 0.12f, 0.48f, 0.62f }, 0.30f, 0.10f);
+        setMoodMaterial(g_VaultState.nodeHiddenMaterial, { 0.10f, 0.18f, 0.30f }, 0.38f, 0.05f);
         setMoodMaterial(g_VaultState.nodeActiveMaterial, { 0.76f, 0.44f, 0.14f }, 0.24f, 0.35f);
         setMoodMaterial(g_VaultState.nodeDecayMaterial, { 0.82f, 0.16f, 0.14f }, 0.30f, 0.52f);
         setMoodMaterial(g_VaultState.coreInactiveMaterial, { 0.18f, 0.20f, 0.26f }, 0.22f, 0.02f);
@@ -921,6 +924,7 @@ namespace
         newState.nodeFragileMaterial = g_VaultState.nodeFragileMaterial;
         newState.nodeCorruptedMaterial = g_VaultState.nodeCorruptedMaterial;
         newState.nodeRelayMaterial = g_VaultState.nodeRelayMaterial;
+        newState.nodeHiddenMaterial = g_VaultState.nodeHiddenMaterial;
         newState.nodeActiveMaterial = g_VaultState.nodeActiveMaterial;
         newState.nodeDecayMaterial = g_VaultState.nodeDecayMaterial;
         newState.coreInactiveMaterial = g_VaultState.coreInactiveMaterial;
@@ -1162,7 +1166,9 @@ namespace
                         ? g_VaultState.nodeFragileMaterial
                         : (nodeBinding.type == VaultGameplayState::NodeType::Corrupted
                             ? g_VaultState.nodeCorruptedMaterial
-                            : (nodeBinding.type == VaultGameplayState::NodeType::Relay ? g_VaultState.nodeRelayMaterial : g_VaultState.nodeInactiveMaterial)));
+                            : (nodeBinding.type == VaultGameplayState::NodeType::Relay
+                                ? g_VaultState.nodeRelayMaterial
+                                : (nodeBinding.type == VaultGameplayState::NodeType::Hidden ? g_VaultState.nodeHiddenMaterial : g_VaultState.nodeInactiveMaterial))));
                 break;
             }
 
@@ -1716,6 +1722,8 @@ const char* Game::GetInteractionPrompt() const
         return "Press E to activate corrupted node";
     if (nodeBinding->type == VaultGameplayState::NodeType::Relay && nodeBinding->state == VaultGameplayState::NodeState::Inactive)
         return "Press E to activate relay node";
+    if (nodeBinding->type == VaultGameplayState::NodeType::Hidden && nodeBinding->state == VaultGameplayState::NodeState::Inactive)
+        return "Press E to stabilize weak signal";
 
     return nodeBinding->state == VaultGameplayState::NodeState::Inactive
         ? "Press E to activate node"
@@ -1741,6 +1749,8 @@ const char* Game::GetInteractionActionLabel() const
         return "Activate Corrupted";
     if (nodeBinding->type == VaultGameplayState::NodeType::Relay && nodeBinding->state == VaultGameplayState::NodeState::Inactive)
         return "Activate Relay";
+    if (nodeBinding->type == VaultGameplayState::NodeType::Hidden && nodeBinding->state == VaultGameplayState::NodeState::Inactive)
+        return "Stabilize Signal";
     return nodeBinding->state == VaultGameplayState::NodeState::Inactive ? "Activate" : "Refresh";
 }
 

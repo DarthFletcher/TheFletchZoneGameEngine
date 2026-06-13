@@ -12,6 +12,8 @@ VaultGameplayState::NodeType ToVaultNodeType(VaultNodeComponent::Type type)
         return VaultGameplayState::NodeType::Corrupted;
     case VaultNodeComponent::Type::Relay:
         return VaultGameplayState::NodeType::Relay;
+    case VaultNodeComponent::Type::Hidden:
+        return VaultGameplayState::NodeType::Hidden;
     case VaultNodeComponent::Type::Normal:
     default:
         return VaultGameplayState::NodeType::Normal;
@@ -30,6 +32,8 @@ VaultNodeComponent::Type ToRuntimeNodeType(VaultGameplayState::NodeType type)
         return VaultNodeComponent::Type::Corrupted;
     case VaultGameplayState::NodeType::Relay:
         return VaultNodeComponent::Type::Relay;
+    case VaultGameplayState::NodeType::Hidden:
+        return VaultNodeComponent::Type::Hidden;
     case VaultGameplayState::NodeType::Normal:
     default:
         return VaultNodeComponent::Type::Normal;

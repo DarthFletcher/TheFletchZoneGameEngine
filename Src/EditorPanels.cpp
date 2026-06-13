@@ -2449,6 +2449,7 @@ namespace EditorPanels
                                     case VaultNodeComponent::Type::Fragile: return "Fragile";
                                     case VaultNodeComponent::Type::Corrupted: return "Corrupted";
                                     case VaultNodeComponent::Type::Relay: return "Relay";
+                                    case VaultNodeComponent::Type::Hidden: return "Hidden";
                                     case VaultNodeComponent::Type::Normal:
                                     default: return "Normal";
                                     }

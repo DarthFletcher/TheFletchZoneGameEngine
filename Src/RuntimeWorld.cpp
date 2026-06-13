@@ -574,6 +574,10 @@ void RuntimeWorld::AddGameplayComponentsFromSceneInstance(RuntimeEntityId entity
         {
             node.type = VaultNodeComponent::Type::Relay;
         }
+        else if (loweredName.find("hidden") != std::string::npos || loweredName.find("weak") != std::string::npos)
+        {
+            node.type = VaultNodeComponent::Type::Hidden;
+        }
         else if (loweredName.find("slow") != std::string::npos || loweredName.find("stabilize") != std::string::npos)
         {
             node.type = VaultNodeComponent::Type::SlowStabilize;

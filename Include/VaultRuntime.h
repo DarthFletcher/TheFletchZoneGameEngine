@@ -25,6 +25,7 @@ struct VaultGameplayState
         Fragile,
         Corrupted,
         Relay,
+        Hidden,
     };
 
     struct NodeBinding
@@ -75,6 +76,7 @@ struct VaultGameplayState
     int nodeFragileMaterial = 0;
     int nodeCorruptedMaterial = 0;
     int nodeRelayMaterial = 0;
+    int nodeHiddenMaterial = 0;
     int nodeActiveMaterial = 0;
     int nodeDecayMaterial = 0;
     int coreInactiveMaterial = 0;

@@ -57,6 +57,7 @@ struct VaultNodeComponent
         Fragile,
         Corrupted,
         Relay,
+        Hidden,
     };
 
     enum class State : uint8_t
