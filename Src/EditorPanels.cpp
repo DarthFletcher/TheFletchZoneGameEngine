@@ -2302,6 +2302,52 @@ namespace EditorPanels
                         ImGui::Text("Main Camera Entity: %u", mainCameraEntity);
                         ImGui::Text("Player Entity:      %u", playerEntity);
 
+                        if (runtimeStats.vaultNodes > 0)
+                        {
+                            size_t normalNodes = 0;
+                            size_t slowNodes = 0;
+                            size_t fragileNodes = 0;
+                            size_t corruptedNodes = 0;
+                            size_t relayNodes = 0;
+                            size_t hiddenNodes = 0;
+
+                            for (const auto& [entityId, vaultNode] : runtimeWorld.GetVaultNodes())
+                            {
+                                (void)entityId;
+                                switch (vaultNode.type)
+                                {
+                                case VaultNodeComponent::Type::SlowStabilize:
+                                    ++slowNodes;
+                                    break;
+                                case VaultNodeComponent::Type::Fragile:
+                                    ++fragileNodes;
+                                    break;
+                                case VaultNodeComponent::Type::Corrupted:
+                                    ++corruptedNodes;
+                                    break;
+                                case VaultNodeComponent::Type::Relay:
+                                    ++relayNodes;
+                                    break;
+                                case VaultNodeComponent::Type::Hidden:
+                                    ++hiddenNodes;
+                                    break;
+                                case VaultNodeComponent::Type::Normal:
+                                default:
+                                    ++normalNodes;
+                                    break;
+                                }
+                            }
+
+                            ImGui::Separator();
+                            ImGui::TextUnformatted("Vault Node Ecology");
+                            ImGui::Text("Normal:    %llu", static_cast<unsigned long long>(normalNodes));
+                            ImGui::Text("Slow:      %llu", static_cast<unsigned long long>(slowNodes));
+                            ImGui::Text("Fragile:   %llu", static_cast<unsigned long long>(fragileNodes));
+                            ImGui::Text("Corrupted: %llu", static_cast<unsigned long long>(corruptedNodes));
+                            ImGui::Text("Relay:     %llu", static_cast<unsigned long long>(relayNodes));
+                            ImGui::Text("Hidden:    %llu", static_cast<unsigned long long>(hiddenNodes));
+                        }
+
                         auto getCurrentSceneFilenameLower = []()
                         {
                             std::filesystem::path currentScenePath(UI::GetCurrentSceneAssetPath());
