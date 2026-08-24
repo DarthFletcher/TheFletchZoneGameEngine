@@ -3119,6 +3119,21 @@ namespace EditorPanels
                         }
                     }
 
+                    bool activeSelf = selected->activeSelf;
+                    if (ImGui::Checkbox("##Active", &activeSelf))
+                    {
+                        PushUndoSnapshot(editor);
+                        selected->activeSelf = activeSelf;
+                        Scene::MarkInstancesDirty();
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted(selected->name.c_str());
+                    if (!Scene::IsInstanceActiveInHierarchy(selected->instanceId) && selected->activeSelf)
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(inactive parent)");
+                    }
+
                     pushOverrideHighlight(hasPrefabOverrideState && prefabOverrides.name);
                     const bool nameChanged = ImGui::InputText("Name", nameBuffer, IM_ARRAYSIZE(nameBuffer));
                     const bool nameActivated = ImGui::IsItemActivated();

@@ -70,6 +70,7 @@ It owns:
 - local transform data
 - primitive selection per instance
 - material index assignment
+- hierarchy-aware active state
 - visibility state
 - selection, hover, and multi-selection tracking
 - parent/child transform hierarchy behavior
@@ -94,6 +95,7 @@ A `SceneInstance` currently stores:
 - `position`
 - `rotation`
 - `scale`
+- `activeSelf`
 - `visible`
 - `materialIndex`
 - `primitive`
@@ -111,6 +113,7 @@ The engine does not yet expose a broader runtime ECS-style component model here.
 Current behavior includes:
 
 - cloning editor `SceneInstance` data into runtime entities when entering Play mode
+- excluding inactive objects and descendants of inactive parents from the runtime clone
 - stable runtime entity IDs and source scene instance mapping
 - runtime component storage for transforms, cameras, mesh renderers, player controller data, trigger volumes, and vault gameplay objects
 - runtime diagnostics in the editor Diagnostics panel

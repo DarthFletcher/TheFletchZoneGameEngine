@@ -34,6 +34,9 @@ bool RuntimeWorld::CloneFromScene()
 
     for (const SceneInstance& sceneInstance : sceneInstances)
     {
+        if (!Scene::IsInstanceActiveInHierarchy(sceneInstance.instanceId))
+            continue;
+
         const RuntimeEntityId entityId = CreateEntity(sceneInstance.name, sceneInstance.instanceId);
 
         RuntimeTransformComponent transform{};

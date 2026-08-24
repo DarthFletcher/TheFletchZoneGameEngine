@@ -202,7 +202,8 @@ namespace
     {
         for (const SceneInstance& instance : Scene::GetInstances())
         {
-            if (instance.instanceId == context.playerInstanceId || instance.camera.enabled)
+            if (!Scene::IsInstanceActiveInHierarchy(instance.instanceId) ||
+                instance.instanceId == context.playerInstanceId || instance.camera.enabled)
                 continue;
 
             if (outState.exit.instanceId == 0 && IsVaultExitName(instance.name))

@@ -399,7 +399,8 @@ namespace
         const auto& instances = Scene::GetInstances();
         for (size_t i = 0; i < instances.size(); ++i)
         {
-            if (!instances[i].visible || !IsRenderablePrimitive(instances[i].primitive))
+            if (!instances[i].visible || !Scene::IsInstanceActiveInHierarchy(instances[i].instanceId) ||
+                !IsRenderablePrimitive(instances[i].primitive))
                 continue;
 
             float t = 0.0f;
@@ -1403,6 +1404,7 @@ namespace
         if (!readVector3("\"position\"", outInstance.position)) return false;
         if (!readVector3("\"rotation\"", outInstance.rotation)) return false;
         if (!readVector3("\"scale\"", outInstance.scale)) return false;
+        readBool("\"active\"", outInstance.activeSelf);
         if (!readBool("\"visible\"", outInstance.visible)) return false;
         if (!readNumber("\"material\"", materialValue)) return false;
         readNumber("\"primitive\"", primitiveValue);
@@ -1892,6 +1894,7 @@ namespace
         out << indent << "  \"position\": [" << instance.position.x << ", " << instance.position.y << ", " << instance.position.z << "],\n";
         out << indent << "  \"rotation\": [" << instance.rotation.x << ", " << instance.rotation.y << ", " << instance.rotation.z << "],\n";
         out << indent << "  \"scale\": [" << instance.scale.x << ", " << instance.scale.y << ", " << instance.scale.z << "],\n";
+        out << indent << "  \"active\": " << (instance.activeSelf ? "true" : "false") << ",\n";
         out << indent << "  \"visible\": " << (instance.visible ? "true" : "false") << ",\n";
         out << indent << "  \"material\": " << instance.materialIndex << ",\n";
         out << indent << "  \"primitive\": " << static_cast<int>(instance.primitive) << ",\n";
@@ -1916,6 +1919,7 @@ namespace
         out << indent << "  \"position\": [" << instance.Instance.position.x << ", " << instance.Instance.position.y << ", " << instance.Instance.position.z << "],\n";
         out << indent << "  \"rotation\": [" << instance.Instance.rotation.x << ", " << instance.Instance.rotation.y << ", " << instance.Instance.rotation.z << "],\n";
         out << indent << "  \"scale\": [" << instance.Instance.scale.x << ", " << instance.Instance.scale.y << ", " << instance.Instance.scale.z << "],\n";
+        out << indent << "  \"active\": " << (instance.Instance.activeSelf ? "true" : "false") << ",\n";
         out << indent << "  \"visible\": " << (instance.Instance.visible ? "true" : "false") << ",\n";
         out << indent << "  \"material\": " << instance.Instance.materialIndex << ",\n";
         out << indent << "  \"primitive\": " << static_cast<int>(instance.Instance.primitive) << ",\n";
@@ -2187,6 +2191,7 @@ namespace
         file << "  \"position\": [" << prefab.position.x << ", " << prefab.position.y << ", " << prefab.position.z << "],\n";
         file << "  \"rotation\": [" << prefab.rotation.x << ", " << prefab.rotation.y << ", " << prefab.rotation.z << "],\n";
         file << "  \"scale\": [" << prefab.scale.x << ", " << prefab.scale.y << ", " << prefab.scale.z << "],\n";
+        file << "  \"active\": " << (prefab.activeSelf ? "true" : "false") << ",\n";
         file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
         file << "  \"material\": " << prefab.materialIndex << ",\n";
         file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << ",\n";
@@ -2250,7 +2255,7 @@ SceneInstance* Scene::GetMainCameraInstanceMutable()
     SceneInstance* firstEnabledCamera = nullptr;
     for (auto& instance : s_SceneInstances)
     {
-        if (!instance.camera.enabled)
+        if (!instance.camera.enabled || !IsInstanceActiveInHierarchy(instance.instanceId))
             continue;
         if (!firstEnabledCamera)
             firstEnabledCamera = &instance;
@@ -2266,7 +2271,7 @@ const SceneInstance* Scene::GetMainCameraInstance()
     const SceneInstance* firstEnabledCamera = nullptr;
     for (const auto& instance : s_SceneInstances)
     {
-        if (!instance.camera.enabled)
+        if (!instance.camera.enabled || !IsInstanceActiveInHierarchy(instance.instanceId))
             continue;
         if (!firstEnabledCamera)
             firstEnabledCamera = &instance;
@@ -3074,6 +3079,21 @@ uint32_t Scene::GetParentInstanceId(uint32_t instanceId)
     return 0;
 }
 
+bool Scene::IsInstanceActiveInHierarchy(uint32_t instanceId)
+{
+    const SceneInstance* current = FindSceneInstanceByIdConst(instanceId);
+    int guard = 0;
+    while (current && guard++ < 64)
+    {
+        if (!current->activeSelf)
+            return false;
+        if (current->parentInstanceId == 0)
+            return true;
+        current = FindSceneInstanceByIdConst(current->parentInstanceId);
+    }
+    return false;
+}
+
 DirectX::XMFLOAT3 Scene::GetInstanceWorldPosition(uint32_t instanceId)
 {
     if (const SceneInstance* instance = FindSceneInstanceByIdConst(instanceId))
@@ -3596,6 +3616,7 @@ bool Scene::SaveSelectedAsPrefab(const std::string& path)
         file << "  \"position\": [" << prefab.position.x << ", " << prefab.position.y << ", " << prefab.position.z << "],\n";
         file << "  \"rotation\": [" << prefab.rotation.x << ", " << prefab.rotation.y << ", " << prefab.rotation.z << "],\n";
         file << "  \"scale\": [" << prefab.scale.x << ", " << prefab.scale.y << ", " << prefab.scale.z << "],\n";
+        file << "  \"active\": " << (prefab.activeSelf ? "true" : "false") << ",\n";
         file << "  \"visible\": " << (prefab.visible ? "true" : "false") << ",\n";
         file << "  \"material\": " << prefab.materialIndex << ",\n";
         file << "  \"primitive\": " << static_cast<int>(prefab.primitive) << ",\n";
@@ -4040,6 +4061,7 @@ std::string Scene::SerializeToString()
         out << "      \"position\": [" << inst.position.x << ", " << inst.position.y << ", " << inst.position.z << "],\n";
         out << "      \"rotation\": [" << inst.rotation.x << ", " << inst.rotation.y << ", " << inst.rotation.z << "],\n";
         out << "      \"scale\": [" << inst.scale.x << ", " << inst.scale.y << ", " << inst.scale.z << "],\n";
+        out << "      \"active\": " << (inst.activeSelf ? "true" : "false") << ",\n";
         out << "      \"visible\": " << (inst.visible ? "true" : "false") << ",\n";
         out << "      \"material\": " << inst.materialIndex << ",\n";
         out << "      \"primitive\": " << static_cast<int>(inst.primitive) << ",\n";
@@ -4351,7 +4373,8 @@ void Scene::Render(const SceneRenderContext& ctx)
         // not pop in/out while moving the camera or editing transforms.
         for (UINT i = 0; i < (UINT)s_InstanceBounds.size(); ++i)
         {
-            if (i >= s_SceneInstances.size() || !s_SceneInstances[i].visible)
+            if (i >= s_SceneInstances.size() || !s_SceneInstances[i].visible ||
+                !IsInstanceActiveInHierarchy(s_SceneInstances[i].instanceId))
                 continue;
             s_VisibleInstanceIndices.push_back(i);
         }
@@ -4364,7 +4387,8 @@ void Scene::Render(const SceneRenderContext& ctx)
 
         for (UINT i = 0; i < (UINT)s_InstanceBounds.size(); ++i)
         {
-            if (i >= s_SceneInstances.size() || !s_SceneInstances[i].visible)
+            if (i >= s_SceneInstances.size() || !s_SceneInstances[i].visible ||
+                !IsInstanceActiveInHierarchy(s_SceneInstances[i].instanceId))
                 continue;
 
             const uint32_t instanceId = s_SceneInstances[i].instanceId;

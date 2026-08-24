@@ -89,6 +89,7 @@ struct SceneInstance
     DirectX::XMFLOAT3 position{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 rotation{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 scale{ 1.0f, 1.0f, 1.0f };
+    bool activeSelf = true;
     bool visible = true;
     int materialIndex = 0;
     ScenePrimitive primitive = ScenePrimitive::Cube;
@@ -205,6 +206,7 @@ public:
     static bool CanPreserveWorldTransformOnReparent(uint32_t childInstanceId, uint32_t parentInstanceId, std::string* outReason = nullptr);
     static bool SetParentInstance(uint32_t childInstanceId, uint32_t parentInstanceId, bool keepWorldTransform = true);
     static uint32_t GetParentInstanceId(uint32_t instanceId);
+    static bool IsInstanceActiveInHierarchy(uint32_t instanceId);
     static DirectX::XMFLOAT3 GetInstanceWorldPosition(uint32_t instanceId);
     static bool TryGetInstanceWorldMatrix(uint32_t instanceId, DirectX::XMFLOAT4X4& outWorld);
     static std::vector<uint32_t> GetChildInstanceIds(uint32_t parentInstanceId);

@@ -83,6 +83,9 @@ Node types:
 - `Normal`
 - `SlowStabilize`
 - `Fragile`
+- `Corrupted`
+- `Relay`
+- `Hidden`
 
 ### Normal nodes
 
@@ -102,6 +105,37 @@ Fragile nodes decay faster than normal nodes.
 
 They create route pressure and should usually be refreshed earlier.
 
+### Corrupted nodes
+
+Corrupted nodes increase the decay rate of all active and decaying nodes by 10% while the corrupted node is active or decaying.
+
+This pressure stacks multiplicatively with Vault Lord decay pressure.
+
+### Relay nodes
+
+Relay nodes reduce the decay rate of all active and decaying nodes by 10% while the relay node is active or decaying.
+
+This relief offsets part of the pressure created by corrupted nodes and Vault Lords.
+
+### Hidden nodes
+
+Hidden nodes are presented as weak signals rather than identified nodes until the player reaches and stabilizes them.
+
+Scanner and interaction language uses `Weak Signal` and `Stabilize Signal` to preserve this behavior.
+
+### Node ecology diagnostics
+
+The runtime Diagnostics panel reports a `Vault Node Ecology` count for each node type.
+
+The Phase 12 validation scene expects:
+
+- Normal: `1`
+- Slow: `1`
+- Fragile: `1`
+- Corrupted: `1`
+- Relay: `1`
+- Hidden: `1`
+
 ### Runtime state
 
 Node runtime state is stored in `VaultNodeComponent` and bridged through `VaultNodeSystem`.
@@ -115,6 +149,8 @@ Important runtime fields:
 - stabilize progress
 - stabilize duration
 - warning played
+
+Inactive scene objects are excluded from the play-mode runtime clone. An inactive node, or a node below an inactive parent, therefore does not render or participate in discovery, scanner targeting, interaction, gameplay, or node ecology diagnostics.
 
 ---
 
@@ -271,17 +307,17 @@ Scanner direction convention:
 
 The scanner uses the active camera view to align the arrow with what the player sees. If a target is centered on screen, the scanner arrow should point up.
 
-Future scanner node classification should expand this language with labels such as:
+Current scanner node classification uses:
 
 - `Scanner: Normal Node`
 - `Scanner: Slow Node`
 - `Scanner: Fragile Node`
-- `Scanner: Unstable Node`
 - `Scanner: Corrupted Node`
-- `Scanner: Hidden Node`
 - `Scanner: Relay Node`
+- `Scanner: Weak Signal`
+- `Scanner: Unstable Node` for the most urgent decaying node
 
-This belongs to the future node ecology work.
+While a special node is stabilizing, the scanner uses its corresponding `Scanner: Stabilizing ...` label. Hidden nodes use `Scanner: Stabilizing Weak Signal`.
 
 ---
 

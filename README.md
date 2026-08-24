@@ -36,6 +36,7 @@ This project intentionally avoids hidden engine magic. GPU resources, render pas
   - Hierarchy, inspector, assets, diagnostics, and log panels
   - Selection, hover, multi-selection, duplication, deletion
   - Parenting / re-parenting with world-transform preservation
+  - Hierarchy-aware object activation for editor and play-mode filtering
   - Editor gizmo-driven transform editing
 - **Scene picking and placement helpers**
   - Viewport mouse-to-world ray construction

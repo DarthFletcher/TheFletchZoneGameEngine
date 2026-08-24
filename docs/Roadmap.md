@@ -23,6 +23,7 @@ The current codebase already includes:
 - scene save/load support
 - a `RuntimeWorld` play-mode foundation with runtime entities/components, diagnostics, and scene sync compatibility
 - vault gameplay split into runtime-focused helper modules for discovery, node/object state, mission state, presentation, and campaign routing
+- hierarchy-aware object activation that excludes inactive objects from rendering and play-mode runtime systems
 
 That means the next work should focus less on proving the renderer exists and more on making the engine easier to scale, maintain, and use.
 
